@@ -1,0 +1,2216 @@
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { BoardPlaceholder, type MoveNumberDisplayMode } from "../board/BoardPlaceholder";
+import { AutoAnalysisDialog, type AutoAnalysisSettings } from "../components/AutoAnalysisDialog";
+import { BottomToolbar } from "../components/BottomToolbar";
+import { CandidatePanel, ReviewGraph } from "../components/CandidatePanel";
+import { GameInfoPanel } from "../components/GameInfoPanel";
+import { ResearchDocumentPanel } from "../components/ResearchDocumentPanel";
+import { SettingsDialog } from "../components/SettingsDialog";
+import { TopToolbar } from "../components/TopToolbar";
+import type { EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
+import {
+  analyzePosition,
+  DEFAULT_ENGINE_PROFILE,
+  getDefaultEngineProfile,
+  isTauriRuntime,
+  probeEngine
+} from "../engine/tauriEngine";
+import { buildBoardPosition, canPlayMove, getNextColor } from "../game/boardRules";
+import {
+  appendMoveToGameTree,
+  createEmptyGameTree,
+  deleteSubtreeFromGameTree,
+  findMainLineEndNodeId,
+  findVariationAnchorNodeId,
+  flattenBranchTree,
+  mainLineMovesFromTree,
+  moveNodeIdsToNode,
+  nodeIdAtMoveNumber,
+  pathMovesToNode,
+  pathMovesWithMainContinuation,
+  promoteNodeToMainLine
+} from "../game/gameTree";
+import type { ReviewMove } from "../game/sampleGame";
+import { parseGameRecord } from "../sgf/parseSgf";
+import {
+  appendBlock,
+  createManualVariationBlock,
+  createParagraphBlock,
+  createResearchDocument,
+  createVariationBlock,
+  makeSnapshot,
+  toBrgDocument,
+  updateBlockMarkdown,
+  updateDocumentSource,
+  validateResearchDocument
+} from "../research/document";
+import {
+  DEFAULT_RESEARCH_EXPORT_SETTINGS,
+  renderResearchDocumentHtml,
+  type ResearchExportSettings
+} from "../research/renderHtml";
+import {
+  LANGUAGE_STORAGE_KEY,
+  makeTranslator,
+  normalizeLanguage,
+  type AppLanguage,
+  type Translator
+} from "../i18n";
+import type { ResearchBlock, ResearchDocument } from "../research/types";
+import { useGameStore } from "../stores/gameStore";
+
+type AutoAnalysisSummary = {
+  analyzed: number;
+  candidateMatches: number;
+  details: AutoAnalysisMoveDetail[];
+  knownScoreLosses: number;
+  topMatches: number;
+  totalScoreLoss: number;
+  totalWinrateLoss: number;
+  totalMatchScore: number;
+};
+
+type TianshuReport = AutoAnalysisSummary & {
+  analyzedAt: string;
+  endMove: number;
+  startMove: number;
+};
+
+type AutoAnalysisMoveDetail = {
+  color: "black" | "white";
+  matchScore: number;
+  moveNumber: number;
+  rank: number | null;
+  scoreLoss: number | null;
+  winrate: number;
+  winrateLoss: number;
+};
+
+type LossBucket = {
+  count: number;
+  label: string;
+};
+
+type SaveTextFileResult = {
+  saved: boolean;
+  path: string | null;
+  error: string | null;
+};
+
+const LAST_RESEARCH_SAVE_DIR_KEY = "tensugo.lastResearchSaveDir";
+const RESEARCH_EXPORT_SETTINGS_KEY = "tensugo.researchExportSettings";
+const INITIAL_GAME_TREE = createEmptyGameTree(19, 7.5);
+const INITIAL_SELECTED_NODE_ID = "root";
+const INITIAL_PATH_NODE_IDS: string[] = [];
+
+export function App() {
+  const game = useGameStore();
+  const [boardSize, setBoardSize] = useState(game.boardSize);
+  const [komi, setKomi] = useState(game.komi);
+  const [rules, setRules] = useState("中国");
+  const [blackName, setBlackName] = useState("黑棋");
+  const [whiteName, setWhiteName] = useState("白棋");
+  const [sourceFileName, setSourceFileName] = useState("新棋谱");
+  const [gameDate, setGameDate] = useState<string | undefined>(undefined);
+  const [lastAction, setLastAction] = useState("空棋盘已就绪。点“开”选择 SGF，或点棋盘空交点开始摆棋。");
+  const [sgfWarnings, setSgfWarnings] = useState<string[]>([]);
+  const [engineProfile, setEngineProfile] = useState<EngineProfile | null>(DEFAULT_ENGINE_PROFILE);
+  const [engineStatus, setEngineStatus] = useState("引擎未配置");
+  const [engineDiagnostics, setEngineDiagnostics] = useState("尚未运行引擎测试。");
+  const [researchExportSettings, setResearchExportSettings] = useState<ResearchExportSettings>(() => loadResearchExportSettings());
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAutoAnalysisOpen, setIsAutoAnalysisOpen] = useState(false);
+  const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
+  const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
+  const [autoAnalysisSummary, setAutoAnalysisSummary] = useState<AutoAnalysisSummary | null>(null);
+  const [tianshuReport, setTianshuReport] = useState<TianshuReport | null>(null);
+  const [isTianshuOpen, setIsTianshuOpen] = useState(false);
+  const [language, setLanguage] = useState<AppLanguage>(() => normalizeLanguage(window.localStorage.getItem(LANGUAGE_STORAGE_KEY)));
+  const t = useMemo(() => makeTranslator(language), [language]);
+  const [isAnalysisEnabled, setIsAnalysisEnabled] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [hasAnalysisAttempted, setHasAnalysisAttempted] = useState(false);
+  const [engineCandidates, setEngineCandidates] = useState<EngineCandidateMove[]>([]);
+  const [analysisPoints, setAnalysisPoints] = useState<ReviewAnalysisPoint[]>([]);
+  const [previewCandidateRank, setPreviewCandidateRank] = useState<number | null>(null);
+  const [candidateListVisible, setCandidateListVisible] = useState(true);
+  const [coordinateLabelsVisible, setCoordinateLabelsVisible] = useState(true);
+  const [moveNumberDisplay, setMoveNumberDisplay] = useState<MoveNumberDisplayMode>("last1");
+  const [isResearchMode, setIsResearchMode] = useState(false);
+  const [showVariationNumbers, setShowVariationNumbers] = useState(false);
+  const [researchBaseMoveNumber, setResearchBaseMoveNumber] = useState<number | null>(null);
+  const [sourceMainLineMoveCount, setSourceMainLineMoveCount] = useState(0);
+  const [leftPaneWidth, setLeftPaneWidth] = useState(230);
+  const [rightPaneWidth, setRightPaneWidth] = useState(300);
+  const [viewportSize, setViewportSize] = useState(() => ({
+    height: window.innerHeight,
+    width: window.innerWidth
+  }));
+  const [analysisTrigger, setAnalysisTrigger] = useState(0);
+  const [moves, setMoves] = useState<ReviewMove[]>([]);
+  const [sourceMainLineMoves, setSourceMainLineMoves] = useState<ReviewMove[]>([]);
+  const [gameTree, setGameTree] = useState(() => INITIAL_GAME_TREE);
+  const [selectedGameNodeId, setSelectedGameNodeId] = useState(() => INITIAL_SELECTED_NODE_ID);
+  const [currentPathNodeIds, setCurrentPathNodeIds] = useState<string[]>(() => INITIAL_PATH_NODE_IDS);
+  const totalMoves = moves.length;
+  const initialSnapshot = useMemo(
+    () =>
+      makeSnapshot({
+        blackName,
+        boardSize,
+        currentMoveNumber: totalMoves,
+        komi,
+        moves: [],
+        rules,
+        sourceFileName,
+        totalMoves,
+        whiteName,
+        gameDate
+      }),
+    []
+  );
+  const initialResearchDocument = useMemo(() => createResearchDocument(initialSnapshot), [initialSnapshot]);
+  const [researchDocument, setResearchDocument] = useState<ResearchDocument>(() => initialResearchDocument);
+  const [selectedResearchBlockId, setSelectedResearchBlockId] = useState<string | null>(
+    () => initialResearchDocument.sections[0]?.blocks[0]?.id ?? null
+  );
+  const [activeCommentaryBlockId, setActiveCommentaryBlockId] = useState<string | null>(
+    () => initialResearchDocument.sections[0]?.blocks.find((block) => block.type === "paragraph")?.id ?? null
+  );
+  const analysisRequestRef = useRef(0);
+  const analysisTimerRef = useRef<number | null>(null);
+  const autoAnalysisStopRef = useRef(false);
+  const autoAnalysisFinishRef = useRef(false);
+  const autoAnalysisReportRangeRef = useRef<{ startMove: number; endMove: number } | null>(null);
+  const autoAnalysisSummaryRef = useRef<AutoAnalysisSummary>(createEmptyAutoAnalysisSummary());
+  const processedAnalysisTriggerRef = useRef(-1);
+  const [currentMoveNumber, setCurrentMoveNumber] = useState(totalMoves);
+  const isAnalysisEnabledRef = useRef(isAnalysisEnabled);
+  const position = useMemo(
+    () => buildBoardPosition(moves, boardSize, currentMoveNumber),
+    [moves, boardSize, currentMoveNumber]
+  );
+  const stones = position.stones;
+  const currentSnapshot = useMemo(
+    () =>
+      makeSnapshot({
+        blackName,
+        boardSize,
+        currentMoveNumber,
+        komi,
+        moves,
+        rules,
+        sourceFileName,
+        totalMoves,
+        whiteName,
+        gameDate
+      }),
+    [blackName, boardSize, currentMoveNumber, gameDate, komi, moves, rules, sourceFileName, totalMoves, whiteName]
+  );
+  const bestCandidate = engineCandidates[0];
+  const previewCandidate =
+    engineCandidates.find((candidate) => candidate.rank === previewCandidateRank) ?? bestCandidate ?? null;
+  const displayedWinrate = bestCandidate?.winrate ?? 28;
+  const displayedScoreLead = bestCandidate?.scoreLead ?? -3.4;
+  const displayedVisits = bestCandidate?.visits ?? 137000;
+  const engineLabel = engineProfile?.name ?? "未配置";
+  const displayedVariationBaseMoveNumber = showVariationNumbers
+    ? researchBaseMoveNumber ?? inferVariationBaseMoveNumber(moves, sourceMainLineMoves)
+    : null;
+  const candidateCountText = engineCandidates.length > 0 ? `${engineCandidates.length} 个候选点` : "无候选点";
+  const branchRows = useMemo(() => flattenBranchTree(gameTree, selectedGameNodeId), [gameTree, selectedGameNodeId]);
+  const commentaryBlock = useMemo(
+    () =>
+      researchDocument.sections
+        .flatMap((section) => section.blocks)
+        .find((block) => block.id === activeCommentaryBlockId && (block.type === "paragraph" || block.type === "conclusion")) ??
+      researchDocument.sections
+        .flatMap((section) => section.blocks)
+        .find((block) => block.type === "paragraph" || block.type === "conclusion"),
+    [activeCommentaryBlockId, researchDocument]
+  );
+  const commentaryMarkdown =
+    commentaryBlock && (commentaryBlock.type === "paragraph" || commentaryBlock.type === "conclusion")
+      ? commentaryBlock.markdown
+      : "";
+  const autoMatchText = autoAnalysisSummary
+    ? `${formatPercent(autoAnalysisSummary.candidateMatches / autoAnalysisSummary.analyzed)} / 首选 ${formatPercent(
+        autoAnalysisSummary.topMatches / autoAnalysisSummary.analyzed
+      )}`
+    : "未统计";
+  const coordinateLabelInset = coordinateLabelsVisible ? 48 : 0;
+  const boardPixelSize = Math.max(
+    180,
+    Math.floor(
+      Math.min(
+        viewportSize.height - 104,
+        viewportSize.width - leftPaneWidth - rightPaneWidth - 34 + coordinateLabelInset
+      )
+    )
+  );
+  useEffect(() => {
+    isAnalysisEnabledRef.current = isAnalysisEnabled;
+    if (isAnalysisEnabled) {
+      queueAnalysisIfEnabled(20);
+    } else if (analysisTimerRef.current !== null) {
+      window.clearTimeout(analysisTimerRef.current);
+      analysisTimerRef.current = null;
+    }
+    return undefined;
+  }, [isAnalysisEnabled]);
+  useEffect(() => {
+    const handleResize = () => {
+      setViewportSize({
+        height: window.innerHeight,
+        width: window.innerWidth
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      setEngineStatus("浏览器预览：分析需要在 Mac App 中运行");
+      return;
+    }
+
+    void getDefaultEngineProfile()
+      .then(async (profile) => {
+        setEngineProfile(profile);
+        setEngineStatus(profile.exists ? `已发现 ${profile.name}` : "默认引擎文件不完整");
+        const probe = await probeEngine(profile);
+        setEngineDiagnostics(probe.diagnostics);
+        setEngineStatus(probe.ok ? probe.summary : summarizeEngineFailure("probe-failed", probe.diagnostics));
+      })
+      .catch((error) => {
+        setEngineDiagnostics(String(error));
+        setEngineStatus(`引擎发现失败: ${String(error)}`);
+      });
+  }, []);
+  const invalidatePendingAnalysis = () => {
+    analysisRequestRef.current += 1;
+    if (analysisTimerRef.current !== null) {
+      window.clearTimeout(analysisTimerRef.current);
+      analysisTimerRef.current = null;
+    }
+    setIsAnalyzing(false);
+  };
+  const queueAnalysisIfEnabled = (delayMs = 220) => {
+    if (isAnalysisEnabled) {
+      if (analysisTimerRef.current !== null) {
+        window.clearTimeout(analysisTimerRef.current);
+      }
+      analysisTimerRef.current = window.setTimeout(() => {
+        analysisTimerRef.current = null;
+        setAnalysisTrigger((value) => value + 1);
+      }, delayMs);
+    }
+  };
+  const appendResearchBlock = (block: ResearchBlock | null) => {
+    if (!block) {
+      setLastAction("当前没有可插入的研究内容。");
+      return;
+    }
+    setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), block));
+    setSelectedResearchBlockId(block.id);
+    setLastAction("已插入研究文档 block。");
+  };
+  const researchDocumentWithAnalysis = (document: ResearchDocument): ResearchDocument => ({
+    ...document,
+    analysis: buildResearchAnalysisSnapshot(
+      autoAnalysisSummaryRef.current.analyzed > 0 ? autoAnalysisSummaryRef.current : autoAnalysisSummary,
+      analysisPoints,
+      autoAnalysisReportRangeRef.current,
+      engineProfile
+    )
+  });
+  const saveResearchDocument = async () => {
+    const document = researchDocumentWithAnalysis(updateDocumentSource(researchDocument, currentSnapshot));
+    const json = JSON.stringify(toBrgDocument(document, gameTree), null, 2);
+    await saveTextFileWithDialog(json, fileStem(document.title) + ".brg", "已保存 BRG 研究文档。");
+  };
+  const exportResearchPdf = async () => {
+    const html = renderResearchDocumentHtml(
+      researchDocumentWithAnalysis(updateDocumentSource(researchDocument, currentSnapshot)),
+      gameTree,
+      researchExportSettings
+    );
+    if (researchExportSettings.format === "html" || !isTauriRuntime()) {
+      downloadTextFile(html, fileStem(researchDocument.title) + ".html", "text/html;charset=utf-8");
+      setLastAction(researchExportSettings.format === "html" ? "已导出 HTML。" : "浏览器预览暂不能直接导出 PDF，已保存 HTML。");
+      return;
+    }
+
+    try {
+      setLastAction("正在导出 PDF，请稍候...");
+      const result = await invoke<SaveTextFileResult>("save_pdf_with_dialog", {
+        request: {
+          default_name: fileStem(researchDocument.title) + ".pdf",
+          default_dir: window.localStorage.getItem(LAST_RESEARCH_SAVE_DIR_KEY),
+          html
+        }
+      });
+      if (result.saved && result.path) {
+        window.localStorage.setItem(LAST_RESEARCH_SAVE_DIR_KEY, directoryName(result.path));
+        setLastAction(`已导出 PDF。${result.path}`);
+      } else if (result.error) {
+        setLastAction(`PDF 导出失败: ${result.error}`);
+      } else {
+        setLastAction("已取消 PDF 导出。");
+      }
+    } catch (error) {
+      setLastAction(`PDF 导出失败: ${String(error)}`);
+    }
+  };
+  const saveTextFileWithDialog = async (content: string, defaultName: string, successText: string) => {
+    if (!isTauriRuntime()) {
+      downloadTextFile(content, defaultName, "text/plain;charset=utf-8");
+      setLastAction(`${successText}（浏览器预览使用下载保存。）`);
+      return;
+    }
+
+    try {
+      const result = await invoke<SaveTextFileResult>("save_text_file_with_dialog", {
+        request: {
+          default_name: defaultName,
+          default_dir: window.localStorage.getItem(LAST_RESEARCH_SAVE_DIR_KEY),
+          content
+        }
+      });
+      if (result.saved && result.path) {
+        window.localStorage.setItem(LAST_RESEARCH_SAVE_DIR_KEY, directoryName(result.path));
+        setLastAction(`${successText} ${result.path}`);
+      } else if (result.error) {
+        setLastAction(`保存失败: ${result.error}`);
+      } else {
+        setLastAction("已取消保存。");
+      }
+    } catch (error) {
+      setLastAction(`保存失败: ${String(error)}`);
+    }
+  };
+  const loadResearchDocument = async (file: File) => {
+    try {
+      const parsed = validateResearchDocument(JSON.parse(await file.text()));
+      setResearchDocument(parsed);
+      if (parsed.mainSgf || parsed.gameTree) {
+        const gameRecord = parsed.mainSgf ? parseGameRecord(parsed.mainSgf, parsed.sourceGame.fileName) : null;
+        const baseTree = parsed.gameTree ?? gameRecord?.gameTree ?? createEmptyGameTree(parsed.sourceGame.boardSize, parsed.sourceGame.komi);
+        const restoredTree = parsed.gameTree ? baseTree : appendResearchVariationsToTree(baseTree, parsed);
+        const mainMoves = mainLineMovesFromTree(restoredTree);
+        const selectedNodeId = findMainLineEndNodeId(restoredTree);
+        invalidatePendingAnalysis();
+        setAutoAnalysisResume(null);
+        setBoardSize(restoredTree.boardSize);
+        setKomi(restoredTree.komi);
+        setRules(parsed.sourceGame.rules || gameRecord?.rules || "中国");
+        setBlackName(parsed.sourceGame.players.black || gameRecord?.blackName || "黑棋");
+        setWhiteName(parsed.sourceGame.players.white || gameRecord?.whiteName || "白棋");
+        setGameDate(parsed.sourceGame.gameDate || gameRecord?.gameDate);
+        setSourceFileName(parsed.sourceGame.fileName);
+        setSgfWarnings(gameRecord?.warnings ?? []);
+        setMoves(mainMoves);
+        setSourceMainLineMoves(mainMoves);
+        setSourceMainLineMoveCount(mainMoves.length);
+        setGameTree(restoredTree);
+        setSelectedGameNodeId(selectedNodeId);
+        setCurrentPathNodeIds(moveNodeIdsToNode(restoredTree, selectedNodeId));
+        setCurrentMoveNumber(mainMoves.length);
+        setResearchBaseMoveNumber(null);
+        setEngineCandidates([]);
+        setAnalysisPoints([]);
+        setHasAnalysisAttempted(false);
+      }
+      if (parsed.analysis) {
+        autoAnalysisSummaryRef.current = {
+          analyzed: parsed.analysis.analyzed,
+          candidateMatches: parsed.analysis.candidateMatches,
+          details: parsed.analysis.details,
+          knownScoreLosses: parsed.analysis.knownScoreLosses,
+          topMatches: parsed.analysis.topMatches,
+          totalMatchScore: parsed.analysis.totalMatchScore,
+          totalScoreLoss: parsed.analysis.totalScoreLoss,
+          totalWinrateLoss: parsed.analysis.totalWinrateLoss
+        };
+        autoAnalysisReportRangeRef.current = { startMove: parsed.analysis.startMove, endMove: parsed.analysis.endMove };
+        setAutoAnalysisSummary({ ...autoAnalysisSummaryRef.current });
+        setAnalysisPoints(parsed.analysis.points);
+      } else {
+        autoAnalysisSummaryRef.current = createEmptyAutoAnalysisSummary();
+        autoAnalysisReportRangeRef.current = null;
+        setAutoAnalysisSummary(null);
+        setAnalysisPoints([]);
+      }
+      setSelectedResearchBlockId(parsed.sections[0]?.blocks[0]?.id ?? null);
+      setActiveCommentaryBlockId(parsed.sections[0]?.blocks.find((block) => block.type === "paragraph" || block.type === "conclusion")?.id ?? null);
+      setLastAction(`已打开研究文档 ${file.name}。`);
+    } catch (error) {
+      setLastAction(`研究文档打开失败: ${String(error)}`);
+    }
+  };
+  const updateResearchCommentary = (markdown: string) => {
+    setResearchDocument((document) => {
+      const blocks = document.sections.flatMap((section) => section.blocks);
+      const textBlock =
+        blocks.find((block) => block.id === activeCommentaryBlockId && (block.type === "paragraph" || block.type === "conclusion")) ??
+        blocks.find((block) => block.type === "paragraph" || block.type === "conclusion");
+      if (textBlock) {
+        setActiveCommentaryBlockId(textBlock.id);
+        return updateBlockMarkdown(document, textBlock.id, markdown);
+      }
+      const block = createParagraphBlock(markdown);
+      setSelectedResearchBlockId(block.id);
+      setActiveCommentaryBlockId(block.id);
+      return appendBlock(updateDocumentSource(document, currentSnapshot), block);
+    });
+  };
+  const insertTextBlock = () => {
+    const markdown = commentaryMarkdown.trim();
+    if (!markdown) {
+      setLastAction("当前没有可插入的文字。");
+      return;
+    }
+
+    const textBlock = createParagraphBlock(markdown);
+    const nextDraftBlock = createParagraphBlock("");
+    const nextDocument = appendBlock(
+      appendBlock(updateDocumentSource(researchDocument, currentSnapshot), textBlock),
+      nextDraftBlock
+    );
+    setResearchDocument(nextDocument);
+    setSelectedResearchBlockId(textBlock.id);
+    setActiveCommentaryBlockId(nextDraftBlock.id);
+    setLastAction("已插入纯文字，棋评输入已清空。");
+  };
+  const updateResearchDocumentMeta = (patch: { author?: string; title?: string }) => {
+    setResearchDocument((document) => ({
+      ...document,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    }));
+  };
+  const updateResearchExportSettings = (patch: Partial<ResearchExportSettings>) => {
+    setResearchExportSettings((settings) => {
+      const next = normalizeResearchExportSettings({ ...settings, ...patch });
+      window.localStorage.setItem(RESEARCH_EXPORT_SETTINGS_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+  const updateLanguage = (nextLanguage: AppLanguage) => {
+    const normalized = normalizeLanguage(nextLanguage);
+    setLanguage(normalized);
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, normalized);
+  };
+  const showResearchBlockOnBoard = (blockId: string) => {
+    const currentComment = commentaryMarkdown.trim();
+    const targetCommentBlockId = findCommentBlockIdAfterResearchBlock(researchDocument, blockId);
+    if (currentComment && activeCommentaryBlockId !== targetCommentBlockId) {
+      const shouldSave = window.confirm("当前棋评输入框还有未插入的文字。是否先把这些文字作为当前变化插入？");
+      if (shouldSave) {
+        insertCurrentVariation();
+      } else if (activeCommentaryBlockId) {
+        setResearchDocument((document) => updateBlockMarkdown(document, activeCommentaryBlockId, ""));
+      }
+    }
+    const block = researchDocument.sections.flatMap((section) => section.blocks).find((item) => item.id === blockId);
+    if (!block) {
+      return;
+    }
+    setSelectedResearchBlockId(block.id);
+    if (targetCommentBlockId) {
+      setActiveCommentaryBlockId(targetCommentBlockId);
+    }
+    if (block.type === "variation") {
+      const baseMoves = sourceMainLineMoves.slice(0, block.fromMoveNumber);
+      const variationMoves = block.sequence
+        .map((point, index) => gtpPointToMove(point, block.boardSize, block.fromMoveNumber + index + 1))
+        .filter((move): move is ReviewMove => Boolean(move));
+      const nextMoves = [...baseMoves, ...variationMoves];
+      invalidatePendingAnalysis();
+      setMoves(nextMoves);
+      setCurrentMoveNumber(nextMoves.length);
+      setResearchBaseMoveNumber(block.fromMoveNumber);
+      setShowVariationNumbers(true);
+      setLastAction(`已显示第 ${block.fromMoveNumber} 手后的评论变化。`);
+      return;
+    }
+    if (block.type === "board") {
+      jumpToMove(block.moveNumber);
+    }
+  };
+  const setResearchMode = (enabled: boolean) => {
+    setIsResearchMode(enabled);
+    if (enabled) {
+      setShowVariationNumbers(true);
+      setResearchBaseMoveNumber(null);
+      setLastAction("已进入写棋评模式：从任意手开始落子时，会自动记录变化图起点。");
+    } else {
+      setLastAction("已回到复盘模式。");
+    }
+  };
+  const insertCurrentVariation = () => {
+    const baseMoveNumber = researchBaseMoveNumber ?? inferVariationBaseMoveNumber(moves, sourceMainLineMoves);
+    const currentComment = commentaryMarkdown.trim();
+    if (baseMoveNumber !== null) {
+      const variationMoves = moves.slice(baseMoveNumber, currentMoveNumber);
+      if (variationMoves.length > 0) {
+        const sequence = variationMoves.map((move) => moveToGtpPoint(move, boardSize));
+        const variationBlock = createManualVariationBlock(baseMoveNumber, boardSize, currentSnapshot.stones, sequence);
+        const commentBlock = createParagraphBlock(currentComment);
+        const nextDraftBlock = createParagraphBlock("");
+        const nextDocument = appendBlock(
+          appendBlock(
+            appendBlock(updateDocumentSource(researchDocument, currentSnapshot), variationBlock),
+            commentBlock
+          ),
+          nextDraftBlock
+        );
+        setResearchDocument(nextDocument);
+        setSelectedResearchBlockId(variationBlock.id);
+        setActiveCommentaryBlockId(nextDraftBlock.id);
+        setResearchBaseMoveNumber(null);
+        jumpToMove(baseMoveNumber);
+        setLastAction(`已插入 ${sequence.length} 手变化，并回到第 ${baseMoveNumber} 手。`);
+        return;
+      }
+    }
+
+    const variationBlock = createVariationBlock(currentSnapshot, previewCandidate);
+    if (!variationBlock) {
+      appendResearchBlock(null);
+      return;
+    }
+    const commentBlock = createParagraphBlock(currentComment);
+    const nextDraftBlock = createParagraphBlock("");
+    const nextDocument = appendBlock(
+      appendBlock(
+        appendBlock(updateDocumentSource(researchDocument, currentSnapshot), variationBlock),
+        commentBlock
+      ),
+      nextDraftBlock
+    );
+    setResearchDocument(nextDocument);
+    setSelectedResearchBlockId(variationBlock.id);
+    setActiveCommentaryBlockId(nextDraftBlock.id);
+    setLastAction("已插入当前变化，棋评输入已清空。");
+  };
+  const updateKomi = (nextKomi: number) => {
+    invalidatePendingAnalysis();
+    setKomi(nextKomi);
+    setEngineCandidates([]);
+    setAnalysisPoints([]);
+    setPreviewCandidateRank(null);
+    setHasAnalysisAttempted(false);
+    setLastAction(`贴目已改为 ${nextKomi.toFixed(1)}，当前分析结果已作废。`);
+    queueAnalysisIfEnabled();
+  };
+  const jumpToMove = (moveNumber: number) => {
+    invalidatePendingAnalysis();
+    const nextMoveNumber = Math.max(0, Math.min(totalMoves, moveNumber));
+    setCurrentMoveNumber(nextMoveNumber);
+    setSelectedGameNodeId(nextMoveNumber > 0 ? currentPathNodeIds[nextMoveNumber - 1] ?? selectedGameNodeId : "root");
+    setEngineCandidates([]);
+    setHasAnalysisAttempted(false);
+    setLastAction(`跳到第 ${nextMoveNumber} / ${totalMoves} 手。`);
+    if (isAnalysisEnabled) {
+      setLastAction(`跳到第 ${nextMoveNumber} / ${totalMoves} 手，正在排队分析。`);
+      queueAnalysisIfEnabled();
+    }
+  };
+  const jumpToGameNode = (nodeId: string) => {
+    invalidatePendingAnalysis();
+    const pathMoves = pathMovesToNode(gameTree, nodeId);
+    const fullPath = pathMovesWithMainContinuation(gameTree, nodeId);
+    if (!pathMoves) {
+      setLastAction("没有找到这个分支节点。");
+      return;
+    }
+    setMoves(fullPath?.moves ?? pathMoves);
+    setCurrentMoveNumber(pathMoves.length);
+    setSelectedGameNodeId(nodeId);
+    setCurrentPathNodeIds(fullPath?.nodeIds ?? moveNodeIdsToNode(gameTree, nodeId));
+    setEngineCandidates([]);
+    setHasAnalysisAttempted(false);
+    setResearchBaseMoveNumber(null);
+    setLastAction(`已跳到分支第 ${pathMoves.length} 手。`);
+    queueAnalysisIfEnabled();
+  };
+  const promoteCurrentBranch = () => {
+    if (selectedGameNodeId === "root") {
+      setLastAction("当前在根节点，没有可设为主分支的变化。");
+      return;
+    }
+    const nextTree = promoteNodeToMainLine(gameTree, selectedGameNodeId);
+    const nextSourceMoves = mainLineMovesFromTree(nextTree);
+    const fullPath = pathMovesWithMainContinuation(nextTree, selectedGameNodeId);
+    const pathMoves = fullPath?.moves ?? pathMovesToNode(nextTree, selectedGameNodeId) ?? moves;
+    const pathNodeIds = fullPath?.nodeIds ?? moveNodeIdsToNode(nextTree, selectedGameNodeId);
+    const clickedMoveNumber = pathMovesToNode(nextTree, selectedGameNodeId)?.length ?? currentMoveNumber;
+    const nextMoveNumber = Math.min(currentMoveNumber, clickedMoveNumber, pathMoves.length);
+    const nextSelectedNodeId = nextMoveNumber > 0 ? pathNodeIds[nextMoveNumber - 1] ?? selectedGameNodeId : "root";
+    setGameTree(nextTree);
+    setSourceMainLineMoves(nextSourceMoves);
+    setSourceMainLineMoveCount(nextSourceMoves.length);
+    setMoves(pathMoves);
+    setCurrentMoveNumber(nextMoveNumber);
+    setSelectedGameNodeId(nextSelectedNodeId);
+    setCurrentPathNodeIds(pathNodeIds);
+    setLastAction("已将当前变化设为主分支。");
+  };
+  const deleteCurrentBranch = () => {
+    if (selectedGameNodeId === "root") {
+      setLastAction("当前在根节点，不能删除。");
+      return;
+    }
+    const confirmed = window.confirm("删除当前节点及其后续分支？这个操作不能撤销。");
+    if (!confirmed) {
+      setLastAction("已取消删除分支。");
+      return;
+    }
+    const { tree: nextTree, nextSelectedNodeId } = deleteSubtreeFromGameTree(gameTree, selectedGameNodeId);
+    const fullPath = pathMovesWithMainContinuation(nextTree, nextSelectedNodeId);
+    const selectedPathMoves = pathMovesToNode(nextTree, nextSelectedNodeId) ?? [];
+    const pathMoves = fullPath?.moves ?? selectedPathMoves;
+    const pathNodeIds = fullPath?.nodeIds ?? moveNodeIdsToNode(nextTree, nextSelectedNodeId);
+    const nextSourceMoves = mainLineMovesFromTree(nextTree);
+    setGameTree(nextTree);
+    setSourceMainLineMoves(nextSourceMoves);
+    setSourceMainLineMoveCount(nextSourceMoves.length);
+    setMoves(pathMoves);
+    setCurrentMoveNumber(selectedPathMoves.length);
+    setSelectedGameNodeId(nextSelectedNodeId);
+    setCurrentPathNodeIds(pathNodeIds);
+    setEngineCandidates([]);
+    setHasAnalysisAttempted(false);
+    setLastAction(`已删除分支，并回到第 ${pathMoves.length} 手。`);
+    queueAnalysisIfEnabled();
+  };
+  const returnToMainBranch = () => {
+    invalidatePendingAnalysis();
+    const anchorNodeId = findVariationAnchorNodeId(gameTree, selectedGameNodeId);
+    if (!anchorNodeId) {
+      setLastAction("当前已经在主分支。");
+      return;
+    }
+    const fullPath = pathMovesWithMainContinuation(gameTree, anchorNodeId);
+    const anchorMoves = pathMovesToNode(gameTree, anchorNodeId) ?? [];
+    const pathMoves = fullPath?.moves ?? anchorMoves;
+    const pathNodeIds = fullPath?.nodeIds ?? moveNodeIdsToNode(gameTree, anchorNodeId);
+    const nextSourceMoves = mainLineMovesFromTree(gameTree);
+    setMoves(pathMoves);
+    setSourceMainLineMoves(nextSourceMoves);
+    setSourceMainLineMoveCount(nextSourceMoves.length);
+    setCurrentPathNodeIds(pathNodeIds);
+    setCurrentMoveNumber(anchorMoves.length);
+    setSelectedGameNodeId(anchorNodeId);
+    setEngineCandidates([]);
+    setHasAnalysisAttempted(false);
+    setResearchBaseMoveNumber(null);
+    setLastAction(`已返回主分支分叉点：第 ${anchorMoves.length} / ${pathMoves.length} 手。`);
+    queueAnalysisIfEnabled();
+  };
+  const toggleMoveNumberDisplay = () => {
+    setMoveNumberDisplay((mode) => {
+      const nextMode = mode === "all" ? "last10" : mode === "last10" ? "last1" : "all";
+      setLastAction(`手数显示已切换为：${moveNumberDisplayLabel(nextMode)}。`);
+      return nextMode;
+    });
+  };
+  const toggleCoordinateLabels = () => {
+    setCoordinateLabelsVisible((visible) => {
+      setLastAction(visible ? "已隐藏棋盘坐标，主棋盘放大。" : "已显示棋盘坐标。");
+      return !visible;
+    });
+  };
+  const playMove = (x: number, y: number) => {
+    invalidatePendingAnalysis();
+    setAutoAnalysisResume(null);
+    if (!canPlayMove(moves, boardSize, currentMoveNumber, { x, y })) {
+      setLastAction(`不能在 ${x + 1},${y + 1} 落子：交点已被占用或不合法。`);
+      return;
+    }
+
+    const nextMoveNumber = currentMoveNumber + 1;
+    const inferredVariationBase = inferVariationBaseMoveNumber(moves, sourceMainLineMoves);
+    const isStartingManualVariation = isResearchMode && researchBaseMoveNumber === null && inferredVariationBase === null;
+    if (isStartingManualVariation) {
+      setResearchBaseMoveNumber(currentMoveNumber);
+    }
+    const nextColorToPlay = getNextColor(currentMoveNumber);
+    const parentNodeId = currentMoveNumber > 0 ? currentPathNodeIds[currentMoveNumber - 1] ?? "root" : "root";
+    const { tree: nextTree, nodeId } = appendMoveToGameTree(gameTree, parentNodeId, {
+      color: nextColorToPlay,
+      point: { col: x, row: y }
+    });
+    const nextMoves = [
+      ...moves.slice(0, currentMoveNumber),
+      {
+        moveNumber: nextMoveNumber,
+        color: nextColorToPlay,
+        x,
+        y
+      }
+    ];
+    const nextPathNodeIds = [...currentPathNodeIds.slice(0, currentMoveNumber), nodeId];
+    setGameTree(nextTree);
+    setSelectedGameNodeId(nodeId);
+    setMoves(nextMoves);
+    setCurrentPathNodeIds(nextPathNodeIds);
+    setCurrentMoveNumber(nextMoves.length);
+    setEngineCandidates([]);
+    setAnalysisPoints((points) => points.filter((point) => point.moveNumber <= currentMoveNumber));
+    setHasAnalysisAttempted(false);
+    setLastAction(
+      isStartingManualVariation
+        ? `已从第 ${currentMoveNumber} 手开始摆变化，当前变化第 1 手。`
+        : `已落第 ${nextMoves.length} 手（${nextColorToPlay === "black" ? "黑棋" : "白棋"}）。`
+    );
+    queueAnalysisIfEnabled();
+  };
+  const openGameFile = async (file: File) => {
+    if (/\.(brg|brg\.json|json)$/i.test(file.name)) {
+      await loadResearchDocument(file);
+      return;
+    }
+    await openSgfFile(file);
+  };
+  const openSgfFile = async (file: File) => {
+    invalidatePendingAnalysis();
+    setAutoAnalysisResume(null);
+    const text = await readGameRecordFile(file);
+    const parsed = parseGameRecord(text, file.name);
+    setBoardSize(parsed.boardSize);
+    setKomi(parsed.komi);
+    setRules(parsed.rules);
+    setBlackName(parsed.blackName);
+    setWhiteName(parsed.whiteName);
+    setGameDate(parsed.gameDate);
+    setSourceFileName(file.name);
+    setSgfWarnings(parsed.warnings);
+    setMoves(parsed.moves);
+    setSourceMainLineMoves(parsed.moves);
+    setSourceMainLineMoveCount(parsed.moves.length);
+    setGameTree(parsed.gameTree);
+    const parsedSelectedNodeId = findMainLineEndNodeId(parsed.gameTree);
+    setSelectedGameNodeId(parsedSelectedNodeId);
+    setCurrentPathNodeIds(moveNodeIdsToNode(parsed.gameTree, parsedSelectedNodeId));
+    setCurrentMoveNumber(parsed.moves.length);
+    setResearchBaseMoveNumber(null);
+    const nextResearchDocument = createResearchDocument({
+        blackName: parsed.blackName,
+        boardSize: parsed.boardSize,
+        currentMoveNumber: parsed.moves.length,
+        gameDate: parsed.gameDate,
+        komi: parsed.komi,
+        moves: parsed.moves,
+        rules: parsed.rules,
+        sourceFileName: file.name,
+        stones: buildBoardPosition(parsed.moves, parsed.boardSize, parsed.moves.length).stones,
+        totalMoves: parsed.moves.length,
+        whiteName: parsed.whiteName
+      });
+    nextResearchDocument.mainSgf = text;
+    setResearchDocument(nextResearchDocument);
+    setSelectedResearchBlockId(null);
+    setActiveCommentaryBlockId(nextResearchDocument.sections[0]?.blocks.find((block) => block.type === "paragraph")?.id ?? null);
+    setEngineCandidates([]);
+    setAnalysisPoints([]);
+    setHasAnalysisAttempted(false);
+    setLastAction(
+      `已打开 ${file.name}，载入主线 ${parsed.moves.length} 手，贴目 ${parsed.komi.toFixed(1)}。`
+    );
+    queueAnalysisIfEnabled();
+  };
+  const newGame = () => {
+    invalidatePendingAnalysis();
+    setAutoAnalysisResume(null);
+    setBoardSize(19);
+    setKomi(7.5);
+    setRules("中国");
+    setBlackName("黑棋");
+    setWhiteName("白棋");
+    setGameDate(undefined);
+    setSourceFileName("新棋谱");
+    setSgfWarnings([]);
+    setMoves([]);
+    setSourceMainLineMoves([]);
+    setSourceMainLineMoveCount(0);
+    setGameTree(createEmptyGameTree(19, 7.5));
+    setSelectedGameNodeId("root");
+    setCurrentPathNodeIds([]);
+    setCurrentMoveNumber(0);
+    setResearchBaseMoveNumber(null);
+    const emptySnapshot = {
+      blackName: "黑棋",
+      boardSize: 19,
+      currentMoveNumber: 0,
+      gameDate: undefined,
+      komi: 7.5,
+      moves: [] as ReviewMove[],
+      rules: "中国",
+      sourceFileName: "新棋谱",
+      stones: [],
+      totalMoves: 0,
+      whiteName: "白棋"
+    };
+    const nextResearchDocument = createResearchDocument(emptySnapshot);
+    setResearchDocument(nextResearchDocument);
+    setSelectedResearchBlockId(nextResearchDocument.sections[0]?.blocks[0]?.id ?? null);
+    setActiveCommentaryBlockId(nextResearchDocument.sections[0]?.blocks.find((block) => block.type === "paragraph")?.id ?? null);
+    setEngineCandidates([]);
+    setAnalysisPoints([]);
+    setHasAnalysisAttempted(false);
+    setLastAction("已新建空棋盘。点击交点开始摆棋。");
+    queueAnalysisIfEnabled();
+  };
+  const nextColor = getNextColor(currentMoveNumber);
+  const probeCurrentEngine = async () => {
+    if (!isTauriRuntime()) {
+      setEngineStatus("浏览器预览：请在 Mac App 中测试引擎");
+      setEngineDiagnostics("浏览器预览没有本机进程权限。请在 TensuGo Mac App 中测试。");
+      return;
+    }
+    if (!engineProfile) {
+      setEngineStatus("没有可测试的引擎配置");
+      setEngineDiagnostics("当前没有 EngineProfile。");
+      return;
+    }
+    setEngineStatus("正在测试 KataGo...");
+    setEngineDiagnostics("正在运行 katago version 和最小 GTP 分析探针...");
+    try {
+      const probe = await probeEngine(engineProfile);
+      setEngineDiagnostics(probe.diagnostics);
+      setEngineStatus(probe.ok ? probe.summary : summarizeEngineFailure("probe-failed", probe.diagnostics));
+    } catch (error) {
+      setEngineDiagnostics(String(error));
+      setEngineStatus(`测试失败: ${String(error)}`);
+    }
+  };
+  const analyzeCurrentPosition = async () => {
+    if (!isTauriRuntime()) {
+      setLastAction("当前是浏览器预览，不能启动本机 AI 分析。请在 TensuGo Mac App 中运行。");
+      setEngineDiagnostics("浏览器预览没有本机进程权限。请在 TensuGo Mac App 中运行分析。");
+      return;
+    }
+    if (!engineProfile) {
+      setLastAction("AI 引擎还没有配置完成。");
+      setEngineDiagnostics("当前没有 EngineProfile。");
+      return;
+    }
+
+    const requestId = analysisRequestRef.current + 1;
+    analysisRequestRef.current = requestId;
+    const requestMoveNumber = currentMoveNumber;
+    const requestMoves = moves.slice(0, currentMoveNumber);
+    const requestNextColor = nextColor;
+    setIsAnalyzing(true);
+    setHasAnalysisAttempted(true);
+    setEngineStatus(`分析第 ${requestMoveNumber} 手，${requestNextColor === "black" ? "黑棋" : "白棋"}候选...`);
+    setLastAction("正在启动 AI 分析当前局面。");
+    setEngineDiagnostics("正在启动引擎 GTP 分析。等待 stdout/stderr...");
+
+    try {
+      const result = await analyzePosition({
+        boardSize,
+        komi,
+        maxVisits: 80,
+        moves: requestMoves,
+        nextColor: requestNextColor,
+        profile: engineProfile
+      });
+      if (analysisRequestRef.current !== requestId) {
+        return;
+      }
+      setEngineCandidates(result.candidates);
+      setPreviewCandidateRank(null);
+      if (result.candidates[0]) {
+        setAnalysisPoints((points) =>
+          upsertAnalysisPoint(points, {
+            moveNumber: requestMoveNumber,
+            scoreLead: result.candidates[0].scoreLead,
+            visits: result.candidates[0].visits,
+            winrate: result.candidates[0].winrate
+          })
+        );
+      }
+      setEngineDiagnostics(buildAnalysisDiagnostics(result.rawOutput, result.diagnostics));
+      const failureSummary = summarizeEngineFailure(result.status, result.diagnostics);
+      setEngineStatus(result.ok ? `${engineProfile.name} / ${result.candidates.length} 个候选点` : failureSummary);
+      setLastAction(
+        result.ok
+          ? `AI 引擎已返回 ${result.candidates.length} 个候选点。`
+          : `AI 引擎没有返回候选点：${failureSummary}`
+      );
+    } catch (error) {
+      if (analysisRequestRef.current !== requestId) {
+        return;
+      }
+      setEngineDiagnostics(String(error));
+      setEngineStatus("分析失败");
+      setLastAction(`AI 分析失败: ${String(error)}`);
+    } finally {
+      if (analysisRequestRef.current === requestId) {
+        setIsAnalyzing(false);
+        if (isAnalysisEnabledRef.current) {
+          queueAnalysisIfEnabled(1200);
+        }
+      }
+    }
+  };
+  const openTianshuReport = () => {
+    const range = autoAnalysisReportRangeRef.current ?? {
+      endMove: autoAnalysisResume?.endMove ?? totalMoves,
+      startMove: autoAnalysisResume?.startMove ?? 1
+    };
+    setTianshuReport({
+      ...autoAnalysisSummaryRef.current,
+      analyzedAt: new Date().toLocaleString(),
+      endMove: range.endMove,
+      startMove: range.startMove
+    });
+    setIsTianshuOpen(true);
+  };
+  const runAutoAnalysis = async (settings: AutoAnalysisSettings, isResume = false) => {
+    const markAutoAnalysis = (message: string) => {
+      setLastAction(message);
+      setEngineDiagnostics((previous) => `${new Date().toLocaleTimeString()} ${message}\n${previous}`.slice(0, 12000));
+    };
+    autoAnalysisStopRef.current = false;
+    autoAnalysisFinishRef.current = false;
+    analysisRequestRef.current += 1;
+    setIsAutoAnalyzing(true);
+    setIsAnalysisEnabled(false);
+    setIsAnalyzing(false);
+    if (!isResume) {
+      setAutoAnalysisResume(null);
+      setAutoAnalysisSummary(null);
+      autoAnalysisSummaryRef.current = createEmptyAutoAnalysisSummary();
+    }
+    setPreviewCandidateRank(null);
+    markAutoAnalysis("正在启动自动分析...");
+
+    if (!isTauriRuntime()) {
+      markAutoAnalysis("当前是浏览器预览，不能启动自动分析。请在 TensuGo Mac App 中运行。");
+      setIsAutoAnalyzing(false);
+      return;
+    }
+    if (!engineProfile) {
+      markAutoAnalysis("AI 引擎还没有配置完成，不能自动分析。");
+      setIsAutoAnalyzing(false);
+      return;
+    }
+
+    const startMove = Math.min(settings.startMove, settings.endMove);
+    const endMove = Math.max(settings.startMove, settings.endMove);
+    const maxVisits = settings.visitsPerMove > 0
+      ? settings.visitsPerMove
+      : Math.max(20, Math.round(settings.secondsPerMove * 120));
+    const autoChunkVisits = settings.visitsPerMove > 0 ? maxVisits : 80;
+    if (!isResume || !autoAnalysisReportRangeRef.current) {
+      autoAnalysisReportRangeRef.current = { startMove, endMove };
+    }
+    const summary = autoAnalysisSummaryRef.current;
+    let stopReason: string | null = null;
+    let nextResumeMove = startMove;
+    const applyAutoAnalysisResult = (
+      moveNumber: number,
+      actualMove: ReviewMove,
+      result: Awaited<ReturnType<typeof analyzePosition>>,
+      countSummary: boolean
+    ) => {
+      setEngineCandidates(result.candidates);
+      setEngineDiagnostics((previous) =>
+        `${buildAnalysisDiagnostics(result.rawOutput, result.diagnostics)}\n\n${previous}`.slice(0, 12000)
+      );
+      const failureSummary = summarizeEngineFailure(result.status, result.diagnostics);
+      setEngineStatus(
+        result.ok
+          ? `自动分析第 ${moveNumber} 手：${result.candidates.length} 个候选点`
+          : `自动分析第 ${moveNumber} 手失败：${failureSummary}`
+      );
+      markAutoAnalysis(`引擎返回：第 ${moveNumber} 手，ok=${result.ok ? "yes" : "no"}，候选=${result.candidates.length}。`);
+      const best = result.candidates[0];
+      if (!best) {
+        return;
+      }
+
+      const actualPoint = moveToGtpPoint(actualMove, boardSize);
+      const actualCandidateIndex = result.candidates.findIndex((candidate) => candidate.moveName === actualPoint);
+      if (countSummary) {
+        summary.analyzed += 1;
+        summary.topMatches += actualCandidateIndex === 0 ? 1 : 0;
+        summary.candidateMatches += actualCandidateIndex >= 0 ? 1 : 0;
+        const actualCandidate = actualCandidateIndex >= 0 ? result.candidates[actualCandidateIndex] : null;
+        const winrateLoss = actualCandidate ? Math.max(0, best.winrate - actualCandidate.winrate) : 100 - best.winrate;
+        const scoreLoss = actualCandidate ? calculateScoreLoss(actualMove.color, best, actualCandidate) : null;
+        const matchScore = actualCandidateIndex >= 0 ? calculateMatchScore(actualCandidateIndex, result.candidates.length) : 0;
+        summary.totalWinrateLoss += winrateLoss;
+        summary.totalMatchScore += matchScore;
+        if (scoreLoss !== null) {
+          summary.totalScoreLoss += scoreLoss;
+          summary.knownScoreLosses += 1;
+        }
+        summary.details.push({
+          color: actualMove.color,
+          matchScore,
+          moveNumber,
+          rank: actualCandidateIndex >= 0 ? actualCandidateIndex + 1 : null,
+          scoreLoss,
+          winrate: best.winrate,
+          winrateLoss
+        });
+        setAutoAnalysisSummary({ ...summary });
+      }
+      setAnalysisPoints((points) =>
+        upsertAnalysisPoint(points, {
+          moveNumber,
+          scoreLead: best.scoreLead,
+          visits: best.visits,
+          winrate: best.winrate
+        })
+      );
+      markAutoAnalysis(
+        `第 ${moveNumber} 手${countSummary ? "分析完成" : "分析刷新"}：返回 ${result.candidates.length} 个候选点，实战 ${
+          actualCandidateIndex >= 0 ? `命中第 ${actualCandidateIndex + 1} 候选` : "未进候选"
+        }。`
+      );
+    };
+
+    markAutoAnalysis(`自动分析开始：第 ${startMove} 到 ${endMove} 手，maxVisits=${maxVisits}，chunk=${autoChunkVisits}。`);
+
+    try {
+      for (let moveNumber = startMove; moveNumber <= endMove; moveNumber += 1) {
+        const moveStartedAt = Date.now();
+        nextResumeMove = moveNumber;
+        if (autoAnalysisStopRef.current) {
+          markAutoAnalysis(`自动分析已停止：完成 ${summary.analyzed} 手。`);
+          break;
+        }
+
+        const actualMove = moves[moveNumber - 1];
+        if (!actualMove) {
+          markAutoAnalysis(`自动分析跳过第 ${moveNumber} 手：棋谱中没有这手。`);
+          continue;
+        }
+        if ((actualMove.color === "black" && !settings.includeBlack) || (actualMove.color === "white" && !settings.includeWhite)) {
+          markAutoAnalysis(`自动分析跳过第 ${moveNumber} 手：颜色过滤。`);
+          continue;
+        }
+
+        const positionMoveNumber = moveNumber - 1;
+        showAutoAnalysisPosition(positionMoveNumber);
+        setPreviewCandidateRank(null);
+        setEngineStatus(`自动分析第 ${moveNumber} / ${endMove} 手...`);
+        markAutoAnalysis(`正在调用引擎：第 ${moveNumber} 手之前，实战为${actualMove.color === "black" ? "黑棋" : "白棋"}。`);
+
+        let result = await analyzePosition({
+          boardSize,
+          komi,
+          maxVisits: autoChunkVisits,
+          moves: moves.slice(0, positionMoveNumber),
+          nextColor: actualMove.color,
+          profile: engineProfile
+        });
+        let best = result.candidates[0];
+        while (!autoAnalysisStopRef.current && best && settings.visitsPerMove === 0 && Date.now() - moveStartedAt < settings.secondsPerMove * 1000) {
+          applyAutoAnalysisResult(moveNumber, actualMove, result, false);
+          await yieldToUi();
+          if (autoAnalysisStopRef.current || Date.now() - moveStartedAt >= settings.secondsPerMove * 1000) {
+            break;
+          }
+          setEngineStatus(
+            `自动分析第 ${moveNumber} 手：继续计算 ${Math.ceil(
+              (settings.secondsPerMove * 1000 - (Date.now() - moveStartedAt)) / 1000
+            )} 秒`
+          );
+          result = await analyzePosition({
+            boardSize,
+            komi,
+            maxVisits: autoChunkVisits,
+            moves: moves.slice(0, positionMoveNumber),
+            nextColor: actualMove.color,
+            profile: engineProfile
+          });
+          best = result.candidates[0];
+        }
+
+        if (autoAnalysisStopRef.current) {
+          break;
+        }
+
+        const failureSummary = summarizeEngineFailure(result.status, result.diagnostics);
+        if (!best) {
+          stopReason = `第 ${moveNumber} 手没有返回候选点：${failureSummary}`;
+          setLastAction(stopReason);
+          autoAnalysisStopRef.current = true;
+          break;
+        }
+        applyAutoAnalysisResult(moveNumber, actualMove, result, true);
+        nextResumeMove = moveNumber + 1;
+        await waitForRemainingMoveTime(moveStartedAt, settings.secondsPerMove, autoAnalysisStopRef);
+      }
+      if (autoAnalysisStopRef.current) {
+        setEngineStatus(`自动分析已停止：完成 ${summary.analyzed} 手`);
+        if (autoAnalysisFinishRef.current) {
+          setAutoAnalysisResume(null);
+          openTianshuReport();
+          markAutoAnalysis(`自动分析已结束：完成 ${summary.analyzed} 手，已生成天书报告。`);
+        } else if (!stopReason && nextResumeMove <= endMove) {
+          setAutoAnalysisResume({ ...settings, startMove: nextResumeMove, endMove });
+          markAutoAnalysis(`自动分析已暂停，可从第 ${nextResumeMove} 手继续。`);
+        } else {
+          setAutoAnalysisResume(null);
+          openTianshuReport();
+          markAutoAnalysis(stopReason ?? `自动分析已停止：完成 ${summary.analyzed} 手，已生成天书报告。`);
+        }
+      } else {
+        setAutoAnalysisResume(null);
+        showAutoAnalysisPosition(endMove);
+        openTianshuReport();
+        setEngineStatus(
+          `自动分析完成：吻合率 ${formatPercent(summary.candidateMatches / Math.max(1, summary.analyzed))}`
+        );
+        markAutoAnalysis(
+          `自动分析完成：${summary.analyzed} 手，候选吻合率 ${formatPercent(
+            summary.candidateMatches / Math.max(1, summary.analyzed)
+          )}，首选率 ${formatPercent(summary.topMatches / Math.max(1, summary.analyzed))}。`
+        );
+      }
+    } catch (error) {
+      setAutoAnalysisResume(null);
+      setEngineStatus("自动分析失败");
+      markAutoAnalysis(`自动分析失败: ${String(error)}`);
+    } finally {
+      setIsAutoAnalyzing(false);
+      autoAnalysisStopRef.current = false;
+      autoAnalysisFinishRef.current = false;
+    }
+  };
+  const showAutoAnalysisPosition = (moveNumber: number) => {
+    const nextMoveNumber = Math.max(0, Math.min(totalMoves, moveNumber));
+    const nextSelectedNodeId = nextMoveNumber > 0 ? currentPathNodeIds[nextMoveNumber - 1] ?? selectedGameNodeId : "root";
+    setCurrentMoveNumber(nextMoveNumber);
+    setSelectedGameNodeId(nextSelectedNodeId);
+  };
+  const stopAutoAnalysis = () => {
+    autoAnalysisStopRef.current = true;
+    autoAnalysisFinishRef.current = false;
+    analysisRequestRef.current += 1;
+    setIsAutoAnalyzing(false);
+    setLastAction("正在暂停自动分析，当前短批次结束后暂停。");
+  };
+  const finishAutoAnalysis = () => {
+    autoAnalysisStopRef.current = true;
+    autoAnalysisFinishRef.current = true;
+    analysisRequestRef.current += 1;
+    setAutoAnalysisResume(null);
+    setIsAutoAnalyzing(false);
+    if (isAutoAnalyzing) {
+      setLastAction("正在结束自动分析，当前短批次结束后生成天书报告。");
+      return;
+    }
+    openTianshuReport();
+    setEngineStatus(`自动分析已结束：完成 ${autoAnalysisSummaryRef.current.analyzed} 手`);
+    setLastAction("自动分析已结束，已生成天书报告。");
+    autoAnalysisFinishRef.current = false;
+  };
+  const toggleAnalysis = () => {
+    if (isAnalysisEnabled) {
+      pauseAnalysis();
+      return;
+    }
+    setIsAnalysisEnabled(true);
+    setLastAction("AI 分析已开启。");
+    queueAnalysisIfEnabled(20);
+  };
+  const pauseAnalysis = () => {
+    analysisRequestRef.current += 1;
+    if (analysisTimerRef.current !== null) {
+      window.clearTimeout(analysisTimerRef.current);
+      analysisTimerRef.current = null;
+    }
+    setIsAnalysisEnabled(false);
+    setIsAnalyzing(false);
+    setLastAction("AI 分析已暂停。");
+  };
+  useEffect(() => {
+    if (!isAnalysisEnabled || isAnalyzing || processedAnalysisTriggerRef.current === analysisTrigger) {
+      return;
+    }
+    processedAnalysisTriggerRef.current = analysisTrigger;
+    void analyzeCurrentPosition();
+  }, [isAnalysisEnabled, isAnalyzing, currentMoveNumber, boardSize, komi, moves, analysisTrigger]);
+  const beginResize = (pane: "left" | "right", startX: number) => {
+    const startLeft = leftPaneWidth;
+    const startRight = rightPaneWidth;
+
+    const handleMove = (event: MouseEvent) => {
+      if (pane === "left") {
+        setLeftPaneWidth(Math.min(620, Math.max(220, startLeft + event.clientX - startX)));
+        return;
+      }
+      setRightPaneWidth(Math.min(520, Math.max(210, startRight - (event.clientX - startX))));
+    };
+
+    const handleUp = () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      document.body.classList.remove("is-resizing-pane");
+    };
+
+    document.body.classList.add("is-resizing-pane");
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  };
+
+  return (
+    <main className="app-shell">
+      <TopToolbar
+        title="TensuGo"
+        isResearchMode={isResearchMode}
+        komi={komi}
+        showVariationNumbers={showVariationNumbers}
+        onKomiChange={updateKomi}
+        onOpenFile={openGameFile}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenTianshuReport={openTianshuReport}
+        onNewGame={newGame}
+        onSaveResearch={saveResearchDocument}
+        onExportPdf={exportResearchPdf}
+        onToggleAnalysis={toggleAnalysis}
+        onOpenAutoAnalysis={() => setIsAutoAnalysisOpen(true)}
+        onAddVariation={insertCurrentVariation}
+        onResearchModeChange={setResearchMode}
+        onShowVariationNumbersChange={setShowVariationNumbers}
+        t={t}
+      />
+      <section
+        className="workspace"
+        aria-label="TensuGo analysis workspace"
+        style={{
+          gridTemplateColumns: `${leftPaneWidth}px 5px minmax(0, 1fr) 5px ${rightPaneWidth}px`
+        }}
+      >
+        <aside className={`side-panel side-panel-left ${isResearchMode ? "research-mode" : ""}`}>
+          <details className="panel-section game-info-details" open>
+            <summary>棋谱信息</summary>
+            <GameInfoPanel
+              boardSize={boardSize}
+              blackName={blackName}
+              capturedBlack={position.capturedBlack}
+              capturedWhite={position.capturedWhite}
+              currentMoveNumber={currentMoveNumber}
+              komi={komi}
+              nextColor={nextColor}
+              onBlackNameChange={setBlackName}
+              onKomiChange={updateKomi}
+              onRulesChange={setRules}
+              onWhiteNameChange={setWhiteName}
+              rules={rules}
+              sourceFileName={sourceFileName}
+              totalMoves={totalMoves}
+              whiteName={whiteName}
+            />
+          </details>
+          <div className="panel-section">
+            <h2>局面评估</h2>
+            <div className="player-strip">
+              <span className="stone-dot black" />
+              <span>{rules}规则</span>
+              <span className="stone-dot white" />
+            </div>
+            <div className="eval-summary">
+              <div>
+                <strong>{displayedWinrate.toFixed(1)}%</strong>
+                <span>黑胜率</span>
+              </div>
+              <div>
+                <strong>{displayedScoreLead.toFixed(1)}</strong>
+                <span>黑目差</span>
+              </div>
+              <div>
+                <strong>{formatVisits(displayedVisits)}</strong>
+                <span>计算量</span>
+              </div>
+            </div>
+            <div className="winrate-bar" aria-label="Winrate">
+              <span style={{ width: `${Math.max(0, Math.min(100, displayedWinrate))}%` }} />
+            </div>
+            <dl className="info-list">
+              <div>
+                <dt>当前手</dt>
+                <dd>{currentMoveNumber}</dd>
+              </div>
+              <div>
+                <dt>引擎</dt>
+                <dd>{engineLabel}</dd>
+              </div>
+              <div>
+                <dt>候选点</dt>
+                <dd>{candidateCountText}</dd>
+              </div>
+              <div>
+                <dt>吻合率</dt>
+                <dd>{autoMatchText}</dd>
+              </div>
+            </dl>
+          </div>
+          <div className="panel-section review-graph-section left-review-graph-section">
+            <h2>胜率变化</h2>
+            <ReviewGraph
+              currentMoveNumber={currentMoveNumber}
+              points={analysisPoints}
+              totalMoves={totalMoves}
+              onJump={jumpToMove}
+            />
+          </div>
+          {isResearchMode ? (
+            <div className="panel-section research-section">
+              <ResearchDocumentPanel
+                document={researchDocument}
+                commentary={commentaryMarkdown}
+                onAddText={insertTextBlock}
+                onAddVariation={insertCurrentVariation}
+                onExportPdf={exportResearchPdf}
+                onSaveDocument={saveResearchDocument}
+                onUpdateCommentary={updateResearchCommentary}
+                onUpdateDocumentMeta={updateResearchDocumentMeta}
+                t={t}
+              />
+            </div>
+          ) : (
+            <div className="panel-section status-log">
+              <h2>当前状态</h2>
+              <dl className="stable-status-list">
+                <div>
+                  <dt>黑棋 胜率</dt>
+                  <dd>{displayedWinrate.toFixed(1)}%</dd>
+                </div>
+                <div>
+                  <dt>领先</dt>
+                  <dd>{displayedScoreLead.toFixed(1)}</dd>
+                </div>
+                <div>
+                  <dt>计算量</dt>
+                  <dd>{formatVisits(displayedVisits)}</dd>
+                </div>
+                <div>
+                  <dt>引擎</dt>
+                  <dd>{isAnalysisEnabled ? "分析开启" : "分析暂停"}</dd>
+                </div>
+                <div>
+                  <dt>下一手</dt>
+                  <dd>{nextColor === "black" ? "黑棋" : "白棋"}</dd>
+                </div>
+              </dl>
+              <p className="engine-state">复盘 / 可落子</p>
+            </div>
+          )}
+        </aside>
+        <div
+          aria-label="调整左栏宽度"
+          className="pane-resizer"
+          role="separator"
+          onMouseDown={(event) => beginResize("left", event.clientX)}
+        />
+
+        <section className="board-stage" aria-label="Go board">
+          <BoardPlaceholder
+            boardSize={boardSize}
+            candidates={engineCandidates}
+            coordinateLabelsVisible={coordinateLabelsVisible}
+            moveNumberDisplay={moveNumberDisplay}
+            pixelSize={boardPixelSize}
+            stones={stones}
+            variationBaseMoveNumber={displayedVariationBaseMoveNumber}
+            onStoneClick={jumpToMove}
+            onPointClick={playMove}
+            onCandidatePreview={setPreviewCandidateRank}
+          />
+        </section>
+        <div
+          aria-label="调整右栏宽度"
+          className="pane-resizer"
+          role="separator"
+          onMouseDown={(event) => beginResize("right", event.clientX)}
+        />
+
+        <aside className={`side-panel side-panel-right ${candidateListVisible ? "" : "candidate-list-hidden"} ${isResearchMode ? "research-tree-mode" : ""}`}>
+          {isResearchMode ? (
+            <ResearchRightPane
+              branchRows={branchRows}
+              document={updateDocumentSource(researchDocument, currentSnapshot)}
+              selectedNodeId={selectedGameNodeId}
+              onBranchNodeClick={jumpToGameNode}
+              onResearchBlockClick={showResearchBlockOnBoard}
+            />
+          ) : (
+            <CandidatePanel
+              baseStones={stones}
+              boardSize={boardSize}
+              candidates={engineCandidates}
+              candidateListVisible={candidateListVisible}
+              currentMoveNumber={currentMoveNumber}
+              nextColor={nextColor}
+              previewCandidate={previewCandidate}
+              totalMoves={totalMoves}
+              branchRows={branchRows}
+              selectedNodeId={selectedGameNodeId}
+              onCandidateListVisibleChange={setCandidateListVisible}
+              onBranchNodeClick={jumpToGameNode}
+              onPreviewCandidate={setPreviewCandidateRank}
+            />
+          )}
+        </aside>
+      </section>
+      <BottomToolbar
+        isAutoAnalyzing={isAutoAnalyzing}
+        canResumeAutoAnalysis={Boolean(autoAnalysisResume)}
+        coordinateLabelsVisible={coordinateLabelsVisible}
+        currentMoveNumber={currentMoveNumber}
+        engineStatus={engineStatus}
+        isAnalysisEnabled={isAnalysisEnabled}
+        isAnalyzing={isAnalyzing || isAutoAnalyzing}
+        moveNumberDisplay={moveNumberDisplay}
+        totalMoves={totalMoves}
+        statusText={lastAction}
+        onAnalysisToggle={toggleAnalysis}
+        onAutoAnalyze={() => {
+          if (isAutoAnalyzing) {
+            stopAutoAnalysis();
+            return;
+          }
+          if (autoAnalysisResume) {
+            void runAutoAnalysis(autoAnalysisResume, true);
+            return;
+          }
+          setIsAutoAnalysisOpen(true);
+        }}
+        onDeleteBranch={deleteCurrentBranch}
+        onFinishAutoAnalysis={finishAutoAnalysis}
+        onJump={jumpToMove}
+        onPromoteBranch={promoteCurrentBranch}
+        onReturnToMainBranch={returnToMainBranch}
+        onToggleCoordinates={toggleCoordinateLabels}
+        onToggleMoveNumbers={toggleMoveNumberDisplay}
+        t={t}
+      />
+      <AutoAnalysisDialog
+        currentMoveNumber={currentMoveNumber}
+        isRunning={isAutoAnalyzing}
+        open={isAutoAnalysisOpen}
+        totalMoves={totalMoves}
+        onClose={() => setIsAutoAnalysisOpen(false)}
+        onStart={(settings) => {
+          setIsAutoAnalysisOpen(false);
+          void runAutoAnalysis(settings);
+        }}
+        onStop={stopAutoAnalysis}
+      />
+      <TianshuReportDialog
+        open={isTianshuOpen}
+        report={tianshuReport}
+        onClose={() => setIsTianshuOpen(false)}
+        t={t}
+      />
+      <SettingsDialog
+        engineDiagnostics={engineDiagnostics}
+        engineStatus={engineStatus}
+        exportSettings={researchExportSettings}
+        isAnalyzing={isAnalyzing}
+        language={language}
+        open={isSettingsOpen}
+        profile={engineProfile}
+        onAnalyze={analyzeCurrentPosition}
+        onClose={() => setIsSettingsOpen(false)}
+        onExportSettingsChange={updateResearchExportSettings}
+        onLanguageChange={updateLanguage}
+        onProbe={probeCurrentEngine}
+        onProfileChange={setEngineProfile}
+        t={t}
+      />
+    </main>
+  );
+}
+
+function ResearchRightPane({
+  branchRows,
+  document,
+  selectedNodeId,
+  onBranchNodeClick,
+  onResearchBlockClick
+}: {
+  branchRows: ReturnType<typeof flattenBranchTree>;
+  document: ResearchDocument;
+  selectedNodeId: string;
+  onBranchNodeClick: (nodeId: string) => void;
+  onResearchBlockClick: (blockId: string) => void;
+}) {
+  const branchTreeRef = useRef<HTMLDivElement | null>(null);
+  const researchMarkers = useMemo(() => buildResearchMarkersByMove(document), [document]);
+
+  useEffect(() => {
+    const tree = branchTreeRef.current;
+    const activeNode = tree?.querySelector<HTMLElement>(".branch-node.active");
+    activeNode?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, [selectedNodeId, branchRows]);
+
+  return (
+    <div className="research-right-pane">
+      <div className="branch-tree research-branch-tree" aria-label="分支树" ref={branchTreeRef}>
+        {branchRows.length === 0 ? (
+          <div className="branch-tree-empty">空棋谱</div>
+        ) : (
+          branchRows.map((row) => (
+            <button
+              type="button"
+              className={[
+                "branch-node",
+                row.nodeId === selectedNodeId ? "active" : "",
+                row.isMainLine ? "main-line" : "side-line",
+                row.isLeaf ? "leaf" : ""
+              ].filter(Boolean).join(" ")}
+              key={row.nodeId}
+              onClick={() => onBranchNodeClick(row.nodeId)}
+              style={{ "--branch-depth": row.depth } as CSSProperties}
+              title={`第 ${row.moveNumber} 手`}
+            >
+              <span className={`branch-stone ${row.color}`} />
+              <span className="branch-label">{row.label}</span>
+              {researchMarkers.get(row.moveNumber)?.map((block) => (
+                <span
+                  aria-label="显示评论变化"
+                  className="branch-comment-icon"
+                  key={block.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onResearchBlockClick(block.id);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  title={block.label}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onResearchBlockClick(block.id);
+                    }
+                  }}
+                >
+                  文
+                </span>
+              ))}
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function buildResearchMarkersByMove(document: ResearchDocument): Map<number, Array<{ id: string; label: string }>> {
+  const markers = new Map<number, Array<{ id: string; label: string }>>();
+  for (const block of document.sections.flatMap((section) => section.blocks)) {
+    const moveNumber =
+      block.type === "variation" ? block.fromMoveNumber :
+      block.type === "board" ? block.moveNumber :
+      null;
+    if (moveNumber === null) {
+      continue;
+    }
+    const label = block.type === "variation" ? block.caption : block.type === "board" ? block.caption ?? "局面评论" : "候选点评论";
+    markers.set(moveNumber, [...(markers.get(moveNumber) ?? []), { id: block.id, label }]);
+  }
+  return markers;
+}
+
+function findCommentBlockIdAfterResearchBlock(document: ResearchDocument, blockId: string): string | null {
+  const blocks = document.sections.flatMap((section) => section.blocks);
+  const index = blocks.findIndex((block) => block.id === blockId);
+  const next = index >= 0 ? blocks[index + 1] : null;
+  return next && (next.type === "paragraph" || next.type === "conclusion") ? next.id : null;
+}
+
+function appendResearchVariationsToTree(baseTree: ReturnType<typeof createEmptyGameTree>, document: ResearchDocument) {
+  let nextTree = baseTree;
+  const blocks = document.sections.flatMap((section) => section.blocks);
+  for (const block of blocks) {
+    if (block.type !== "variation" || block.sequence.length === 0) {
+      continue;
+    }
+    let parentNodeId = nodeIdAtMoveNumber(nextTree, findMainLineEndNodeId(nextTree), block.fromMoveNumber);
+    for (let index = 0; index < block.sequence.length; index += 1) {
+      const moveNumber = block.fromMoveNumber + index + 1;
+      const move = gtpPointToMove(block.sequence[index], block.boardSize, moveNumber);
+      if (!move) {
+        continue;
+      }
+      const appended = appendMoveToGameTree(nextTree, parentNodeId, {
+        color: move.color,
+        point: { col: move.x, row: move.y }
+      });
+      nextTree = appended.tree;
+      parentNodeId = appended.nodeId;
+    }
+  }
+  return nextTree;
+}
+
+function TianshuReportDialog({
+  open,
+  report,
+  onClose,
+  t
+}: {
+  open: boolean;
+  report: TianshuReport | null;
+  onClose: () => void;
+  t: Translator;
+}) {
+  if (!open || !report) {
+    return null;
+  }
+  const analyzed = Math.max(1, report.analyzed);
+  const blackStats = summarizeReportSide(report.details, "black");
+  const whiteStats = summarizeReportSide(report.details, "white");
+  const missed = Math.max(0, report.analyzed - report.candidateMatches);
+  const averageWinrateLoss = report.totalWinrateLoss / analyzed;
+  const averageScoreLoss = report.knownScoreLosses > 0 ? report.totalScoreLoss / report.knownScoreLosses : null;
+  const matchDegree = report.totalMatchScore / analyzed;
+  const winrateBuckets = buildLossBuckets(report.details, "winrateLoss", [0.5, 1.5, 3, 6, 12]);
+  const scoreBuckets = buildLossBuckets(
+    report.details.filter((detail) => detail.scoreLoss !== null),
+    "scoreLoss",
+    [0.5, 1.5, 3, 6, 12]
+  );
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="tianshu-report-report" role="dialog" aria-modal="true" aria-labelledby="tianshu-report-report-title">
+        <div className="dialog-title-row">
+          <h2 id="tianshu-report-report-title">{t("tianshuReport")}</h2>
+          <button type="button" aria-label={t("close")} onClick={onClose}>×</button>
+        </div>
+        <div className="tianshu-report-report-meta">
+          <span>{t("range")}：{t("moveCounterPrefix")} {report.startMove} - {report.endMove} {t("moveCounterSuffix")}</span>
+          <span>{t("generated")}：{report.analyzedAt}</span>
+        </div>
+        <div className="tianshu-report-report-main">
+          <div className="tianshu-report-side-card black">
+            <h3>{t("black")}</h3>
+            <ReportBar label={t("matchDegree")} value={formatFixed(blackStats.matchDegree * 100, 1)} percent={blackStats.matchDegree} />
+            <ReportBar label={t("matchRate")} value={formatPercent(blackStats.candidateRate)} percent={blackStats.candidateRate} />
+            <ReportBar label={t("topMoveRate")} value={formatPercent(blackStats.topRate)} percent={blackStats.topRate} />
+            <ReportBar label={t("averageScoreLoss")} value={formatOptionalNumber(blackStats.averageScoreLoss, "目")} percent={scaleLossBar(blackStats.averageScoreLoss)} />
+            <ReportBar label={t("averageWinrateLoss")} value={`${formatFixed(blackStats.averageWinrateLoss, 1)}%`} percent={scaleLossBar(blackStats.averageWinrateLoss)} />
+          </div>
+          <div className="tianshu-report-side-card white">
+            <h3>{t("white")}</h3>
+            <ReportBar label={t("matchDegree")} value={formatFixed(whiteStats.matchDegree * 100, 1)} percent={whiteStats.matchDegree} />
+            <ReportBar label={t("matchRate")} value={formatPercent(whiteStats.candidateRate)} percent={whiteStats.candidateRate} />
+            <ReportBar label={t("topMoveRate")} value={formatPercent(whiteStats.topRate)} percent={whiteStats.topRate} />
+            <ReportBar label={t("averageScoreLoss")} value={formatOptionalNumber(whiteStats.averageScoreLoss, "目")} percent={scaleLossBar(whiteStats.averageScoreLoss)} />
+            <ReportBar label={t("averageWinrateLoss")} value={`${formatFixed(whiteStats.averageWinrateLoss, 1)}%`} percent={scaleLossBar(whiteStats.averageWinrateLoss)} />
+          </div>
+          <div className="tianshu-report-loss-panel">
+            <div className="tianshu-report-tabs">
+              <span>{t("scoreLossStatsShort")}</span>
+              <span>{t("winrateLossStatsShort")}</span>
+            </div>
+            <LossDistribution title={t("scoreLossStats")} buckets={scoreBuckets} />
+            <LossDistribution title={t("winrateLossStats")} buckets={winrateBuckets} />
+          </div>
+        </div>
+        <div className="tianshu-report-summary-grid">
+          <ReportMetric label={t("analyzed")} value={`${report.analyzed} ${t("moveCounterSuffix")}`} />
+          <ReportMetric label={t("matchDegree")} value={formatFixed(matchDegree * 100, 1)} />
+          <ReportMetric label={t("matchRate")} value={formatPercent(report.candidateMatches / analyzed)} />
+          <ReportMetric label={t("topMoveHitRate")} value={formatPercent(report.topMatches / analyzed)} />
+          <ReportMetric label={t("missedCandidates")} value={`${missed} ${t("moveCounterSuffix")}`} />
+          <ReportMetric label={t("averageScoreLoss")} value={formatOptionalNumber(averageScoreLoss, "目")} />
+          <ReportMetric label={t("averageWinrateLoss")} value={`${averageWinrateLoss.toFixed(1)}%`} />
+          <ReportMetric label={t("totalWinrateLoss")} value={`${report.totalWinrateLoss.toFixed(1)}%`} />
+        </div>
+        <TianshuTrendChart details={report.details} startMove={report.startMove} endMove={report.endMove} t={t} />
+        <div className="tianshu-report-footer">
+          <span>{t("black")}：{t("matchRate")} {formatPercent(blackStats.candidateRate)} {t("matchDegree")} {formatFixed(blackStats.matchDegree * 100, 1)}</span>
+          <span>{t("white")}：{t("matchRate")} {formatPercent(whiteStats.candidateRate)} {t("matchDegree")} {formatFixed(whiteStats.matchDegree * 100, 1)}</span>
+          <span>{t("statisticsCondition")}</span>
+        </div>
+        <div className="dialog-actions">
+          <button type="button" onClick={onClose}>{t("close")}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ReportBar({ label, percent, value }: { label: string; percent: number; value: string }) {
+  const width = `${Math.max(0, Math.min(1, percent)) * 100}%`;
+  return (
+    <div className="tianshu-report-bar-row">
+      <span>{label}</span>
+      <div className="tianshu-report-bar-track">
+        <div className="tianshu-report-bar-fill" style={{ width }} />
+        <strong>{value}</strong>
+      </div>
+    </div>
+  );
+}
+
+function ReportMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="tianshu-report-report-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function LossDistribution({ buckets, title }: { buckets: LossBucket[]; title: string }) {
+  const maxCount = Math.max(1, ...buckets.map((bucket) => bucket.count));
+  return (
+    <div className="tianshu-report-loss-distribution">
+      <h4>{title}</h4>
+      {buckets.map((bucket) => (
+        <div className="tianshu-report-loss-row" key={bucket.label}>
+          <span>{bucket.label}</span>
+          <div>
+            <i style={{ width: `${(bucket.count / maxCount) * 100}%` }} />
+          </div>
+          <strong>{bucket.count}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TianshuTrendChart({
+  details,
+  endMove,
+  startMove,
+  t
+}: {
+  details: AutoAnalysisMoveDetail[];
+  endMove: number;
+  startMove: number;
+  t: Translator;
+}) {
+  const width = 900;
+  const height = 160;
+  const chartLeft = 34;
+  const chartRight = width - 12;
+  const chartTop = 14;
+  const chartBottom = height - 28;
+  const span = Math.max(1, endMove - startMove);
+  const points = details.map((detail) => {
+    const x = chartLeft + ((detail.moveNumber - startMove) / span) * (chartRight - chartLeft);
+    const y = chartBottom - (detail.winrate / 100) * (chartBottom - chartTop);
+    return { ...detail, x, y };
+  });
+  const line = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+
+  return (
+    <div className="tianshu-report-chart">
+      <div className="tianshu-report-chart-tabs">
+        <span>{t("trendMatch")}</span>
+        <span>{t("segmentedMatch")}</span>
+        <span>{t("winrateLossStatsShort")}</span>
+        <span>{t("scoreLossStatsShort")}</span>
+        <span>{t("matchTrend")}</span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("trendMatch")}>
+        {[25, 50, 75].map((tick) => {
+          const y = chartBottom - (tick / 100) * (chartBottom - chartTop);
+          return (
+            <g key={tick}>
+              <line className="tianshu-report-grid-line" x1={chartLeft} x2={chartRight} y1={y} y2={y} />
+              <text x="8" y={y + 4}>{tick}</text>
+            </g>
+          );
+        })}
+        <line className="tianshu-report-axis" x1={chartLeft} x2={chartRight} y1={chartBottom} y2={chartBottom} />
+        {points.map((point) => (
+          <rect
+            className={point.rank === null ? "tianshu-report-miss-bar" : "tianshu-report-hit-bar"}
+            height={chartBottom - point.y}
+            key={`bar-${point.moveNumber}`}
+            width="6"
+            x={point.x - 3}
+            y={point.y}
+          />
+        ))}
+        {line && <polyline className="tianshu-report-winrate-line" points={line} />}
+        {points.map((point) => (
+          <circle
+            className={point.rank === 1 ? "tianshu-report-top-dot" : point.rank === null ? "tianshu-report-miss-dot" : "tianshu-report-candidate-dot"}
+            cx={point.x}
+            cy={point.y}
+            key={`dot-${point.moveNumber}`}
+            r="3.5"
+          />
+        ))}
+        {[startMove, Math.round((startMove + endMove) / 2), endMove].map((move) => {
+          const x = chartLeft + ((move - startMove) / span) * (chartRight - chartLeft);
+          return <text className="tianshu-report-move-label" key={move} x={x - 8} y={height - 8}>{move}</text>;
+        })}
+      </svg>
+    </div>
+  );
+}
+
+async function readGameRecordFile(file: File): Promise<string> {
+  if (!/\.gib$/i.test(file.name)) {
+    return file.text();
+  }
+
+  const buffer = await file.arrayBuffer();
+  try {
+    return new TextDecoder("gb18030").decode(buffer);
+  } catch {
+    return new TextDecoder("utf-8").decode(buffer);
+  }
+}
+
+function downloadTextFile(text: string, fileName: string, mimeType: string) {
+  const blob = new Blob([text], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function fileStem(value: string): string {
+  const stem = value
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .slice(0, 48);
+  return stem || "tensugo-research";
+}
+
+function loadResearchExportSettings(): ResearchExportSettings {
+  try {
+    return normalizeResearchExportSettings(JSON.parse(window.localStorage.getItem(RESEARCH_EXPORT_SETTINGS_KEY) ?? "{}"));
+  } catch {
+    return DEFAULT_RESEARCH_EXPORT_SETTINGS;
+  }
+}
+
+function normalizeResearchExportSettings(value: Partial<ResearchExportSettings>): ResearchExportSettings {
+  const legacyMarginX = (value as Partial<ResearchExportSettings> & { pageMarginXMm?: number }).pageMarginXMm;
+  const legacyMarginY = (value as Partial<ResearchExportSettings> & { pageMarginYMm?: number }).pageMarginYMm;
+  return {
+    format: value.format === "html" ? "html" : "pdf",
+    layoutVersion: value.layoutVersion === "0.2" ? "0.2" : "0.1",
+    pageSize: value.pageSize === "a4" ? "a4" : "letter",
+    pageOrientation: value.pageOrientation === "landscape" ? "landscape" : "portrait",
+    boardSizeMm: clampNumber(value.boardSizeMm, 60, 160, DEFAULT_RESEARCH_EXPORT_SETTINGS.boardSizeMm),
+    pageMarginTopMm: clampNumber(value.pageMarginTopMm ?? legacyMarginY, 4, 30, DEFAULT_RESEARCH_EXPORT_SETTINGS.pageMarginTopMm),
+    pageMarginRightMm: clampNumber(value.pageMarginRightMm ?? legacyMarginX, 4, 30, DEFAULT_RESEARCH_EXPORT_SETTINGS.pageMarginRightMm),
+    pageMarginBottomMm: clampNumber(value.pageMarginBottomMm ?? legacyMarginY, 4, 30, DEFAULT_RESEARCH_EXPORT_SETTINGS.pageMarginBottomMm),
+    pageMarginLeftMm: clampNumber(value.pageMarginLeftMm ?? legacyMarginX, 4, 30, DEFAULT_RESEARCH_EXPORT_SETTINGS.pageMarginLeftMm),
+    boardEdgeMarginPx: clampNumber(value.boardEdgeMarginPx, 18, 80, DEFAULT_RESEARCH_EXPORT_SETTINGS.boardEdgeMarginPx),
+    variationsPerPage: Math.round(clampNumber(value.variationsPerPage, 1, 4, DEFAULT_RESEARCH_EXPORT_SETTINGS.variationsPerPage)),
+    rowGapMm: clampNumber(value.rowGapMm, 0, 20, DEFAULT_RESEARCH_EXPORT_SETTINGS.rowGapMm),
+    columnGapMm: clampNumber(value.columnGapMm, 0, 20, DEFAULT_RESEARCH_EXPORT_SETTINGS.columnGapMm)
+  };
+}
+
+function buildResearchAnalysisSnapshot(
+  summary: AutoAnalysisSummary | null,
+  points: ReviewAnalysisPoint[],
+  range: { startMove: number; endMove: number } | null,
+  engineProfile: EngineProfile | null
+): ResearchDocument["analysis"] {
+  if (!summary || summary.analyzed <= 0) {
+    return undefined;
+  }
+  const lastPoint = points.length > 0 ? points[points.length - 1] : null;
+  const lastDetail = summary.details.length > 0 ? summary.details[summary.details.length - 1] : null;
+  return {
+    analyzed: summary.analyzed,
+    analyzedAt: new Date().toISOString(),
+    candidateMatches: summary.candidateMatches,
+    details: summary.details,
+    endMove: range?.endMove ?? lastPoint?.moveNumber ?? lastDetail?.moveNumber ?? summary.analyzed,
+    engineName: engineProfile?.name,
+    knownScoreLosses: summary.knownScoreLosses,
+    modelName: engineProfile?.modelPath ? engineProfile.modelPath.split("/").pop() : undefined,
+    points,
+    startMove: range?.startMove ?? points[0]?.moveNumber ?? summary.details[0]?.moveNumber ?? 1,
+    topMatches: summary.topMatches,
+    totalMatchScore: summary.totalMatchScore,
+    totalScoreLoss: summary.totalScoreLoss,
+    totalWinrateLoss: summary.totalWinrateLoss
+  };
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, numberValue));
+}
+
+function directoryName(path: string): string {
+  const separatorIndex = path.lastIndexOf("/");
+  return separatorIndex > 0 ? path.slice(0, separatorIndex) : "";
+}
+
+async function waitForRemainingMoveTime(
+  moveStartedAt: number,
+  secondsPerMove: number,
+  stopRef: { current: boolean }
+): Promise<void> {
+  const remainingMs = Math.max(0, secondsPerMove * 1000 - (Date.now() - moveStartedAt));
+  const stopCheckMs = 100;
+  let waitedMs = 0;
+  while (!stopRef.current && waitedMs < remainingMs) {
+    const nextWait = Math.min(stopCheckMs, remainingMs - waitedMs);
+    await new Promise((resolve) => window.setTimeout(resolve, nextWait));
+    waitedMs += nextWait;
+  }
+}
+
+async function yieldToUi(): Promise<void> {
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
+function createEmptyAutoAnalysisSummary(): AutoAnalysisSummary {
+  return {
+    analyzed: 0,
+    candidateMatches: 0,
+    details: [],
+    knownScoreLosses: 0,
+    topMatches: 0,
+    totalScoreLoss: 0,
+    totalMatchScore: 0,
+    totalWinrateLoss: 0
+  };
+}
+
+function calculateMatchScore(candidateIndex: number, candidateCount: number): number {
+  if (candidateIndex === 0) {
+    return 1;
+  }
+  const denominator = Math.max(1, candidateCount - 1);
+  return Math.max(0.2, 1 - candidateIndex / denominator);
+}
+
+function calculateScoreLoss(
+  color: ReviewMove["color"],
+  best: EngineCandidateMove,
+  actual: EngineCandidateMove
+): number {
+  const loss = color === "black"
+    ? best.scoreLead - actual.scoreLead
+    : actual.scoreLead - best.scoreLead;
+  return Math.max(0, loss);
+}
+
+function summarizeReportSide(details: AutoAnalysisMoveDetail[], color: "black" | "white") {
+  const sideDetails = details.filter((detail) => detail.color === color);
+  const analyzed = Math.max(1, sideDetails.length);
+  const scoreLosses = sideDetails.filter((detail) => detail.scoreLoss !== null);
+  return {
+    averageScoreLoss: scoreLosses.length > 0
+      ? scoreLosses.reduce((total, detail) => total + (detail.scoreLoss ?? 0), 0) / scoreLosses.length
+      : null,
+    averageWinrateLoss: sideDetails.reduce((total, detail) => total + detail.winrateLoss, 0) / analyzed,
+    candidateRate: sideDetails.filter((detail) => detail.rank !== null).length / analyzed,
+    matchDegree: sideDetails.reduce((total, detail) => total + detail.matchScore, 0) / analyzed,
+    topRate: sideDetails.filter((detail) => detail.rank === 1).length / analyzed
+  };
+}
+
+function buildLossBuckets(
+  details: AutoAnalysisMoveDetail[],
+  field: "scoreLoss" | "winrateLoss",
+  thresholds: number[]
+): LossBucket[] {
+  const labels = [`<${thresholds[0]}`];
+  for (let index = 1; index < thresholds.length; index += 1) {
+    labels.push(`${thresholds[index - 1]}-${thresholds[index]}`);
+  }
+  labels.push(`>=${thresholds[thresholds.length - 1]}`);
+  const counts = labels.map(() => 0);
+  details.forEach((detail) => {
+    const value = detail[field];
+    if (value === null) {
+      return;
+    }
+    const bucketIndex = thresholds.findIndex((threshold) => value < threshold);
+    counts[bucketIndex >= 0 ? bucketIndex : counts.length - 1] += 1;
+  });
+  return labels.map((label, index) => ({ count: counts[index], label }));
+}
+
+function scaleLossBar(value: number | null): number {
+  if (value === null) {
+    return 0;
+  }
+  return Math.min(1, value / 12);
+}
+
+function formatFixed(value: number, digits: number): string {
+  if (!Number.isFinite(value)) {
+    return "0.0";
+  }
+  return value.toFixed(digits);
+}
+
+function formatOptionalNumber(value: number | null, suffix: string): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "暂缺";
+  }
+  return `${value.toFixed(1)}${suffix}`;
+}
+
+function moveNumberDisplayLabel(mode: MoveNumberDisplayMode): string {
+  if (mode === "all") {
+    return "全部显示";
+  }
+  if (mode === "last10") {
+    return "显示最后10手";
+  }
+  return "显示最后一手";
+}
+
+function createLocalId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function inferVariationBaseMoveNumber(moves: ReviewMove[], sourceMainLineMoves: ReviewMove[]): number | null {
+  if (moves.length === 0 || sourceMainLineMoves.length === 0) {
+    return null;
+  }
+  const maxSharedLength = Math.min(moves.length, sourceMainLineMoves.length);
+  for (let index = 0; index < maxSharedLength; index += 1) {
+    if (!sameMove(moves[index], sourceMainLineMoves[index])) {
+      return index;
+    }
+  }
+  if (moves.length > sourceMainLineMoves.length) {
+    return sourceMainLineMoves.length;
+  }
+  if (moves.length < sourceMainLineMoves.length) {
+    return null;
+  }
+  return null;
+}
+
+function sameMove(left: ReviewMove, right: ReviewMove): boolean {
+  return left.color === right.color && left.x === right.x && left.y === right.y;
+}
+
+function summarizeEngineFailure(status: string, diagnostics: string): string {
+  if (status === "engine-boot-timeout" || diagnostics.includes("GTP ready 信号")) {
+    return "KataGo 启动超时（首次 OpenCL 调优可能需要几分钟）";
+  }
+  if (status === "engine-tuning-timeout" || diagnostics.includes("Performing autotuning")) {
+    return "KataGo 首次 OpenCL 调优未完成";
+  }
+  if (diagnostics.includes("Error creating directory: KataGoData") || diagnostics.includes("无法创建 KataGo 运行目录")) {
+    return "KataGo 运行目录不可写";
+  }
+  if (diagnostics.includes("CL_INVALID_VALUE") || diagnostics.includes("OpenCL error")) {
+    return "KataGo OpenCL 初始化失败：CL_INVALID_VALUE";
+  }
+  if (status === "engine-crashed" || status === "engine-exited-during-boot" || status === "engine-exited-during-analysis") {
+    return "KataGo 进程异常退出";
+  }
+  if (status === "no-candidates") {
+    return "KataGo 没有输出候选点";
+  }
+  return diagnostics.split("\n").find((line) => line.trim().length > 0)?.trim() || status;
+}
+
+function hasEngineProblem(status: string): boolean {
+  return /失败|异常|退出|不可写|未完成|没有输出|没有返回|不完整|未配置/.test(status);
+}
+
+function buildAnalysisDiagnostics(rawOutput: string, diagnostics: string): string {
+  const sections = [];
+  if (diagnostics.trim()) {
+    sections.push(`stderr:\n${diagnostics.trim()}`);
+  }
+  if (rawOutput.trim()) {
+    sections.push(`stdout:\n${summarizeEngineStdout(rawOutput)}`);
+  }
+  return sections.join("\n\n") || "KataGo 没有返回 stdout/stderr。";
+}
+
+function summarizeEngineStdout(rawOutput: string): string {
+  const candidateBlocks = rawOutput.match(/\binfo move\b/g)?.length ?? 0;
+  const protocolLines = rawOutput
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.includes("info move"));
+  const lines = protocolLines.length > 0 ? protocolLines : ["GTP protocol replies received."];
+  if (candidateBlocks > 0) {
+    lines.push(`已隐藏 ${candidateBlocks} 段候选点明细；候选点请看棋盘和右侧列表。`);
+  }
+  return lines.slice(-40).join("\n");
+}
+
+function formatVisits(visits: number): string {
+  if (visits >= 1000) {
+    return `${(visits / 1000).toFixed(visits >= 10000 ? 0 : 1)}k`;
+  }
+  return String(visits);
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0.0%";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function moveToGtpPoint(move: ReviewMove, boardSize: number): string {
+  const labels = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+  return `${labels[move.x]}${boardSize - move.y}`;
+}
+
+function gtpPointToMove(point: string, boardSize: number, moveNumber: number): ReviewMove | null {
+  if (!point || point.toLowerCase() === "pass") {
+    return null;
+  }
+  const match = /^([A-HJ-Z])(\d+)$/i.exec(point);
+  if (!match) {
+    return null;
+  }
+  const labels = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+  const x = labels.indexOf(match[1].toUpperCase());
+  const row = Number(match[2]);
+  const y = boardSize - row;
+  if (x < 0 || x >= boardSize || !Number.isInteger(row) || y < 0 || y >= boardSize) {
+    return null;
+  }
+  return {
+    color: moveNumber % 2 === 1 ? "black" : "white",
+    moveNumber,
+    x,
+    y
+  };
+}
+
+function buildAnalysisKey(boardSize: number, komi: number, moveNumber: number, moves: ReviewMove[]): string {
+  const tail = moves.map((move) => `${move.moveNumber}:${move.color}:${move.x},${move.y}`).join("|");
+  return `${boardSize}:${komi}:${moveNumber}:${tail}`;
+}
+
+function upsertAnalysisPoint(points: ReviewAnalysisPoint[], nextPoint: ReviewAnalysisPoint): ReviewAnalysisPoint[] {
+  const nextPoints = points.filter((point) => point.moveNumber !== nextPoint.moveNumber);
+  nextPoints.push(nextPoint);
+  nextPoints.sort((a, b) => a.moveNumber - b.moveNumber);
+  return nextPoints;
+}

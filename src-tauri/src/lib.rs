@@ -1,0 +1,866 @@
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
+
+const DEFAULT_EXECUTABLE: &str = "/opt/homebrew/bin/katago";
+const DEFAULT_MODEL: &str =
+    "/opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz";
+const DEFAULT_CONFIG: &str = "/Users/tuxy/App/KataGo/Config/winConfigs/default_gtp.cfg";
+const ANALYSIS_COLLECT_MIN_MS: u64 = 1_000;
+const ANALYSIS_COLLECT_MAX_MS: u64 = 3_000;
+const ANALYSIS_BOOT_WAIT_MS: u64 = 300_000;
+const PDF_EXPORT_TIMEOUT_MS: u64 = 45_000;
+
+struct EngineState {
+    session: Mutex<Option<EngineSession>>,
+}
+
+struct EngineSession {
+    profile_key: String,
+    current_position_key: String,
+    stdin: ChildStdin,
+    stdout_rx: Receiver<String>,
+    stderr_rx: Receiver<String>,
+    child: Child,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineProfile {
+    name: String,
+    executable_path: String,
+    model_path: String,
+    config_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyzeMove {
+    color: String,
+    x: usize,
+    y: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyzeRequest {
+    profile: EngineProfile,
+    board_size: usize,
+    komi: f64,
+    moves: Vec<AnalyzeMove>,
+    next_color: String,
+    max_visits: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct EngineProfileCandidate {
+    name: String,
+    executable_path: String,
+    model_path: String,
+    config_path: String,
+    command_line: String,
+    exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct EngineProbeResult {
+    ok: bool,
+    summary: String,
+    diagnostics: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CandidateMove {
+    rank: usize,
+    move_name: String,
+    visits: usize,
+    winrate: f64,
+    score_lead: f64,
+    pv: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AnalysisResult {
+    ok: bool,
+    status: String,
+    candidates: Vec<CandidateMove>,
+    raw_output: String,
+    diagnostics: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveTextFileRequest {
+    default_name: String,
+    default_dir: Option<String>,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SavePdfRequest {
+    default_name: String,
+    default_dir: Option<String>,
+    html: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SaveTextFileResult {
+    saved: bool,
+    path: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn app_name() -> &'static str {
+    "TensuGo"
+}
+
+#[tauri::command]
+fn save_text_file_with_dialog(request: SaveTextFileRequest) -> SaveTextFileResult {
+    match choose_save_path(&request.default_name, request.default_dir.as_deref()) {
+        Ok(Some(path)) => match std::fs::write(&path, request.content) {
+            Ok(()) => SaveTextFileResult {
+                saved: true,
+                path: Some(path.display().to_string()),
+                error: None,
+            },
+            Err(error) => SaveTextFileResult {
+                saved: false,
+                path: Some(path.display().to_string()),
+                error: Some(error.to_string()),
+            },
+        },
+        Ok(None) => SaveTextFileResult {
+            saved: false,
+            path: None,
+            error: None,
+        },
+        Err(error) => SaveTextFileResult {
+            saved: false,
+            path: None,
+            error: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+fn save_pdf_with_dialog(request: SavePdfRequest) -> SaveTextFileResult {
+    match choose_save_path(&request.default_name, request.default_dir.as_deref()) {
+        Ok(Some(path)) => match render_html_to_pdf(&request.html, &path) {
+            Ok(()) => SaveTextFileResult {
+                saved: true,
+                path: Some(path.display().to_string()),
+                error: None,
+            },
+            Err(error) => SaveTextFileResult {
+                saved: false,
+                path: Some(path.display().to_string()),
+                error: Some(error),
+            },
+        },
+        Ok(None) => SaveTextFileResult {
+            saved: false,
+            path: None,
+            error: None,
+        },
+        Err(error) => SaveTextFileResult {
+            saved: false,
+            path: None,
+            error: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+fn default_engine_profile() -> EngineProfileCandidate {
+    let executable_exists = std::path::Path::new(DEFAULT_EXECUTABLE).exists();
+    let model_exists = std::path::Path::new(DEFAULT_MODEL).exists();
+    let config_exists = std::path::Path::new(DEFAULT_CONFIG).exists();
+
+    EngineProfileCandidate {
+        name: "本机 KataGo OpenCL".to_string(),
+        executable_path: DEFAULT_EXECUTABLE.to_string(),
+        model_path: DEFAULT_MODEL.to_string(),
+        config_path: DEFAULT_CONFIG.to_string(),
+        command_line: format!(
+            "{} gtp -model \"{}\" -config \"{}\"",
+            DEFAULT_EXECUTABLE, DEFAULT_MODEL, DEFAULT_CONFIG
+        ),
+        exists: executable_exists && model_exists && config_exists,
+    }
+}
+
+#[tauri::command]
+fn probe_engine(profile: EngineProfile) -> EngineProbeResult {
+    let mut diagnostics = Vec::new();
+    diagnostics.push(format!("profile: {}", profile.name));
+    match engine_runtime_dir() {
+        Ok(path) => diagnostics.push(format!("runtime dir: {}", path.display())),
+        Err(error) => diagnostics.push(format!("runtime dir unavailable: {}", error)),
+    }
+
+    for (label, path) in [
+        ("katago", profile.executable_path.as_str()),
+        ("model", profile.model_path.as_str()),
+        ("config", profile.config_path.as_str()),
+    ] {
+        if std::path::Path::new(path).exists() {
+            diagnostics.push(format!("OK {}: {}", label, path));
+        } else {
+            diagnostics.push(format!("MISSING {}: {}", label, path));
+        }
+    }
+
+    match Command::new(&profile.executable_path)
+        .arg("version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            diagnostics.push(stdout.clone());
+
+            if !std::path::Path::new(&profile.model_path).exists()
+                || !std::path::Path::new(&profile.config_path).exists()
+            {
+                return EngineProbeResult {
+                    ok: false,
+                    summary: "模型或配置文件不存在".to_string(),
+                    diagnostics: diagnostics.join("\n"),
+                };
+            }
+
+            diagnostics.push("version probe: OK".to_string());
+            EngineProbeResult {
+                ok: true,
+                summary: stdout.lines().next().unwrap_or("KataGo 可用").to_string(),
+                diagnostics: diagnostics.join("\n"),
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            diagnostics.push(stderr.clone());
+            EngineProbeResult {
+                ok: false,
+                summary: "KataGo 启动失败".to_string(),
+                diagnostics: diagnostics.join("\n"),
+            }
+        }
+        Err(error) => EngineProbeResult {
+            ok: false,
+            summary: "无法执行 KataGo".to_string(),
+            diagnostics: format!("{}\n{}", diagnostics.join("\n"), error),
+        },
+    }
+}
+
+#[tauri::command]
+fn analyze_position(state: tauri::State<EngineState>, request: AnalyzeRequest) -> AnalysisResult {
+    let mut guard = match state.session.lock() {
+        Ok(guard) => guard,
+        Err(error) => {
+            return AnalysisResult {
+                ok: false,
+                status: "engine-state-lock-failed".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: error.to_string(),
+            };
+        }
+    };
+
+    let profile_key = profile_key(&request.profile);
+    if guard.as_ref().map(|session| session.profile_key.as_str()) != Some(profile_key.as_str()) {
+        *guard = match start_engine_session(&request.profile, &profile_key) {
+            Ok(session) => Some(session),
+            Err(result) => return result,
+        };
+    }
+
+    let session = match guard.as_mut() {
+        Some(session) => session,
+        None => {
+            return AnalysisResult {
+                ok: false,
+                status: "engine-session-missing".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: "KataGo session missing after startup.".to_string(),
+            };
+        }
+    };
+
+    let position_key = request_position_key(&request);
+    drain_receiver(&session.stdout_rx);
+    drain_receiver(&session.stderr_rx);
+
+    if let Err(error) = write_position_commands(session, &request) {
+        *guard = None;
+        return AnalysisResult {
+            ok: false,
+            status: "engine-command-failed".to_string(),
+            candidates: Vec::new(),
+            raw_output: String::new(),
+            diagnostics: error,
+        };
+    }
+    session.current_position_key = position_key;
+
+    collect_analysis(session, request.max_visits)
+}
+
+fn start_engine_session(
+    profile: &EngineProfile,
+    profile_key: &str,
+) -> Result<EngineSession, AnalysisResult> {
+    let runtime_dir = match engine_runtime_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(AnalysisResult {
+                ok: false,
+                status: "engine-runtime-dir-failed".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: format!("无法创建 KataGo 运行目录: {}", error),
+            });
+        }
+    };
+
+    let mut command = Command::new(&profile.executable_path);
+    command
+        .current_dir(&runtime_dir)
+        .args([
+            "gtp",
+            "-model",
+            &profile.model_path,
+            "-config",
+            &profile.config_path,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return Err(AnalysisResult {
+                ok: false,
+                status: "engine-start-failed".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: format!("runtime dir: {}\n{}", runtime_dir.display(), error),
+            });
+        }
+    };
+
+    let stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            return Err(AnalysisResult {
+                ok: false,
+                status: "engine-stdin-missing".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: "KataGo stdin unavailable.".to_string(),
+            });
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_rx = spawn_line_reader(stdout, "stdout");
+    let stderr_rx = spawn_line_reader(stderr, "stderr");
+    let boot_deadline = Instant::now() + Duration::from_millis(ANALYSIS_BOOT_WAIT_MS);
+    let mut boot_log = Vec::new();
+    let mut ready = false;
+    while Instant::now() < boot_deadline {
+        let new_lines = drain_receiver(&stderr_rx);
+        for line in &new_lines {
+            if line.contains("Performing autotuning") || line.contains("Tuning ") {
+                boot_log.push(line.clone());
+            }
+        }
+        boot_log.extend(new_lines);
+        if boot_log.iter().any(|line| line.contains("GTP ready")) {
+            ready = true;
+            break;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                boot_log.extend(drain_receiver(&stdout_rx));
+                boot_log.extend(drain_receiver(&stderr_rx));
+                return Err(AnalysisResult {
+                    ok: false,
+                    status: "engine-exited-during-boot".to_string(),
+                    candidates: Vec::new(),
+                    raw_output: String::new(),
+                    diagnostics: format!(
+                        "KataGo 启动期间退出，退出状态: {}\n{}",
+                        status,
+                        boot_log.join("\n")
+                    ),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(AnalysisResult {
+                    ok: false,
+                    status: "engine-status-failed".to_string(),
+                    candidates: Vec::new(),
+                    raw_output: String::new(),
+                    diagnostics: format!("检查 KataGo 进程状态失败: {}", error),
+                });
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    if !ready {
+        let tuning_hint = if boot_log.iter().any(|line| line.contains("Performing autotuning")) {
+            "\nKataGo 正在进行首次 OpenCL 调优，可能需要几分钟，请等待缓存生成后重试。"
+        } else {
+            ""
+        };
+        return Err(AnalysisResult {
+            ok: false,
+            status: "engine-boot-timeout".to_string(),
+            candidates: Vec::new(),
+            raw_output: String::new(),
+            diagnostics: format!(
+                "KataGo 在 {} 秒内未输出 GTP ready 信号。{}\n{}",
+                ANALYSIS_BOOT_WAIT_MS / 1000,
+                tuning_hint,
+                boot_log.join("\n")
+            ),
+        });
+    }
+    Ok(EngineSession {
+        profile_key: profile_key.to_string(),
+        current_position_key: String::new(),
+        stdin,
+        stdout_rx,
+        stderr_rx,
+        child,
+    })
+}
+
+fn write_position_commands(
+    session: &mut EngineSession,
+    request: &AnalyzeRequest,
+) -> Result<(), String> {
+    writeln!(session.stdin, "boardsize {}", request.board_size)
+        .map_err(|error| error.to_string())?;
+    writeln!(session.stdin, "komi {}", request.komi).map_err(|error| error.to_string())?;
+    writeln!(session.stdin, "clear_board").map_err(|error| error.to_string())?;
+    for game_move in &request.moves {
+        let color = if game_move.color == "black" { "B" } else { "W" };
+        writeln!(
+            session.stdin,
+            "play {} {}",
+            color,
+            to_gtp_point(game_move.x, game_move.y, request.board_size)
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    let next_color = if request.next_color == "black" {
+        "B"
+    } else {
+        "W"
+    };
+    let max_visits = request.max_visits.clamp(1, 10000);
+    writeln!(session.stdin, "kata-analyze {} {}", next_color, max_visits)
+        .map_err(|error| error.to_string())?;
+    session.stdin.flush().map_err(|error| error.to_string())
+}
+
+fn collect_analysis(session: &mut EngineSession, max_visits: usize) -> AnalysisResult {
+    let collect_ms = (max_visits as u64)
+        .saturating_mul(20)
+        .clamp(ANALYSIS_COLLECT_MIN_MS, ANALYSIS_COLLECT_MAX_MS);
+    let deadline = Instant::now() + Duration::from_millis(collect_ms);
+    let mut stdout_lines = Vec::new();
+    let mut stderr_lines = Vec::new();
+    while Instant::now() < deadline {
+        stdout_lines.extend(drain_receiver(&session.stdout_rx));
+        stderr_lines.extend(drain_receiver(&session.stderr_rx));
+        match session.child.try_wait() {
+            Ok(Some(status)) => {
+                stdout_lines.extend(drain_receiver(&session.stdout_rx));
+                stderr_lines.extend(drain_receiver(&session.stderr_rx));
+                return AnalysisResult {
+                    ok: false,
+                    status: "engine-exited-during-analysis".to_string(),
+                    candidates: Vec::new(),
+                    raw_output: stdout_lines.join("\n"),
+                    diagnostics: format!(
+                        "KataGo 分析期间退出，退出状态: {}\n{}",
+                        status,
+                        stderr_lines.join("\n")
+                    ),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return AnalysisResult {
+                    ok: false,
+                    status: "engine-status-failed".to_string(),
+                    candidates: Vec::new(),
+                    raw_output: stdout_lines.join("\n"),
+                    diagnostics: format!("检查 KataGo 进程状态失败: {}", error),
+                };
+            }
+        }
+        if stdout_lines.iter().any(|line| line.contains("info move")) {
+            thread::sleep(Duration::from_millis(60));
+            stdout_lines.extend(drain_receiver(&session.stdout_rx));
+            break;
+        }
+        thread::sleep(Duration::from_millis(30));
+    }
+    let stdout = stdout_lines.join("\n");
+    let stderr = stderr_lines.join("\n");
+    let candidates = parse_analysis_output(&stdout);
+    AnalysisResult {
+        ok: !candidates.is_empty(),
+        status: if candidates.is_empty() {
+            "no-candidates"
+        } else {
+            "analyzed"
+        }
+        .to_string(),
+        candidates,
+        raw_output: stdout,
+        diagnostics: format!(
+            "persistent KataGo session\nanalysis collect: {} ms\n{}",
+            collect_ms, stderr
+        ),
+    }
+}
+
+fn spawn_line_reader(
+    stream: Option<impl std::io::Read + Send + 'static>,
+    label: &'static str,
+) -> Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    if let Some(stream) = stream {
+        thread::spawn(move || {
+            for line in BufReader::new(stream).lines() {
+                match line {
+                    Ok(line) => {
+                        let _ = tx.send(line);
+                    }
+                    Err(error) => {
+                        let _ = tx.send(format!("{} read error: {}", label, error));
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    rx
+}
+
+fn drain_receiver(rx: &Receiver<String>) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn profile_key(profile: &EngineProfile) -> String {
+    format!(
+        "{}|{}|{}",
+        profile.executable_path, profile.model_path, profile.config_path
+    )
+}
+
+fn request_position_key(request: &AnalyzeRequest) -> String {
+    let moves = request
+        .moves
+        .iter()
+        .map(|game_move| format!("{}:{}:{}", game_move.color, game_move.x, game_move.y))
+        .collect::<Vec<_>>()
+        .join("|");
+    format!(
+        "{}:{}:{}:{}",
+        request.board_size, request.komi, request.next_color, moves
+    )
+}
+
+fn engine_runtime_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|error| error.to_string())?;
+    let path = PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("TensuGo")
+        .join("KataGoRuntime");
+    std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn to_gtp_point(x: usize, y: usize, board_size: usize) -> String {
+    const LABELS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
+    let col = LABELS.get(x).copied().unwrap_or(b'?') as char;
+    let row = board_size.saturating_sub(y);
+    format!("{}{}", col, row)
+}
+
+fn parse_analysis_output(output: &str) -> Vec<CandidateMove> {
+    let mut best_line = "";
+    let mut best_visits = 0usize;
+
+    for line in output.lines() {
+        if line.contains("info move") {
+            let visits = token_after(line, "visits")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            if visits >= best_visits {
+                best_visits = visits;
+                best_line = line;
+            }
+        }
+    }
+
+    if best_line.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    let segments: Vec<&str> = best_line.split(" info ").collect();
+
+    for segment in segments {
+        let line = if segment.starts_with("info ") {
+            segment.to_string()
+        } else if segment.starts_with("move ") {
+            format!("info {}", segment)
+        } else {
+            continue;
+        };
+
+        let move_name = match token_after(&line, "move") {
+            Some(value) => value,
+            None => continue,
+        };
+        let visits = token_after(&line, "visits")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let winrate = token_after(&line, "winrate")
+            .and_then(|value| value.parse::<f64>().ok())
+            .map(|value| value * 100.0)
+            .unwrap_or(0.0);
+        let score_lead = token_after(&line, "scoreLead")
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let pv = tokens_after_until_keyword(&line, "pv");
+
+        candidates.push(CandidateMove {
+            rank: candidates.len() + 1,
+            move_name,
+            visits,
+            winrate,
+            score_lead,
+            pv,
+        });
+    }
+
+    candidates.sort_by(|left, right| right.visits.cmp(&left.visits));
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        candidate.rank = index + 1;
+    }
+    candidates.truncate(12);
+    candidates
+}
+
+fn choose_save_path(default_name: &str, default_dir: Option<&str>) -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        choose_save_path_macos(default_name, default_dir)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = default_dir;
+        Err(format!(
+            "当前平台暂未实现原生保存对话框，请提供文件路径后再保存: {}",
+            default_name
+        ))
+    }
+}
+
+fn render_html_to_pdf(html: &str, pdf_path: &PathBuf) -> Result<(), String> {
+    let chrome_path = find_chrome_executable()
+        .ok_or_else(|| "未找到 Google Chrome，暂时无法导出 PDF。".to_string())?;
+    if let Some(parent) = pdf_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "tensugo-pdf-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_millis()
+    ));
+    std::fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
+    let html_path = temp_dir.join("research.html");
+    let profile_dir = temp_dir.join("chrome-profile");
+    std::fs::write(&html_path, html).map_err(|error| error.to_string())?;
+
+    let mut child = Command::new(chrome_path)
+        .arg("--headless=new")
+        .arg("--no-sandbox")
+        .arg("--disable-gpu")
+        .arg(format!("--user-data-dir={}", profile_dir.display()))
+        .arg(format!("--print-to-pdf={}", pdf_path.display()))
+        .arg(format!("file://{}", html_path.display()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                let output = child.wait_with_output().map_err(|error| error.to_string())?;
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                if output.status.success() && pdf_path.exists() {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Chrome PDF 导出失败，退出码: {} stderr: {} stdout: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim(),
+                    String::from_utf8_lossy(&output.stdout).trim()
+                ));
+            }
+            Ok(None) if start.elapsed() > Duration::from_millis(PDF_EXPORT_TIMEOUT_MS) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err("Chrome PDF 导出超时。请确认 Chrome 没有卡在权限弹窗或后台启动失败。".to_string());
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(error.to_string());
+            }
+        }
+    }
+}
+
+fn find_chrome_executable() -> Option<PathBuf> {
+    [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|path| path.exists())
+}
+
+#[cfg(target_os = "macos")]
+fn choose_save_path_macos(default_name: &str, default_dir: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let mut script = format!(
+        "set chosenFile to choose file name with prompt \"保存 TensuGo 研究文档\" default name \"{}\"",
+        applescript_escape(default_name)
+    );
+    if let Some(default_dir) = default_dir.filter(|path| !path.trim().is_empty()) {
+        script.push_str(&format!(
+            " default location POSIX file \"{}\"",
+            applescript_escape(default_dir)
+        ));
+    }
+    script.push_str("\nPOSIX path of chosenFile");
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|error| error.to_string())?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(PathBuf::from(path)))
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") || stderr.contains("-128") {
+            Ok(None)
+        } else {
+            Err(stderr.trim().to_string())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn applescript_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn token_after(line: &str, key: &str) -> Option<String> {
+    let mut tokens = line.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == key {
+            return tokens.next().map(str::to_string);
+        }
+    }
+    None
+}
+
+fn tokens_after_until_keyword(line: &str, key: &str) -> Vec<String> {
+    const STOP_KEYS: &[&str] = &[
+        "info",
+        "move",
+        "visits",
+        "winrate",
+        "scoreLead",
+        "scoreStdev",
+        "utility",
+        "prior",
+        "lcb",
+        "order",
+        "pvVisits",
+    ];
+
+    let mut tokens = line.split_whitespace();
+    let mut collecting = false;
+    let mut values = Vec::new();
+
+    while let Some(token) = tokens.next() {
+        if token == key {
+            collecting = true;
+            continue;
+        }
+        if collecting {
+            if STOP_KEYS.contains(&token) {
+                break;
+            }
+            values.push(token.to_string());
+        }
+    }
+
+    values
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(EngineState {
+            session: Mutex::new(None),
+        })
+        .invoke_handler(tauri::generate_handler![
+            app_name,
+            save_text_file_with_dialog,
+            save_pdf_with_dialog,
+            default_engine_profile,
+            probe_engine,
+            analyze_position
+        ])
+        .run(tauri::generate_context!())
+        .expect("failed to run TensuGo");
+}

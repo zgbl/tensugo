@@ -1,0 +1,526 @@
+import type { EngineCandidateMove } from "../engine/types";
+import { buildBoardPosition } from "../game/boardRules";
+import type { GameTree } from "../game/gameTree";
+import type { ReviewMove, ReviewStone } from "../game/sampleGame";
+import type {
+  AiAnalysisBlock,
+  BoardBlock,
+  BoardMarker,
+  CandidateMovesBlock,
+  CurrentGameSnapshot,
+  ParagraphBlock,
+  ResearchBlock,
+  ResearchDocument,
+  VariationBlock
+} from "./types";
+
+const BRG_VERSION = "0.1" as const;
+
+export function createResearchDocument(snapshot: CurrentGameSnapshot): ResearchDocument {
+  const now = new Date().toISOString();
+  return {
+    brgVersion: BRG_VERSION,
+    id: createId("doc"),
+    title: fileStem(snapshot.sourceFileName) || "未命名棋评",
+    author: "",
+    createdAt: now,
+    updatedAt: now,
+    sourceGame: {
+      fileName: snapshot.sourceFileName,
+      boardSize: snapshot.boardSize,
+      komi: snapshot.komi,
+      rules: snapshot.rules,
+      players: {
+        black: snapshot.blackName,
+        white: snapshot.whiteName
+      },
+      gameDate: snapshot.gameDate,
+      totalMoves: snapshot.totalMoves
+    },
+    tags: [],
+    mainSgf: "",
+    assets: [],
+    sections: [
+      {
+        id: createId("sec"),
+        title: "正文",
+        blocks: []
+      }
+    ]
+  };
+}
+
+export function makeSnapshot(input: Omit<CurrentGameSnapshot, "stones"> & { stones?: ReviewStone[] }): CurrentGameSnapshot {
+  return {
+    ...input,
+    stones: input.stones ?? buildBoardPosition(input.moves, input.boardSize, input.currentMoveNumber).stones
+  };
+}
+
+export function appendBlock(document: ResearchDocument, block: ResearchBlock): ResearchDocument {
+  const now = new Date().toISOString();
+  const sections = document.sections.length > 0 ? document.sections : [{ id: createId("sec"), title: "正文", blocks: [] }];
+  return {
+    ...document,
+    updatedAt: now,
+    sections: sections.map((section, index) =>
+      index === 0 ? { ...section, blocks: [...section.blocks, block] } : section
+    )
+  };
+}
+
+export function removeBlock(document: ResearchDocument, blockId: string): ResearchDocument {
+  return {
+    ...document,
+    updatedAt: new Date().toISOString(),
+    sections: document.sections.map((section) => ({
+      ...section,
+      blocks: section.blocks.filter((block) => block.id !== blockId)
+    }))
+  };
+}
+
+export function updateBlockMarkdown(document: ResearchDocument, blockId: string, markdown: string): ResearchDocument {
+  return updateBlock(document, blockId, (block) => {
+    if (block.type !== "paragraph" && block.type !== "conclusion") {
+      return block;
+    }
+    return { ...block, markdown, updatedAt: new Date().toISOString() };
+  });
+}
+
+export function updateDocumentSource(document: ResearchDocument, snapshot: CurrentGameSnapshot): ResearchDocument {
+  return {
+    ...document,
+    updatedAt: new Date().toISOString(),
+    sourceGame: {
+      ...document.sourceGame,
+      fileName: snapshot.sourceFileName,
+      boardSize: snapshot.boardSize,
+      komi: snapshot.komi,
+      rules: snapshot.rules,
+      players: {
+        black: snapshot.blackName,
+        white: snapshot.whiteName
+      },
+      gameDate: snapshot.gameDate,
+      totalMoves: snapshot.totalMoves
+    }
+  };
+}
+
+export function createParagraphBlock(markdown = ""): ParagraphBlock {
+  const now = new Date().toISOString();
+  return {
+    id: createId("blk"),
+    type: "paragraph",
+    markdown,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function createBoardBlock(snapshot: CurrentGameSnapshot): BoardBlock {
+  const now = new Date().toISOString();
+  return {
+    id: createId("blk"),
+    type: "board",
+    moveNumber: snapshot.currentMoveNumber,
+    boardSize: snapshot.boardSize,
+    position: snapshot.stones,
+    showCoordinates: true,
+    showLastMove: true,
+    markers: [],
+    arrows: [],
+    caption: `第 ${snapshot.currentMoveNumber} 手局面`,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function createVariationBlock(snapshot: CurrentGameSnapshot, candidate: EngineCandidateMove | null): VariationBlock | null {
+  const sequence = candidate?.pv?.length ? candidate.pv : [];
+  if (sequence.length === 0) {
+    return null;
+  }
+  const moves = sequenceToReviewMoves(sequence, snapshot.boardSize, snapshot.currentMoveNumber);
+  const position = buildBoardPosition([...snapshot.moves.slice(0, snapshot.currentMoveNumber), ...moves], snapshot.boardSize, snapshot.currentMoveNumber + moves.length).stones;
+  return createVariationBlockFromMoves(snapshot.currentMoveNumber, snapshot.boardSize, position, sequence, `PV 变化：${sequence[0]}`);
+}
+
+export function createManualVariationBlock(
+  baseMoveNumber: number,
+  boardSize: number,
+  position: ReviewStone[],
+  sequence: string[]
+): VariationBlock {
+  return createVariationBlockFromMoves(baseMoveNumber, boardSize, position, sequence, `手动变化：${sequence[0] ?? "未命名"}`);
+}
+
+export function createAiAnalysisBlock(
+  candidateMoves: EngineCandidateMove[],
+  engineName: string,
+  modelName?: string
+): AiAnalysisBlock | null {
+  const best = candidateMoves[0];
+  if (!best) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  return {
+    id: createId("blk"),
+    type: "ai_analysis",
+    engineName,
+    modelName,
+    visits: best.visits,
+    winrate: best.winrate,
+    scoreLead: best.scoreLead,
+    pv: best.pv,
+    candidateMoves,
+    timestamp: now,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function createCandidateMovesBlock(moveNumber: number, candidates: EngineCandidateMove[]): CandidateMovesBlock | null {
+  if (candidates.length === 0) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  return {
+    id: createId("blk"),
+    type: "candidate_moves",
+    moveNumber,
+    candidates,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function validateResearchDocument(value: unknown): ResearchDocument {
+  if (!value || typeof value !== "object") {
+    throw new Error("不是有效的 BRG 文档。");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.format === "brg" && record.version === "1.0") {
+    return fromBrgDocument(record);
+  }
+  if (record.brgVersion === BRG_VERSION && Array.isArray(record.sections)) {
+    return record as ResearchDocument;
+  }
+  throw new Error("不支持的研究文档格式。");
+}
+
+export function toBrgDocument(document: ResearchDocument, gameTree?: GameTree) {
+  const blocks = document.sections.flatMap((section) => section.blocks).map(toBrgBlock).filter(Boolean);
+  return {
+    format: "brg",
+    version: "1.0",
+    tensugo: {
+      analysis: document.analysis,
+      gameTree: gameTree ?? document.gameTree
+    },
+    meta: {
+      title: document.title,
+      author: document.author,
+      createdAt: document.createdAt,
+      updatedAt: document.updatedAt,
+      tags: document.tags
+    },
+    source: {
+      format: inferSourceFormat(document.sourceGame.fileName),
+      fileName: document.sourceGame.fileName,
+      content: document.mainSgf ?? ""
+    },
+    gameInfo: {
+      boardSize: document.sourceGame.boardSize,
+      rules: document.sourceGame.rules,
+      komi: document.sourceGame.komi,
+      players: {
+        black: { name: document.sourceGame.players.black },
+        white: { name: document.sourceGame.players.white }
+      },
+      result: document.sourceGame.result
+    },
+    blocks
+  };
+}
+
+function createVariationBlockFromMoves(
+  baseMoveNumber: number,
+  boardSize: number,
+  position: ReviewStone[],
+  sequence: string[],
+  name: string
+): VariationBlock {
+  const now = new Date().toISOString();
+  return {
+    id: createId("blk"),
+    type: "variation",
+    fromMoveNumber: baseMoveNumber,
+    name,
+    caption: `第 ${baseMoveNumber} 手后的变化`,
+    description: sequence.join(" "),
+    sequence,
+    boardSize,
+    position,
+    compact: false,
+    interactive: true,
+    showPv: true,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function updateBlock(document: ResearchDocument, blockId: string, updater: (block: ResearchBlock) => ResearchBlock): ResearchDocument {
+  return {
+    ...document,
+    updatedAt: new Date().toISOString(),
+    sections: document.sections.map((section) => ({
+      ...section,
+      blocks: section.blocks.map((block) => (block.id === blockId ? updater(block) : block))
+    }))
+  };
+}
+
+function toBrgBlock(block: ResearchBlock) {
+  if (block.type === "heading") {
+    return { id: block.id, type: "heading", level: block.level, text: block.text };
+  }
+  if (block.type === "paragraph" || block.type === "conclusion") {
+    return { id: block.id, type: "paragraph", markdown: block.markdown };
+  }
+  if (block.type === "board") {
+    return {
+      id: block.id,
+      type: "board",
+      moveNumber: block.moveNumber,
+      caption: block.caption,
+      showCoordinates: block.showCoordinates,
+      showLastMove: block.showLastMove,
+      marks: block.markers.map(toBrgMarker)
+    };
+  }
+  if (block.type === "variation") {
+    return {
+      id: block.id,
+      type: "variation",
+      caption: block.caption,
+      baseMoveNumber: block.fromMoveNumber,
+      firstMoveLabel: 1,
+      moves: block.sequence.map((point, index) => ({
+        color: moveColorAt(block.fromMoveNumber + index + 1),
+        pos: gtpPointToTuple(point, block.boardSize)
+      })).filter((move) => move.pos !== null)
+    };
+  }
+  if (block.type === "ai_analysis") {
+    return {
+      id: block.id,
+      type: "ai",
+      engine: block.engineName,
+      moveNumber: 0,
+      winrate: block.winrate,
+      scoreLead: block.scoreLead,
+      visits: block.visits,
+      candidates: block.candidateMoves.map((candidate) => ({
+        move: gtpPointToTuple(candidate.moveName, 19) ?? [0, 0],
+        winrate: candidate.winrate,
+        scoreLead: candidate.scoreLead,
+        visits: candidate.visits,
+        pv: candidate.pv.map((point) => gtpPointToTuple(point, 19)).filter(Boolean)
+      }))
+    };
+  }
+  return null;
+}
+
+function fromBrgDocument(record: Record<string, unknown>): ResearchDocument {
+  const meta = asRecord(record.meta);
+  const source = asRecord(record.source);
+  const gameInfo = asRecord(record.gameInfo);
+  const players = asRecord(gameInfo.players);
+  const black = asRecord(players.black);
+  const white = asRecord(players.white);
+  const now = new Date().toISOString();
+  const document: ResearchDocument = {
+    brgVersion: BRG_VERSION,
+    id: createId("doc"),
+    title: stringValue(meta.title, "未命名棋评"),
+    author: stringValue(meta.author, ""),
+    createdAt: stringValue(meta.createdAt, now),
+    updatedAt: stringValue(meta.updatedAt, now),
+    sourceGame: {
+      fileName: stringValue(source.fileName, "未命名棋谱"),
+      boardSize: numberValue(gameInfo.boardSize, 19),
+      komi: numberValue(gameInfo.komi, 7.5),
+      rules: stringValue(gameInfo.rules, "中国"),
+      players: {
+        black: stringValue(black.name, "黑棋"),
+        white: stringValue(white.name, "白棋")
+      },
+      result: typeof gameInfo.result === "string" ? gameInfo.result : undefined,
+      totalMoves: 0
+    },
+    tags: Array.isArray(meta.tags) ? meta.tags.filter((tag): tag is string => typeof tag === "string") : [],
+    mainSgf: stringValue(source.content, ""),
+    gameTree: parseGameTreeExtension(record),
+    analysis: parseAnalysisExtension(record),
+    assets: [],
+    sections: [{ id: createId("sec"), title: "正文", blocks: [] }]
+  };
+  const blocks = Array.isArray(record.blocks) ? record.blocks : [];
+  document.sections[0].blocks = blocks.map((block) => fromBrgBlock(block, document.sourceGame.boardSize)).filter(Boolean) as ResearchBlock[];
+  return document;
+}
+
+function fromBrgBlock(value: unknown, boardSize: number): ResearchBlock | null {
+  const block = asRecord(value);
+  const now = new Date().toISOString();
+  const type = block.type;
+  if (type === "heading") {
+    return {
+      id: stringValue(block.id, createId("blk")),
+      type: "heading",
+      level: numberValue(block.level, 1) as 1 | 2 | 3,
+      text: stringValue(block.text, ""),
+      createdAt: now,
+      updatedAt: now
+    };
+  }
+  if (type === "paragraph") {
+    return {
+      id: stringValue(block.id, createId("blk")),
+      type: "paragraph",
+      markdown: stringValue(block.markdown, ""),
+      createdAt: now,
+      updatedAt: now
+    };
+  }
+  if (type === "board") {
+    return {
+      id: stringValue(block.id, createId("blk")),
+      type: "board",
+      moveNumber: numberValue(block.moveNumber, 0),
+      boardSize,
+      position: [],
+      showCoordinates: block.showCoordinates !== false,
+      showLastMove: block.showLastMove !== false,
+      markers: [],
+      arrows: [],
+      caption: typeof block.caption === "string" ? block.caption : undefined,
+      createdAt: now,
+      updatedAt: now
+    };
+  }
+  if (type === "variation") {
+    const moves = Array.isArray(block.moves) ? block.moves : [];
+    const sequence = moves.map((move) => tupleToGtpPoint(asRecord(move).pos, boardSize)).filter(Boolean) as string[];
+    const baseMoveNumber = numberValue(block.baseMoveNumber, 0);
+    const variationMoves = sequenceToReviewMoves(sequence, boardSize, baseMoveNumber);
+    return createVariationBlockFromMoves(
+      baseMoveNumber,
+      boardSize,
+      buildBoardPosition(variationMoves, boardSize, variationMoves.length).stones,
+      sequence,
+      stringValue(block.caption, "变化")
+    );
+  }
+  return null;
+}
+
+function sequenceToReviewMoves(sequence: string[], boardSize: number, baseMoveNumber: number): ReviewMove[] {
+  return sequence.map((point, index) => {
+    const parsed = gtpPointToTuple(point, boardSize) ?? [0, 0];
+    return {
+      moveNumber: baseMoveNumber + index + 1,
+      color: moveColorAt(baseMoveNumber + index + 1) === "B" ? "black" : "white",
+      x: parsed[0],
+      y: parsed[1]
+    };
+  });
+}
+
+function moveColorAt(moveNumber: number): "B" | "W" {
+  return moveNumber % 2 === 1 ? "B" : "W";
+}
+
+function toBrgMarker(marker: BoardMarker) {
+  return {
+    id: marker.id,
+    type: marker.shape === "number" ? "label" : marker.shape,
+    pos: [marker.x, marker.y],
+    text: marker.text
+  };
+}
+
+function gtpPointToTuple(point: string, boardSize: number): [number, number] | null {
+  if (!point || point.toLowerCase() === "pass") {
+    return null;
+  }
+  const match = /^([A-HJ-Z])(\d+)$/i.exec(point);
+  if (!match) {
+    return null;
+  }
+  const labels = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+  const x = labels.indexOf(match[1].toUpperCase());
+  const row = Number(match[2]);
+  const y = boardSize - row;
+  return x >= 0 && x < boardSize && y >= 0 && y < boardSize ? [x, y] : null;
+}
+
+function tupleToGtpPoint(value: unknown, boardSize: number): string | null {
+  if (!Array.isArray(value) || value.length < 2) {
+    return null;
+  }
+  const x = Number(value[0]);
+  const y = Number(value[1]);
+  const labels = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= boardSize || y < 0 || y >= boardSize) {
+    return null;
+  }
+  return `${labels[x]}${boardSize - y}`;
+}
+
+function inferSourceFormat(fileName: string): "sgf" | "gib" {
+  return fileName.toLowerCase().endsWith(".gib") ? "gib" : "sgf";
+}
+
+function parseGameTreeExtension(record: Record<string, unknown>): GameTree | undefined {
+  const tensugo = asRecord(record.tensugo);
+  const candidate = tensugo.gameTree ?? record.gameTree;
+  if (!candidate || typeof candidate !== "object") {
+    return undefined;
+  }
+  return candidate as GameTree;
+}
+
+function parseAnalysisExtension(record: Record<string, unknown>): ResearchDocument["analysis"] {
+  const tensugo = asRecord(record.tensugo);
+  const candidate = tensugo.analysis ?? record.analysis;
+  if (!candidate || typeof candidate !== "object") {
+    return undefined;
+  }
+  return candidate as ResearchDocument["analysis"];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function numberValue(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function fileStem(fileName: string): string {
+  return fileName.replace(/\.[^.]+$/, "");
+}
+
+function createId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}

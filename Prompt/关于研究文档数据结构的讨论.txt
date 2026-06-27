@@ -1,0 +1,1148 @@
+关于 brg 数据结构，我也问了 Claude 4.6，他回答得很详细。 你来比较一下：
+
+围棋变化图记录用 JSON tree 是很合适的选择——这本质上就是 SGF（Smart Game Format）四十年来一直在解决的问题，只是你换了一层更适合 Vue 3 前端消费的序列化方式。既然你的整套架构（KataGo/Leela Zero 集成、Web 前端）都是 JSON 原生的，自创 brg 格式而不是直接套 SGF 文本语法，是合理的工程决策。
+不过有个关键点想先提出来：「棋谱研究文档」里的"变化图"，和"对局树里的一个分支"其实是两个不完全重合的概念。研究文档里常见的是——从某个局面切出来、单独编号（图1、图2…）、配解说文字、有时甚至带着和实战不同的着手编号（比如"以下是假想进行，黑1实为实战第47手"）。如果只做一棵带 children 的对局树，你会发现很难优雅地表达"图3引用了对局树第15手位置，但接下来的5步是我编的假设变化，不是实战"这种情况。
+所以我建议分两层：**对局树（GameTree）**记录真实棋谱本体的主线+变化分支；**变化图（Diagram）**是面向文档输出的"快照层"，每个 diagram 可以引用对局树某个节点作为起点，也可以完全自定义起始局面，带自己的标题、解说、着手编号。
+对局树本身用经典的节点树结构——每个节点代表一步棋（或摆放/虚手），有零或多个 children，约定 children[0] 是主线，其余是变化：
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.25s;
+    animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  }
+VvisualizeVvisualize show_widget每个节点除了 move/children，还需要这几类字段才够用：
+
+comment：该节点的解说文字（研究文档的核心内容）
+judgment：好棋/坏棋/俗手/疑问手之类的评价标记，对应 SGF 的 GB/GW/TE/BM
+marks：标注列表——三角、圆、方框、叉、文字标签（A/B/1/2…），以及一种"虚着"（ghost stone，画在图上但不计入实际着手树，用于"若在此处应一手"这类假设性提示）
+captures：是否显式存储被提的子。这是个需要你自己权衡的点——如果 brg 只是文档/记录格式，靠你已有的 Go 引擎重放规则来算提子，格式可以更精简；如果想让 brg 脱离规则引擎也能独立渲染，就得把每步的提子位置也存进节点。
+
+变化图（Diagram）层则是给文档装订用的：每个 diagram 有 refNode（指向对局树某节点，表示"从这里开始"）或者自带 baseSetup（完全独立的假设局面），有自己的标题、着手编号起点、解说 caption。这样你写"图3：黑1时，如果白改为托退…"时，图本身就是一个独立可引用、可编号的对象，不必硬塞进对局树的 children 里。
+还有几个建议你现在就拍板、否则后面改起来麻烦的设计点：
+
+坐标系：建议存储用 0-indexed 整数 [col, row]，人类可读的「D4」「五五」之类的记法做成一层转换函数，不进格式本身——计算/渲染时整数最省心。
+节点 id：可以用简单自增（n1, n2…），也可以用路径式 id（如 0.1.2 表示第几个分支的第几个分支），后者的好处是从 id 本身就能看出在树里的深度和分支位置，对"研究文档里引用某个节点"这种场景更友好。
+棋盘尺寸：如果要覆盖 9/13/19 路和死活题，boardSize 该放 gameInfo 还是允许每个 diagram 单独覆盖，要想清楚。
+是否做规则校验：brg 存不存劫、自杀合法性这类规则层的东西，还是完全信任写入者、只管记录不管校验——这决定了它是"纯数据格式"还是"半个规则引擎"。
+
+我把完整的字段参考表和示例 JSON（顶层结构、节点结构、marks 词汇表、diagram 结构）整理成了一份文档：Created a file, read a fileCreated a file, read a file如果你已经定了坐标系和 id 方案，我可以接着帮你写一份 TypeScript 类型定义或 JSON Schema，方便前端和校验逻辑直接用。
+
+BRG 棋谱研究文件格式 — 数据结构设计参考
+
+设计思路：两层结构
+
+围棋"变化图"在棋谱研究文档里实际对应两种不同的东西：
+
+
+对局树（GameTree）：一局棋的完整记录，主线 + 实战中出现/复盘中讨论的所有变化分支。这是棋谱本体。
+变化图（Diagram）：面向文档输出的"快照"。每张图有自己的标题、编号、解说文字，可以从对局树某个节点切出来，也可以是完全独立的假设局面（"如果开局这样下会怎样"），不一定要挂在对局树上。
+
+
+把这两层分开，是这套设计相对于"直接照搬 SGF 语义"最大的增量价值——SGF 的 game tree 模型解决了第一层，但没有专门解决"如何把树上的一段变化包装成一张带标题、带编号、可在正文里引用的图"这个文档场景的问题。
+
+
+一、顶层结构 GameRecord
+
+json{
+  "format": "brg",
+  "version": "1.0",
+  "gameInfo": {
+    "boardSize": 19,
+    "rules": "chinese",
+    "komi": 7.5,
+    "handicap": 0,
+    "players": {
+      "black": { "name": "佚名", "rank": "9d" },
+      "white": { "name": "佚名", "rank": "9d" }
+    },
+    "event": "第X届XX杯",
+    "date": "2026-06-20",
+    "result": "B+3.5",
+    "source": "弈客"
+  },
+  "tree": { "...": "根节点，见第二节" },
+  "diagrams": [ "...变化图数组，见第四节" ]
+}
+
+字段说明format / version格式标识与版本号，方便以后做兼容性迁移gameInfo对应 SGF 的 game info 属性（PB/PW/RE/DT 等）tree完整对局树的根节点diagrams文档用的变化图快照数组，可选
+
+
+二、节点 Node（对局树）
+
+json{
+  "id": "n3",
+  "type": "move",
+  "move": { "color": "B", "pos": [16, 16] },
+  "moveNumber": 3,
+  "captures": [],
+  "comment": "黑棋脱先占据另一星位，呈对角布局。",
+  "judgment": null,
+  "marks": [],
+  "children": [
+    {
+      "id": "n4",
+      "type": "move",
+      "move": { "color": "W", "pos": [15, 3] },
+      "moveNumber": 4,
+      "comment": "实战，白棋选择第三个角。",
+      "children": []
+    },
+    {
+      "id": "n4v1",
+      "type": "move",
+      "move": { "color": "W", "pos": [3, 15] },
+      "moveNumber": 4,
+      "comment": "变化A：若白棋改占对角星位，全局将呈现交叉格局。",
+      "children": []
+    }
+  ]
+}
+
+设置/摆放（不计为着手，常用于死活题或续盘起点）用 type: "setup"：
+
+json{
+  "id": "root",
+  "type": "setup",
+  "setup": {
+    "black": [[3, 3], [3, 15]],
+    "white": [[15, 3]]
+  },
+  "toPlay": "B",
+  "children": [ "...第一手节点" ]
+}
+
+字段说明id节点标识，可用自增（n1, n2…）或路径式（0.1.2，能从 id 直接看出分支位置）typemove | setup | pass | resignmove.pos建议 0-indexed 整数 [col, row]，人类可读坐标（D4、五五）做成转换函数，不进格式本身moveNumber实战手数，变化分支中通常沿用分支点的手数captures该手提走的子（是否需要显式存储见第五节）comment该节点的解说文字 — 研究文档的核心内容judgmentgood | bad | interesting | questionable，对应 SGF 的 GB/GW/TE/BM/DOmarks该节点局面上的标注，见第三节children子节点数组。约定 children[0] 为主线，其余为变化分支
+
+
+三、标注 Marks 词汇表
+
+type说明额外字段triangle三角标记，强调关键子poscircle圆形标记possquare方形标记poscross叉标记，常表示坏点/危险点poslabel文字标签（A/B/1/2…），多分支对比时常用pos, textghost虚着/预想落子，不计入对局树，仅用于图上提示"若走这里"pos, colorterritory标记目数归属，用于终局图pos, owner
+
+
+四、变化图 Diagram 层（面向文档输出）
+
+json{
+  "id": "fig-3",
+  "title": "图3 黑1时的另一种应法",
+  "refNode": "n3",
+  "baseSetup": null,
+  "startMoveNumber": 1,
+  "moves": [
+    { "color": "W", "pos": [2, 14], "label": "1" },
+    { "color": "B", "pos": [3, 13], "label": "2" }
+  ],
+  "marks": [
+    { "type": "label", "pos": [16, 16], "text": "黑3" }
+  ],
+  "caption": "如果白棋改为1位托退，黑2位扳后，以下进行对黑棋有利。"
+}
+
+字段说明refNode指向对局树中某节点 id，表示"从这个局面开始"；为 null 时用 baseSetup 自定义局面baseSetup独立于对局树的起始局面（黑/白子位置），用于完全假设性的图startMoveNumber图内着手的起始编号，可以和实战手数脱钩（书里常见"以下1、2、3…"）moves该图自己的着手序列，带独立 label，不污染主对局树caption图说文字，正文可直接引用 fig-3
+
+
+五、需要你自己决定的设计点
+
+
+坐标系：推荐存储用 0-indexed 整数数组，人类可读记法（D4、五五）只在显示层做转换，不进数据本身。
+captures 是否显式存储：如果 brg 只是配合已有 Go 规则引擎使用的记录格式，可以不存提子，重放时算；如果想让 brg 脱离引擎也能独立渲染棋盘状态，就需要把每手的提子位置存进节点。
+节点 id 方案：自增 id 简单，路径式 id（如 0.1.2）能直接体现树的深度和分支序号，对"正文引用某节点"更友好，但生成和维护稍复杂。
+棋盘尺寸 / 非标准对局支持：boardSize 放在 gameInfo 是否够用，还是需要让单个 diagram 覆盖（比如正文里混插 9 路死活题）。
+是否在格式层做规则校验：劫争、自杀合法性等规则相关的校验，brg 本身管不管，还是完全信任写入者，只负责记录不负责验证。
+
+
+
+六、和 SGF 的关系（可选参考）
+
+如果后续需要和 KataGo / Leela Zero 等工具互通，值得让 brg 的语义模型尽量贴近 SGF（同样的树结构、同样的标注概念），只是序列化方式换成 JSON。这样写一对轻量的 SGF↔brg 转换器会容易很多，能直接复用已有的 SGF 生态（引擎输出、在线棋谱库）。如果完全不需要外部互通，这一条可以忽略。
+
+
+
+Claude 这个回答质量很高，尤其是这句是关键：
+
+GameTree 和 Diagram 必须分开。
+
+我认为它比我昨天那个版本更接近你真正要做的 BRG。
+
+我的判断：
+
+应该吸收 Claude 的两层结构，但不要完全照搬。
+
+1. Claude 最有价值的点
+
+它把问题拆成：
+
+GameTree = 棋谱本体
+Diagram  = 文档里的变化图/图例/快照
+
+这个非常对。
+
+因为期评里真正常见的是：
+
+图1：实战至黑51
+图2：若白1改走这里
+图3：AI 推荐变化
+图4：失败图
+
+这些图不是简单的 SGF 分支。
+
+它们是文档对象。
+
+所以 BRG 不能只有 tree。
+
+必须有：
+
+{
+  "gameTree": {},
+  "documents": [],
+  "diagrams": []
+}
+2. 但 Claude 少了最关键的一层
+
+Claude 有：
+
+tree
+diagrams
+
+但你的 BRG 还需要：
+
+article / blocks
+
+也就是正文结构。
+
+否则 diagrams 只是图片库，不是期评文章。
+
+我建议最终结构是三层：
+
+GameTree     棋谱树
+Diagram      可引用变化图
+Article      期评正文
+
+也就是：
+
+{
+  "format": "brg",
+  "version": "1.0",
+
+  "gameInfo": {},
+
+  "gameTree": {},
+
+  "diagrams": [],
+
+  "article": {
+    "title": "",
+    "blocks": []
+  }
+}
+
+这是比 Claude 更完整的结构。
+
+3. 你应该采用的最终模型
+
+我建议 BRG 核心定义成：
+
+BRG = GameTree + Diagram Library + Article Blocks + AI Cache
+
+其中：
+
+GameTree
+
+负责保存棋谱与分支。
+
+Diagram Library
+
+负责保存“图1、图2、失败图、正解图、AI推荐图”。
+
+Article Blocks
+
+负责保存正文排版。
+
+AI Cache
+
+负责保存 KataGo 结果，避免重新算。
+
+4. 我的修正版顶层结构
+
+建议这样：
+
+{
+  "format": "brg",
+  "version": "1.0",
+
+  "metadata": {
+    "title": "黑51手后的右边攻防研究",
+    "author": "Xinyu Tu",
+    "createdAt": "2026-06-26T18:00:00Z",
+    "updatedAt": "2026-06-26T18:30:00Z",
+    "tags": ["定式", "中盘", "KataGo"]
+  },
+
+  "source": {
+    "format": "gib",
+    "filename": "wzw858_vs_zgbl1234.gib",
+    "originalText": null
+  },
+
+  "gameInfo": {
+    "boardSize": 19,
+    "rules": "chinese",
+    "komi": 6.5,
+    "players": {
+      "black": { "name": "wzw858", "rank": "7段" },
+      "white": { "name": "zgbl1234", "rank": "7段" }
+    },
+    "result": null
+  },
+
+  "gameTree": {
+    "root": {}
+  },
+
+  "diagrams": [],
+
+  "article": {
+    "blocks": []
+  },
+
+  "analysisCache": []
+}
+5. 我不同意 Claude 的一点
+
+Claude 把 comment 放在 Node 里：
+
+{
+  "comment": "黑棋脱先..."
+}
+
+这个可以保留，但不能作为主要期评文字。
+
+原因是：
+
+SGF comment 是“挂在某一步上的注释”。
+
+但期评文章是：
+
+标题
+一段文字
+图1
+一段解释
+图2
+AI推荐
+总结
+
+它不是节点注释的集合。
+
+所以：
+
+Node.comment = 简短节点注释
+Article.blocks = 正式期评正文
+
+这两个必须分开。
+
+6. Diagram 设计我基本同意
+
+Claude 的 Diagram 很好：
+
+{
+  "id": "fig-3",
+  "title": "图3 黑1时的另一种应法",
+  "refNode": "n3",
+  "moves": [],
+  "caption": ""
+}
+
+但我会补几个字段：
+
+{
+  "id": "fig-3",
+  "type": "diagram",
+  "title": "图3：AI推荐变化",
+  "refNode": "n51",
+  "basePosition": null,
+  "moves": [],
+  "marks": [],
+  "showCoordinates": true,
+  "showMoveNumbers": true,
+  "firstMoveLabel": 1,
+  "caption": "",
+  "analysisRef": "analysis-n51-t2"
+}
+
+尤其是：
+
+analysisRef
+
+很重要。
+
+这样图可以引用 KataGo 分析结果。
+
+7. Article Block 应该这样
+
+例如：
+
+{
+  "type": "paragraph",
+  "text": "黑51实战选择右边靠压，但AI认为此处胜率下降。"
+}
+
+插入图：
+
+{
+  "type": "diagramRef",
+  "diagramId": "fig-1"
+}
+
+插入 AI：
+
+{
+  "type": "analysisRef",
+  "analysisId": "analysis-n51"
+}
+
+这样 PDF 渲染时就是：
+
+正文
+图1
+图说
+AI候选点表
+正文
+图2
+总结
+
+非常清楚。
+
+8. captures 我建议怎么处理
+
+我建议：
+
+MVP 不存 captures。
+
+理由：
+
+你自己已经有棋盘规则引擎。
+
+BRG 是研究文档，不是独立棋盘模拟器。
+
+但可以预留字段：
+
+"captures": null
+
+以后需要再填。
+
+不要现在把格式搞重。
+
+9. 坐标系
+
+Claude 建议 0-indexed [col, row]，我同意。
+
+但注意围棋显示坐标有坑：
+
+A B C D E F G H J K ...
+
+没有 I。
+
+所以内部不要存 "D4"。
+
+内部统一：
+
+[3, 15]
+
+显示层再转。
+
+10. 节点 ID
+
+我不建议路径式 ID。
+
+因为你以后编辑分支、删除分支、移动分支，路径 ID 会变。
+
+建议用稳定 UUID / nanoid / 自增。
+
+例如：
+
+"id": "node_000051"
+
+或者：
+
+"id": "n_8f3ka2"
+
+不要用：
+
+0.1.2
+
+路径可以另算，不应该当 ID。
+
+11. 最终结论
+
+Claude 的设计：
+
+GameTree + Diagram
+
+是正确核心。
+
+但对你的 BRG 还不够。
+
+你真正需要的是：
+
+GameTree + Diagram + Article Blocks + AI Cache
+
+也就是：
+
+棋谱树
++
+图例库
++
+期评正文
++
+KataGo 分析缓存
+
+这就是 BRG 的核心壁垒。
+
+如果只做 GameTree，你只是 JSON 版 SGF。
+
+如果加 Diagram，你有了变化图系统。
+
+如果再加 Article Blocks + PDF Export，你才真正变成：
+
+围棋研究文档格式。
+
+GameTree 只是其中一个成员。
+
+所以整个文档的重心应该放在 棋评 上，而不是 棋谱 上。
+
+我建议这份设计文档至少 30~50 页 Markdown，包含：
+
+BRG 设计理念
+数据结构
+JSON Schema
+Diagram 模型
+AI Cache
+Block 系统
+棋评编辑器
+PDF 输出规范
+BRG 与 SGF/GIB 的关系
+后续兼容策略
+
+这已经属于一份正式的软件架构设计文档了。
+
+我不建议在聊天里一次性输出。
+
+原因不是写不出来，而是 Markdown 会超过一次回复长度，而且后面修改会非常困难。
+
+我建议把它当成项目文档来写，例如：
+
+docs/
+
+BRG_Design.md
+
+内容包括：
+
+1. BRG 目标
+
+2. 设计原则
+
+3. 整体架构
+
+4. 顶层 JSON
+
+5. Metadata
+
+6. Source(SGF/GIB)
+
+7. GameTree
+
+8. Diagram
+
+9. Article(Block)
+
+10. AI Cache
+
+11. PDF 导出
+
+12. JSON Schema
+
+13. 示例 BRG
+
+14. 版本兼容
+
+15. 后续扩展
+
+这样以后 Codex、Claude、Cursor 都能直接当设计规范来开发。
+
+我建议把它写成一份可以长期维护的 BRG 1.0 规范，而不是一段 Prompt。 这份文档以后甚至可以成为 BlackRice Go 的官方文件格式规范。
+
+这个设计会不会太复杂了？我很担心一次是不是能实现。能不能先设计个简单点的1.0版本，以后再迭代到2.0？
+
+会，之前那个设计明显太复杂。应该先做 BRG 1.0：能写棋评、能保存、能导出 PDF，不要一上来做完整文档生态。
+
+我的建议：
+
+BRG 1.0 = 一个棋谱 + 一篇棋评文章 + 若干局面图/变化图 + AI快照
+
+不要先做复杂 GameTree 替代 SGF/GIB。棋谱本体继续用你现有内部结构。
+
+BRG 1.0 最小结构
+{
+  "format": "brg",
+  "version": "1.0",
+
+  "meta": {
+    "title": "第11手局面研究",
+    "author": "",
+    "createdAt": "",
+    "updatedAt": ""
+  },
+
+  "source": {
+    "format": "sgf",
+    "fileName": "game.sgf",
+    "content": "..."
+  },
+
+  "gameInfo": {
+    "boardSize": 19,
+    "komi": 6.5,
+    "black": "wzw858",
+    "white": "zgbl1234"
+  },
+
+  "blocks": [
+    {
+      "id": "b1",
+      "type": "heading",
+      "text": "黑11之后的关键判断"
+    },
+    {
+      "id": "b2",
+      "type": "paragraph",
+      "text": "这里黑棋胜率下降，主要问题是右上角没有及时处理。"
+    },
+    {
+      "id": "b3",
+      "type": "board",
+      "moveNumber": 11,
+      "caption": "图1：实战至黑11",
+      "marks": []
+    },
+    {
+      "id": "b4",
+      "type": "ai",
+      "moveNumber": 11,
+      "engine": "KataGo",
+      "winrate": 42.5,
+      "scoreLead": -0.3,
+      "visits": 552,
+      "candidates": [
+        {
+          "move": "C2",
+          "winrate": 42.5,
+          "scoreLead": -0.3,
+          "visits": 552,
+          "pv": ["C2", "B2", "B5"]
+        }
+      ]
+    },
+    {
+      "id": "b5",
+      "type": "variation",
+      "caption": "图2：AI推荐变化",
+      "baseMoveNumber": 11,
+      "moves": ["C2", "B2", "B5", "D2"]
+    }
+  ]
+}
+
+这就够了。
+
+1.0 不要做什么
+
+先不要做：
+
+独立 diagrams 数组
+完整 article/sections
+复杂 JSON Schema
+fork/remix
+评论
+网站发布
+多文档引用
+复杂排版
+zip 格式
+独立 GameTree
+
+这些留给 2.0。
+
+1.0 必须做什么
+
+只做 5 个 block：
+
+heading
+paragraph
+board
+ai
+variation
+
+这已经能生成一篇像样棋评。
+
+你的 UI 现在已经有：
+
+插入局面
+写讲解
+AI分析
+保存变化
+保存BRG
+导出PDF
+
+所以数据结构也应该贴合这些按钮，不要抽象过度。
+
+BRG 2.0 再升级
+
+以后再变成：
+
+BRG 2.0 = GameTree + Diagram Library + Article Blocks + AI Cache
+
+2.0 才引入：
+
+diagrams[]
+article.blocks[]
+analysisCache[]
+assets[]
+最重要的建议
+
+1.0 的 BRG 不要追求漂亮架构，要追求“能保存你现在这个 UI 产生的棋评”。
+
+你现在每点击一次按钮，就产生一个 block：
+
+插入局面  -> board block
+写讲解    -> paragraph block
+AI分析    -> ai block
+保存变化  -> variation block
+
+这就是最自然、最容易实现的 1.0。
+
+你把简单版的1.0给我输出一个MD吧？我总要有点什么，可以记录传递的
+
+我觉得这是一个很好的时机把目标收敛下来。
+
+我甚至建议把这份文档命名为：
+
+BRG 1.0 Design Draft
+
+注意是 Draft（草案），而不是标准（Specification）。
+
+因为你自己还会在开发过程中不断修正。
+
+BRG 1.0 设计草案（Draft）
+
+Version: 0.1
+
+Author: Xinyu Tu
+
+Project: TensuGo
+
+一、设计目标
+
+BRG（BlackRice Go）不是一种新的棋谱格式。
+
+SGF、GIB 已经很好地解决了棋谱记录的问题。
+
+BRG 的目标是解决 棋评 的问题。
+
+也就是说：
+
+如何把一盘棋、一组变化、一段 AI 分析、一篇文字说明，保存为一个完整的棋评文档。
+
+因此：
+
+SGF/GIB 是输入
+BRG 是研究成果
+二、设计原则
+
+BRG 1.0 只做一件事情：
+
+保存一篇完整棋评。
+
+暂时不考虑：
+
+网站发布
+在线协作
+评论
+Fork
+云同步
+文档版本管理
+插件系统
+
+所有设计都尽量简单。
+
+三、整体结构
+SGF / GIB
+      │
+      ▼
+  TensuGo
+      │
+      ▼
+ 编辑棋评
+      │
+      ▼
+  保存 BRG
+      │
+      ▼
+ 导出 PDF
+
+BRG 保存的是：
+
+原始棋谱
+棋评正文
+局面图
+AI 分析
+变化图
+四、文件格式
+
+扩展名：
+
+.brg
+
+底层采用 JSON。
+
+例如：
+
+review.brg
+五、顶层结构
+{
+    "format": "brg",
+    "version": "1.0",
+
+    "meta": {},
+
+    "source": {},
+
+    "gameInfo": {},
+
+    "blocks": []
+}
+
+整个文档只有四个主要部分。
+
+六、Meta
+
+保存文档信息。
+
+例如：
+
+{
+    "title": "黑51之后的攻防研究",
+    "author": "Xinyu Tu",
+    "createdAt": "...",
+    "updatedAt": "...",
+    "description": "",
+    "tags": []
+}
+七、Source
+
+保存原始棋谱。
+
+支持：
+
+SGF
+
+GIB
+
+例如：
+
+{
+    "format":"gib",
+    "fileName":"example.gib",
+    "content":"......"
+}
+
+BRG 不负责定义棋谱。
+
+只是保存原始数据。
+
+八、GameInfo
+
+方便程序直接读取。
+
+例如：
+
+{
+    "boardSize":19,
+    "komi":6.5,
+    "rules":"Chinese",
+    "black":"Lee Sedol",
+    "white":"AlphaGo",
+    "result":"W+1.5"
+}
+九、Block
+
+整个棋评由多个 Block 组成。
+
+例如：
+
+标题
+
+正文
+
+局面图
+
+正文
+
+AI分析
+
+正文
+
+变化图
+
+总结
+
+Block 按顺序排列。
+
+十、Block 类型
+
+BRG 1.0 仅支持五种 Block。
+
+Heading
+
+标题。
+
+例如：
+
+第一章 右边攻防
+Paragraph
+
+Markdown 文本。
+
+支持：
+
+标题
+粗体
+斜体
+列表
+
+即可。
+
+Board
+
+保存一个局面。
+
+例如：
+
+{
+    "type":"board",
+
+    "moveNumber":51,
+
+    "caption":"图1 实战至黑51",
+
+    "marks":[]
+}
+
+显示时恢复棋盘状态。
+
+支持：
+
+三角
+圆圈
+方块
+标签
+箭头
+AI
+
+保存 KataGo 分析结果。
+
+例如：
+
+{
+    "type":"ai",
+
+    "engine":"KataGo",
+
+    "moveNumber":51,
+
+    "visits":3000,
+
+    "winrate":53.2,
+
+    "scoreLead":1.4,
+
+    "pv":[]
+}
+
+保存后无需重新分析即可查看。
+
+Variation
+
+保存一条变化。
+
+例如：
+
+{
+    "type":"variation",
+
+    "baseMoveNumber":51,
+
+    "caption":"图2 AI推荐",
+
+    "moves":[
+        "Q4",
+        "R5",
+        "P3"
+    ]
+}
+
+变化仅用于展示。
+
+不修改原始棋谱。
+
+十一、编辑流程
+
+用户操作：
+
+打开 SGF/GIB
+
+↓
+
+浏览棋谱
+
+↓
+
+分析
+
+↓
+
+点击：
+
+插入局面
+
+↓
+
+生成 Board Block
+
+↓
+
+输入文字
+
+↓
+
+生成 Paragraph Block
+
+↓
+
+点击：
+
+插入 AI 分析
+
+↓
+
+生成 AI Block
+
+↓
+
+点击：
+
+保存变化
+
+↓
+
+生成 Variation Block
+
+整个棋评就是 Block 的顺序组合。
+
+十二、保存原则
+
+BRG 保存的是：
+
+✅ 原始棋谱
+
+✅ 棋评正文
+
+✅ AI 数据
+
+✅ 局面图
+
+✅ 变化图
+
+不保存：
+
+❌ PDF
+
+❌ 图片截图
+
+所有内容都可以重新编辑。
+
+十三、PDF 导出
+
+BRG 最终输出：
+
+PDF。
+
+PDF 用于：
+
+微信分享
+邮件
+打印
+收藏
+
+PDF 不再编辑。
+
+BRG 才是源文件。
+
+十四、1.0 范围
+
+BRG 1.0 只实现：
+
+保存棋评
+打开棋评
+编辑棋评
+导出 PDF
+
+保持简单。
+
+所有复杂能力放到以后版本。
+
+十五、未来扩展（2.0）
+
+未来可以增加：
+
+Diagram Library
+GameTree
+AI Cache
+网站发布
+评论
+Fork
+多文档引用
+云同步
+
+这些功能都不影响 BRG 1.0 文件结构，可以逐步扩展。
+
+十六、设计原则总结
+
+BRG 1.0 的目标不是取代 SGF。
+
+而是在 SGF/GIB 的基础上，建立一种能够长期保存、编辑和传播棋评的文档格式。
+
+一句话概括：
+
+SGF/GIB 保存棋谱，BRG 保存棋评。
+
+我最后补充一个建议，也是我认为 1.0 最大的简化：
+
+先不要实现真正的 Block Editor（类似 Notion）。
+
+你现在完全可以把右边的"棋评编辑区"做成一个线性列表：
+
+[标题]
+
+[正文]
+
+[图1]
+
+[正文]
+
+[AI]
+
+[图2]
+
+[正文]
+
+[总结]
+
+每点击一次"插入局面"、"插入 AI"、"保存变化"，就在当前光标位置插入一个 Block。这样实现难度会低很多，但数据模型已经是 Block 化的，为以后升级更强的编辑器留出了空间。
