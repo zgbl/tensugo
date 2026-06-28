@@ -58,11 +58,8 @@ Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinat
 - PV mini-board must stay square, show the full board, and include border/padding in sizing.
 - Research mode right pane keeps branch tree on top and uses the remaining space for live document preview: board/variation figures paired with commentary text.
 
-## Package/Install
+## Build, Package, And Install
 
-After user-facing app changes, install without waiting to be reminded:
+Codex 每次改完代码后，不要自动打包、不要安装、不要运行安装脚本。只说明修改内容和建议测试命令，由用户自己运行。
 
-1. Prefer `npm run install:mac` or `bash scripts/install-mac-app.sh`; each packaging/install run must bump the patch version by 1.
-2. If the script cannot run, fall back to build, Tauri build, delete `/Applications/TensuGo.app`, `ditto` the new bundle, then verify timestamp/version.
-
-Never claim the installed app changed unless the old app was deleted and the new bundle copied into `/Applications`.
+Use `npm run build` for local verification when appropriate. Only package or install if the user explicitly asks for it in that turn.

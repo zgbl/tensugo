@@ -34,6 +34,9 @@ export function BoardPlaceholder({
   const displayedCurrentMoveNumber = currentMoveNumber(stones);
   const rowGridStyle = { gridTemplateColumns: `repeat(${boardSize}, 1fr)` };
   const colGridStyle = { gridTemplateRows: `repeat(${boardSize}, 1fr)` };
+  const candidateBubbleSize = Math.max(20, Math.min(42, pixelSize * 0.056));
+  const candidateFontSize = Math.max(7, Math.min(14, candidateBubbleSize * 0.34));
+  const candidateRankOffset = Math.max(2, candidateBubbleSize * 0.13);
   const candidatePoints = candidates
     .map((candidate) => ({
       candidate,
@@ -68,7 +71,12 @@ export function BoardPlaceholder({
   return (
     <div
       className={`board-wrap ${coordinateLabelsVisible ? "" : "coordinates-hidden"}`}
-      style={{ "--board-pixel-size": `${pixelSize}px` } as CSSProperties}
+      style={{
+        "--board-pixel-size": `${pixelSize}px`,
+        "--candidate-bubble-size": `${candidateBubbleSize}px`,
+        "--candidate-font-size": `${candidateFontSize}px`,
+        "--candidate-rank-offset": `${candidateRankOffset}px`
+      } as CSSProperties}
     >
       {coordinateLabelsVisible && (
         <>

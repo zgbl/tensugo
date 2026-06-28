@@ -14,6 +14,7 @@ export type ParsedSgf = {
   blackName: string;
   whiteName: string;
   gameDate?: string;
+  result?: string;
   rules: string;
   gameTree: GameTree;
   moves: ReviewMove[];
@@ -191,6 +192,7 @@ export function parseSgf(source: string, fallbackName = "未命名棋谱"): Pars
   const blackName = firstProperty(nodes, "PB", "黑棋");
   const whiteName = firstProperty(nodes, "PW", "白棋");
   const gameDate = firstProperty(nodes, "DT", "");
+  const result = firstProperty(nodes, "RE", "");
   const rules = firstProperty(nodes, "RU", "未知");
   const treeKomi = Number.isFinite(komi) ? komi : 7.5;
   const gameTree = parseSgfGameTree(source, boardSize, treeKomi, warnings);
@@ -237,6 +239,7 @@ export function parseSgf(source: string, fallbackName = "未命名棋谱"): Pars
     blackName,
     whiteName,
     gameDate: gameDate || undefined,
+    result: result || undefined,
     rules,
     gameTree,
     moves,
@@ -330,6 +333,7 @@ function parseGib(source: string, fallbackName = "未命名棋谱"): ParsedSgf {
   const blackName = props.get("GAMEBLACKNAME") || props.get("GAMEBLACKNICK") || "黑棋";
   const whiteName = props.get("GAMEWHITENAME") || props.get("GAMEWHITENICK") || "白棋";
   const gameDate = props.get("GAMEDATE") || props.get("GAMESTARTTIME") || props.get("GAMEINFODATE") || undefined;
+  const result = parseGibResult(props);
   const moves: ReviewMove[] = [];
   const movePattern = /^\s*STO\s+\d+\s+(\d+)\s+([12])\s+(\d+)\s+(\d+)/gm;
 
@@ -371,6 +375,7 @@ function parseGib(source: string, fallbackName = "未命名棋谱"): ParsedSgf {
     blackName: cleanGibText(blackName),
     whiteName: cleanGibText(whiteName),
     gameDate: gameDate ? cleanGibText(gameDate) : undefined,
+    result,
     rules: "弈城",
     gameTree: createGameTreeFromMoves(moves, boardSize, komi),
     moves,
@@ -393,6 +398,20 @@ function parseGibNumber(value: string | undefined): number | null {
   }
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseGibResult(props: Map<string, string>): string | undefined {
+  const direct = cleanGibText(props.get("GAMERESULT") ?? "");
+  if (direct) {
+    return direct;
+  }
+  const zipsu = cleanGibText(props.get("GAMEZIPSU") ?? "");
+  if (zipsu) {
+    return zipsu;
+  }
+  const info = cleanGibText(props.get("GAMEINFOMAIN") ?? "");
+  const resultMatch = /(?:^|,)(?:RESULT|GAMERESULT|GAMEZIPSU):([^,]+)/i.exec(info);
+  return resultMatch ? cleanGibText(resultMatch[1]) : undefined;
 }
 
 function normalizeGibKomi(value: number | null): number {

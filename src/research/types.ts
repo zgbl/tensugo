@@ -3,7 +3,11 @@ import type { GameTree } from "../game/gameTree";
 import type { ReviewMove, ReviewStone } from "../game/sampleGame";
 
 export type ResearchAnalysisDetail = {
+  actualMoveName?: string;
   color: "black" | "white";
+  isCandidate?: boolean;
+  isMatch?: boolean;
+  isTopMove?: boolean;
   matchScore: number;
   moveNumber: number;
   rank: number | null;
@@ -27,6 +31,7 @@ export type ResearchAnalysisSnapshot = {
   endMove: number;
   engineName?: string;
   knownScoreLosses: number;
+  matches?: number;
   modelName?: string;
   points: ResearchAnalysisPoint[];
   startMove: number;
@@ -221,6 +226,7 @@ export type CurrentGameSnapshot = {
   whiteName: string;
   sourceFileName: string;
   gameDate?: string;
+  result?: string;
   totalMoves: number;
   currentMoveNumber: number;
   stones: ReviewStone[];

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BoardPlaceholder, type MoveNumberDisplayMode } from "../board/BoardPlaceholder";
 import { AutoAnalysisDialog, type AutoAnalysisSettings } from "../components/AutoAnalysisDialog";
@@ -40,6 +40,8 @@ import {
   createResearchDocument,
   createVariationBlock,
   makeSnapshot,
+  moveBlock,
+  replaceBlock,
   toBrgDocument,
   updateBlockMarkdown,
   updateDocumentSource,
@@ -63,6 +65,7 @@ import { useGameStore } from "../stores/gameStore";
 type AutoAnalysisSummary = {
   analyzed: number;
   candidateMatches: number;
+  matches: number;
   details: AutoAnalysisMoveDetail[];
   knownScoreLosses: number;
   topMatches: number;
@@ -78,7 +81,11 @@ type TianshuReport = AutoAnalysisSummary & {
 };
 
 type AutoAnalysisMoveDetail = {
+  actualMoveName?: string;
   color: "black" | "white";
+  isCandidate?: boolean;
+  isMatch?: boolean;
+  isTopMove?: boolean;
   matchScore: number;
   moveNumber: number;
   rank: number | null;
@@ -86,6 +93,11 @@ type AutoAnalysisMoveDetail = {
   winrate: number;
   winrateLoss: number;
 };
+
+const MATCH_SETTINGS = {
+  bestNums: 3,
+  percentVisits: 20
+} as const;
 
 type LossBucket = {
   count: number;
@@ -113,6 +125,7 @@ export function App() {
   const [whiteName, setWhiteName] = useState("白棋");
   const [sourceFileName, setSourceFileName] = useState("新棋谱");
   const [gameDate, setGameDate] = useState<string | undefined>(undefined);
+  const [gameResult, setGameResult] = useState<string | undefined>(undefined);
   const [lastAction, setLastAction] = useState("空棋盘已就绪。点“开”选择 SGF，或点棋盘空交点开始摆棋。");
   const [sgfWarnings, setSgfWarnings] = useState<string[]>([]);
   const [engineProfile, setEngineProfile] = useState<EngineProfile | null>(DEFAULT_ENGINE_PROFILE);
@@ -166,15 +179,17 @@ export function App() {
         sourceFileName,
         totalMoves,
         whiteName,
-        gameDate
+        gameDate,
+        result: gameResult
       }),
-    []
+    [gameResult]
   );
   const initialResearchDocument = useMemo(() => createResearchDocument(initialSnapshot), [initialSnapshot]);
   const [researchDocument, setResearchDocument] = useState<ResearchDocument>(() => initialResearchDocument);
   const [selectedResearchBlockId, setSelectedResearchBlockId] = useState<string | null>(
     () => initialResearchDocument.sections[0]?.blocks[0]?.id ?? null
   );
+  const [commentaryDraft, setCommentaryDraft] = useState("");
   const [activeCommentaryBlockId, setActiveCommentaryBlockId] = useState<string | null>(
     () => initialResearchDocument.sections[0]?.blocks.find((block) => block.type === "paragraph")?.id ?? null
   );
@@ -204,9 +219,10 @@ export function App() {
         sourceFileName,
         totalMoves,
         whiteName,
-        gameDate
+        gameDate,
+        result: gameResult
       }),
-    [blackName, boardSize, currentMoveNumber, gameDate, komi, moves, rules, sourceFileName, totalMoves, whiteName]
+    [blackName, boardSize, currentMoveNumber, gameDate, gameResult, komi, moves, rules, sourceFileName, totalMoves, whiteName]
   );
   const bestCandidate = engineCandidates[0];
   const previewCandidate =
@@ -220,20 +236,13 @@ export function App() {
     : null;
   const candidateCountText = engineCandidates.length > 0 ? `${engineCandidates.length} 个候选点` : "无候选点";
   const branchRows = useMemo(() => flattenBranchTree(gameTree, selectedGameNodeId), [gameTree, selectedGameNodeId]);
-  const commentaryBlock = useMemo(
+  const selectedResearchBlock = useMemo(
     () =>
       researchDocument.sections
         .flatMap((section) => section.blocks)
-        .find((block) => block.id === activeCommentaryBlockId && (block.type === "paragraph" || block.type === "conclusion")) ??
-      researchDocument.sections
-        .flatMap((section) => section.blocks)
-        .find((block) => block.type === "paragraph" || block.type === "conclusion"),
-    [activeCommentaryBlockId, researchDocument]
+        .find((block) => block.id === selectedResearchBlockId) ?? null,
+    [researchDocument, selectedResearchBlockId]
   );
-  const commentaryMarkdown =
-    commentaryBlock && (commentaryBlock.type === "paragraph" || commentaryBlock.type === "conclusion")
-      ? commentaryBlock.markdown
-      : "";
   const autoMatchText = autoAnalysisSummary
     ? `${formatPercent(autoAnalysisSummary.candidateMatches / autoAnalysisSummary.analyzed)} / 首选 ${formatPercent(
         autoAnalysisSummary.topMatches / autoAnalysisSummary.analyzed
@@ -328,8 +337,8 @@ export function App() {
   });
   const saveResearchDocument = async () => {
     const document = researchDocumentWithAnalysis(updateDocumentSource(researchDocument, currentSnapshot));
-    const json = JSON.stringify(toBrgDocument(document, gameTree), null, 2);
-    await saveTextFileWithDialog(json, fileStem(document.title) + ".brg", "已保存 BRG 研究文档。");
+    const json = JSON.stringify(toBrgDocument(document, gameTree));
+    await saveTextFileWithDialog(json, fileStem(document.title) + ".tsg", `已保存 TensuGo 研究文件，大小 ${formatBytes(utf8ByteLength(json))}。`);
   };
   const exportResearchPdf = async () => {
     const html = renderResearchDocumentHtml(
@@ -395,6 +404,7 @@ export function App() {
     try {
       const parsed = validateResearchDocument(JSON.parse(await file.text()));
       setResearchDocument(parsed);
+      setGameResult(parsed.sourceGame.result);
       if (parsed.mainSgf || parsed.gameTree) {
         const gameRecord = parsed.mainSgf ? parseGameRecord(parsed.mainSgf, parsed.sourceGame.fileName) : null;
         const baseTree = parsed.gameTree ?? gameRecord?.gameTree ?? createEmptyGameTree(parsed.sourceGame.boardSize, parsed.sourceGame.komi);
@@ -409,6 +419,7 @@ export function App() {
         setBlackName(parsed.sourceGame.players.black || gameRecord?.blackName || "黑棋");
         setWhiteName(parsed.sourceGame.players.white || gameRecord?.whiteName || "白棋");
         setGameDate(parsed.sourceGame.gameDate || gameRecord?.gameDate);
+        setGameResult(parsed.sourceGame.result || gameRecord?.result);
         setSourceFileName(parsed.sourceGame.fileName);
         setSgfWarnings(gameRecord?.warnings ?? []);
         setMoves(mainMoves);
@@ -429,6 +440,7 @@ export function App() {
           candidateMatches: parsed.analysis.candidateMatches,
           details: parsed.analysis.details,
           knownScoreLosses: parsed.analysis.knownScoreLosses,
+          matches: parsed.analysis.matches ?? parsed.analysis.details.filter((detail) => detail.isMatch).length,
           topMatches: parsed.analysis.topMatches,
           totalMatchScore: parsed.analysis.totalMatchScore,
           totalScoreLoss: parsed.analysis.totalScoreLoss,
@@ -445,44 +457,37 @@ export function App() {
       }
       setSelectedResearchBlockId(parsed.sections[0]?.blocks[0]?.id ?? null);
       setActiveCommentaryBlockId(parsed.sections[0]?.blocks.find((block) => block.type === "paragraph" || block.type === "conclusion")?.id ?? null);
+      setCommentaryDraft("");
       setLastAction(`已打开研究文档 ${file.name}。`);
     } catch (error) {
       setLastAction(`研究文档打开失败: ${String(error)}`);
     }
   };
   const updateResearchCommentary = (markdown: string) => {
-    setResearchDocument((document) => {
-      const blocks = document.sections.flatMap((section) => section.blocks);
-      const textBlock =
-        blocks.find((block) => block.id === activeCommentaryBlockId && (block.type === "paragraph" || block.type === "conclusion")) ??
-        blocks.find((block) => block.type === "paragraph" || block.type === "conclusion");
-      if (textBlock) {
-        setActiveCommentaryBlockId(textBlock.id);
-        return updateBlockMarkdown(document, textBlock.id, markdown);
-      }
-      const block = createParagraphBlock(markdown);
-      setSelectedResearchBlockId(block.id);
-      setActiveCommentaryBlockId(block.id);
-      return appendBlock(updateDocumentSource(document, currentSnapshot), block);
-    });
+    setCommentaryDraft(markdown);
+  };
+  const clearResearchBlockSelection = () => {
+    setSelectedResearchBlockId(null);
+    setActiveCommentaryBlockId(null);
   };
   const insertTextBlock = () => {
-    const markdown = commentaryMarkdown.trim();
+    const markdown = commentaryDraft.trim();
     if (!markdown) {
       setLastAction("当前没有可插入的文字。");
       return;
     }
 
     const textBlock = createParagraphBlock(markdown);
-    const nextDraftBlock = createParagraphBlock("");
-    const nextDocument = appendBlock(
-      appendBlock(updateDocumentSource(researchDocument, currentSnapshot), textBlock),
-      nextDraftBlock
-    );
-    setResearchDocument(nextDocument);
-    setSelectedResearchBlockId(textBlock.id);
-    setActiveCommentaryBlockId(nextDraftBlock.id);
-    setLastAction("已插入纯文字，棋评输入已清空。");
+    textBlock.title = "pure_text";
+    if (selectedResearchBlock?.type === "paragraph" || selectedResearchBlock?.type === "conclusion") {
+      setResearchDocument((document) => replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, textBlock));
+      clearResearchBlockSelection();
+      setLastAction("已更新文字 block。");
+    } else {
+      setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), textBlock));
+      clearResearchBlockSelection();
+      setLastAction("已插入纯文字。");
+    }
   };
   const updateResearchDocumentMeta = (patch: { author?: string; title?: string }) => {
     setResearchDocument((document) => ({
@@ -504,24 +509,13 @@ export function App() {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, normalized);
   };
   const showResearchBlockOnBoard = (blockId: string) => {
-    const currentComment = commentaryMarkdown.trim();
-    const targetCommentBlockId = findCommentBlockIdAfterResearchBlock(researchDocument, blockId);
-    if (currentComment && activeCommentaryBlockId !== targetCommentBlockId) {
-      const shouldSave = window.confirm("当前棋评输入框还有未插入的文字。是否先把这些文字作为当前变化插入？");
-      if (shouldSave) {
-        insertCurrentVariation();
-      } else if (activeCommentaryBlockId) {
-        setResearchDocument((document) => updateBlockMarkdown(document, activeCommentaryBlockId, ""));
-      }
-    }
     const block = researchDocument.sections.flatMap((section) => section.blocks).find((item) => item.id === blockId);
     if (!block) {
       return;
     }
     setSelectedResearchBlockId(block.id);
-    if (targetCommentBlockId) {
-      setActiveCommentaryBlockId(targetCommentBlockId);
-    }
+    setActiveCommentaryBlockId(block.type === "paragraph" || block.type === "conclusion" ? block.id : null);
+    setCommentaryDraft(block.type === "paragraph" || block.type === "conclusion" ? block.markdown : "");
     if (block.type === "variation") {
       const baseMoves = sourceMainLineMoves.slice(0, block.fromMoveNumber);
       const variationMoves = block.sequence
@@ -552,27 +546,23 @@ export function App() {
   };
   const insertCurrentVariation = () => {
     const baseMoveNumber = researchBaseMoveNumber ?? inferVariationBaseMoveNumber(moves, sourceMainLineMoves);
-    const currentComment = commentaryMarkdown.trim();
     if (baseMoveNumber !== null) {
       const variationMoves = moves.slice(baseMoveNumber, currentMoveNumber);
       if (variationMoves.length > 0) {
         const sequence = variationMoves.map((move) => moveToGtpPoint(move, boardSize));
         const variationBlock = createManualVariationBlock(baseMoveNumber, boardSize, currentSnapshot.stones, sequence);
-        const commentBlock = createParagraphBlock(currentComment);
-        const nextDraftBlock = createParagraphBlock("");
-        const nextDocument = appendBlock(
-          appendBlock(
-            appendBlock(updateDocumentSource(researchDocument, currentSnapshot), variationBlock),
-            commentBlock
-          ),
-          nextDraftBlock
-        );
-        setResearchDocument(nextDocument);
-        setSelectedResearchBlockId(variationBlock.id);
-        setActiveCommentaryBlockId(nextDraftBlock.id);
+        if (selectedResearchBlock?.type === "variation") {
+          setResearchDocument((document) => replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, variationBlock));
+          clearResearchBlockSelection();
+          setLastAction(`已更新 ${sequence.length} 手变化，并回到第 ${baseMoveNumber} 手。`);
+        } else {
+          setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), variationBlock));
+          clearResearchBlockSelection();
+          setLastAction(`已插入 ${sequence.length} 手变化，并回到第 ${baseMoveNumber} 手。`);
+        }
+        setActiveCommentaryBlockId(null);
         setResearchBaseMoveNumber(null);
         jumpToMove(baseMoveNumber);
-        setLastAction(`已插入 ${sequence.length} 手变化，并回到第 ${baseMoveNumber} 手。`);
         return;
       }
     }
@@ -582,19 +572,16 @@ export function App() {
       appendResearchBlock(null);
       return;
     }
-    const commentBlock = createParagraphBlock(currentComment);
-    const nextDraftBlock = createParagraphBlock("");
-    const nextDocument = appendBlock(
-      appendBlock(
-        appendBlock(updateDocumentSource(researchDocument, currentSnapshot), variationBlock),
-        commentBlock
-      ),
-      nextDraftBlock
-    );
-    setResearchDocument(nextDocument);
-    setSelectedResearchBlockId(variationBlock.id);
-    setActiveCommentaryBlockId(nextDraftBlock.id);
-    setLastAction("已插入当前变化，棋评输入已清空。");
+    if (selectedResearchBlock?.type === "variation") {
+      setResearchDocument((document) => replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, variationBlock));
+      clearResearchBlockSelection();
+      setLastAction("已更新当前变化。");
+    } else {
+      setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), variationBlock));
+      clearResearchBlockSelection();
+      setLastAction("已插入当前变化。");
+    }
+    setActiveCommentaryBlockId(null);
   };
   const updateKomi = (nextKomi: number) => {
     invalidatePendingAnalysis();
@@ -770,7 +757,7 @@ export function App() {
     queueAnalysisIfEnabled();
   };
   const openGameFile = async (file: File) => {
-    if (/\.(brg|brg\.json|json)$/i.test(file.name)) {
+    if (/\.(tsg|brg|brg\.json|json)$/i.test(file.name)) {
       await loadResearchDocument(file);
       return;
     }
@@ -787,6 +774,7 @@ export function App() {
     setBlackName(parsed.blackName);
     setWhiteName(parsed.whiteName);
     setGameDate(parsed.gameDate);
+    setGameResult(parsed.result);
     setSourceFileName(file.name);
     setSgfWarnings(parsed.warnings);
     setMoves(parsed.moves);
@@ -803,6 +791,7 @@ export function App() {
         boardSize: parsed.boardSize,
         currentMoveNumber: parsed.moves.length,
         gameDate: parsed.gameDate,
+        result: parsed.result,
         komi: parsed.komi,
         moves: parsed.moves,
         rules: parsed.rules,
@@ -815,6 +804,7 @@ export function App() {
     setResearchDocument(nextResearchDocument);
     setSelectedResearchBlockId(null);
     setActiveCommentaryBlockId(nextResearchDocument.sections[0]?.blocks.find((block) => block.type === "paragraph")?.id ?? null);
+    setCommentaryDraft("");
     setEngineCandidates([]);
     setAnalysisPoints([]);
     setHasAnalysisAttempted(false);
@@ -832,6 +822,7 @@ export function App() {
     setBlackName("黑棋");
     setWhiteName("白棋");
     setGameDate(undefined);
+    setGameResult(undefined);
     setSourceFileName("新棋谱");
     setSgfWarnings([]);
     setMoves([]);
@@ -847,6 +838,7 @@ export function App() {
       boardSize: 19,
       currentMoveNumber: 0,
       gameDate: undefined,
+      result: undefined,
       komi: 7.5,
       moves: [] as ReviewMove[],
       rules: "中国",
@@ -859,6 +851,7 @@ export function App() {
     setResearchDocument(nextResearchDocument);
     setSelectedResearchBlockId(nextResearchDocument.sections[0]?.blocks[0]?.id ?? null);
     setActiveCommentaryBlockId(nextResearchDocument.sections[0]?.blocks.find((block) => block.type === "paragraph")?.id ?? null);
+    setCommentaryDraft("");
     setEngineCandidates([]);
     setAnalysisPoints([]);
     setHasAnalysisAttempted(false);
@@ -1039,13 +1032,21 @@ export function App() {
       const actualPoint = moveToGtpPoint(actualMove, boardSize);
       const actualCandidateIndex = result.candidates.findIndex((candidate) => candidate.moveName === actualPoint);
       if (countSummary) {
-        summary.analyzed += 1;
-        summary.topMatches += actualCandidateIndex === 0 ? 1 : 0;
-        summary.candidateMatches += actualCandidateIndex >= 0 ? 1 : 0;
         const actualCandidate = actualCandidateIndex >= 0 ? result.candidates[actualCandidateIndex] : null;
+        const bestVisits = Math.max(1, ...result.candidates.map((candidate) => candidate.visits));
+        const matchScore = actualCandidate ? actualCandidate.visits / bestVisits : 0;
+        const isTopMove = actualCandidateIndex === 0;
+        const isCandidate = actualCandidateIndex >= 0;
+        const isMatch =
+          isCandidate &&
+          actualCandidateIndex < MATCH_SETTINGS.bestNums &&
+          matchScore * 100 >= MATCH_SETTINGS.percentVisits;
         const winrateLoss = actualCandidate ? Math.max(0, best.winrate - actualCandidate.winrate) : 100 - best.winrate;
         const scoreLoss = actualCandidate ? calculateScoreLoss(actualMove.color, best, actualCandidate) : null;
-        const matchScore = actualCandidateIndex >= 0 ? calculateMatchScore(actualCandidateIndex, result.candidates.length) : 0;
+        summary.analyzed += 1;
+        summary.topMatches += isTopMove ? 1 : 0;
+        summary.candidateMatches += isCandidate ? 1 : 0;
+        summary.matches += isMatch ? 1 : 0;
         summary.totalWinrateLoss += winrateLoss;
         summary.totalMatchScore += matchScore;
         if (scoreLoss !== null) {
@@ -1053,7 +1054,11 @@ export function App() {
           summary.knownScoreLosses += 1;
         }
         summary.details.push({
+          actualMoveName: actualPoint,
           color: actualMove.color,
+          isCandidate,
+          isMatch,
+          isTopMove,
           matchScore,
           moveNumber,
           rank: actualCandidateIndex >= 0 ? actualCandidateIndex + 1 : null,
@@ -1169,13 +1174,11 @@ export function App() {
         setAutoAnalysisResume(null);
         showAutoAnalysisPosition(endMove);
         openTianshuReport();
-        setEngineStatus(
-          `自动分析完成：吻合率 ${formatPercent(summary.candidateMatches / Math.max(1, summary.analyzed))}`
-        );
+        setEngineStatus(`自动分析完成：吻合率 ${formatPercent(summary.matches / Math.max(1, summary.analyzed))}`);
         markAutoAnalysis(
-          `自动分析完成：${summary.analyzed} 手，候选吻合率 ${formatPercent(
+          `自动分析完成：${summary.analyzed} 手，吻合率 ${formatPercent(summary.matches / Math.max(1, summary.analyzed))}，候选命中率 ${formatPercent(
             summary.candidateMatches / Math.max(1, summary.analyzed)
-          )}，首选率 ${formatPercent(summary.topMatches / Math.max(1, summary.analyzed))}。`
+          )}。`
         );
       }
     } catch (error) {
@@ -1308,6 +1311,7 @@ export function App() {
               onKomiChange={updateKomi}
               onRulesChange={setRules}
               onWhiteNameChange={setWhiteName}
+              result={gameResult}
               rules={rules}
               sourceFileName={sourceFileName}
               totalMoves={totalMoves}
@@ -1370,13 +1374,15 @@ export function App() {
             <div className="panel-section research-section">
               <ResearchDocumentPanel
                 document={researchDocument}
-                commentary={commentaryMarkdown}
+                commentary={commentaryDraft}
                 onAddText={insertTextBlock}
                 onAddVariation={insertCurrentVariation}
                 onExportPdf={exportResearchPdf}
                 onSaveDocument={saveResearchDocument}
                 onUpdateCommentary={updateResearchCommentary}
+                onUpdateTextBlock={(blockId, markdown) => setResearchDocument((document) => updateBlockMarkdown(document, blockId, markdown))}
                 onUpdateDocumentMeta={updateResearchDocumentMeta}
+                selectedBlock={selectedResearchBlock}
                 t={t}
               />
             </div>
@@ -1443,8 +1449,11 @@ export function App() {
               branchRows={branchRows}
               document={updateDocumentSource(researchDocument, currentSnapshot)}
               selectedNodeId={selectedGameNodeId}
+              selectedBlockId={selectedResearchBlockId}
               onBranchNodeClick={jumpToGameNode}
+              onClearResearchBlockSelection={clearResearchBlockSelection}
               onResearchBlockClick={showResearchBlockOnBoard}
+              onResearchBlockMove={(blockId, targetBlockId) => setResearchDocument((document) => moveBlock(document, blockId, targetBlockId))}
             />
           ) : (
             <CandidatePanel
@@ -1539,17 +1548,26 @@ function ResearchRightPane({
   branchRows,
   document,
   selectedNodeId,
+  selectedBlockId,
   onBranchNodeClick,
-  onResearchBlockClick
+  onClearResearchBlockSelection,
+  onResearchBlockClick,
+  onResearchBlockMove
 }: {
   branchRows: ReturnType<typeof flattenBranchTree>;
   document: ResearchDocument;
   selectedNodeId: string;
+  selectedBlockId: string | null;
   onBranchNodeClick: (nodeId: string) => void;
+  onClearResearchBlockSelection: () => void;
   onResearchBlockClick: (blockId: string) => void;
+  onResearchBlockMove: (blockId: string, targetBlockId: string) => void;
 }) {
   const branchTreeRef = useRef<HTMLDivElement | null>(null);
+  const [branchPanePercent, setBranchPanePercent] = useState(34);
+  const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
   const researchMarkers = useMemo(() => buildResearchMarkersByMove(document), [document]);
+  const blocks = document.sections.flatMap((section) => section.blocks);
 
   useEffect(() => {
     const tree = branchTreeRef.current;
@@ -1557,8 +1575,27 @@ function ResearchRightPane({
     activeNode?.scrollIntoView({ block: "center", inline: "nearest" });
   }, [selectedNodeId, branchRows]);
 
+  const beginVerticalResize = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const pane = event.currentTarget.parentElement;
+    const rect = pane?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    const handleMove = (moveEvent: MouseEvent) => {
+      const nextPercent = ((moveEvent.clientY - rect.top) / rect.height) * 100;
+      setBranchPanePercent(Math.max(22, Math.min(60, nextPercent)));
+    };
+    const handleUp = () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  };
+
   return (
-    <div className="research-right-pane">
+    <div className="research-right-pane" style={{ "--research-tree-height": `${branchPanePercent}%` } as CSSProperties}>
       <div className="branch-tree research-branch-tree" aria-label="分支树" ref={branchTreeRef}>
         {branchRows.length === 0 ? (
           <div className="branch-tree-empty">空棋谱</div>
@@ -1606,8 +1643,94 @@ function ResearchRightPane({
           ))
         )}
       </div>
+      <div className="research-pane-splitter" aria-label="调整分支树高度" role="separator" onMouseDown={beginVerticalResize} />
+      <div className="research-block-preview" aria-label="研究文档 blocks 顺序" onClick={onClearResearchBlockSelection}>
+        <div className="research-block-preview-header">
+          <strong>文档顺序</strong>
+          <span>{blocks.length} blocks</span>
+        </div>
+        <div className="research-block-list">
+          {blocks.length === 0 ? (
+            <p className="research-block-empty">还没有 block</p>
+          ) : (
+            blocks.map((block, index) => (
+              <button
+                type="button"
+                className={[
+                  "research-block-item",
+                  block.id === selectedBlockId ? "active" : "",
+                  draggingBlockId === block.id ? "dragging" : ""
+                ].filter(Boolean).join(" ")}
+                draggable
+                key={block.id}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onResearchBlockClick(block.id);
+                }}
+                onDragStart={(event) => {
+                  setDraggingBlockId(block.id);
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", block.id);
+                }}
+                onDragEnd={() => setDraggingBlockId(null)}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceBlockId = event.dataTransfer.getData("text/plain") || draggingBlockId;
+                  setDraggingBlockId(null);
+                  if (sourceBlockId && sourceBlockId !== block.id) {
+                    onResearchBlockMove(sourceBlockId, block.id);
+                  }
+                }}
+              >
+                <span className="research-block-index">{index + 1}</span>
+                <span className={`research-block-icon ${block.type}`}>
+                  {block.type === "variation" ? <span className="mini-board-icon" /> : <span className="mini-text-icon">文</span>}
+                </span>
+                <span className="research-block-copy">
+                  <strong>{blockTypeLabel(block)}</strong>
+                  <span>{blockSummary(block)}</span>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   );
+}
+
+function blockTypeLabel(block: ResearchBlock): string {
+  if (block.type === "variation") {
+    return "变化图";
+  }
+  if (block.type === "paragraph") {
+    return "文字";
+  }
+  if (block.type === "quote") {
+    return "引用";
+  }
+  if (block.type === "conclusion") {
+    return "结论";
+  }
+  if (block.type === "heading") {
+    return "标题";
+  }
+  return block.type;
+}
+
+function blockSummary(block: ResearchBlock): string {
+  const text =
+    block.type === "variation" ? block.caption || block.name :
+    block.type === "paragraph" || block.type === "conclusion" ? block.markdown :
+    block.type === "quote" ? block.text :
+    block.type === "heading" ? block.text :
+    block.type === "board" ? block.caption ?? `第 ${block.moveNumber} 手局面` :
+    "";
+  return text.replace(/\s+/g, " ").trim().slice(0, 70) || "未填写";
 }
 
 function buildResearchMarkersByMove(document: ResearchDocument): Map<number, Array<{ id: string; label: string }>> {
@@ -1676,6 +1799,8 @@ function TianshuReportDialog({
   const blackStats = summarizeReportSide(report.details, "black");
   const whiteStats = summarizeReportSide(report.details, "white");
   const missed = Math.max(0, report.analyzed - report.candidateMatches);
+  const matchRate = report.matches / analyzed;
+  const candidateRate = report.candidateMatches / analyzed;
   const averageWinrateLoss = report.totalWinrateLoss / analyzed;
   const averageScoreLoss = report.knownScoreLosses > 0 ? report.totalScoreLoss / report.knownScoreLosses : null;
   const matchDegree = report.totalMatchScore / analyzed;
@@ -1701,16 +1826,18 @@ function TianshuReportDialog({
           <div className="tianshu-report-side-card black">
             <h3>{t("black")}</h3>
             <ReportBar label={t("matchDegree")} value={formatFixed(blackStats.matchDegree * 100, 1)} percent={blackStats.matchDegree} />
-            <ReportBar label={t("matchRate")} value={formatPercent(blackStats.candidateRate)} percent={blackStats.candidateRate} />
+            <ReportBar label={t("matchRate")} value={formatPercent(blackStats.matchRate)} percent={blackStats.matchRate} />
             <ReportBar label={t("topMoveRate")} value={formatPercent(blackStats.topRate)} percent={blackStats.topRate} />
+            <ReportBar label="候选命中率" value={formatPercent(blackStats.candidateRate)} percent={blackStats.candidateRate} />
             <ReportBar label={t("averageScoreLoss")} value={formatOptionalNumber(blackStats.averageScoreLoss, "目")} percent={scaleLossBar(blackStats.averageScoreLoss)} />
             <ReportBar label={t("averageWinrateLoss")} value={`${formatFixed(blackStats.averageWinrateLoss, 1)}%`} percent={scaleLossBar(blackStats.averageWinrateLoss)} />
           </div>
           <div className="tianshu-report-side-card white">
             <h3>{t("white")}</h3>
             <ReportBar label={t("matchDegree")} value={formatFixed(whiteStats.matchDegree * 100, 1)} percent={whiteStats.matchDegree} />
-            <ReportBar label={t("matchRate")} value={formatPercent(whiteStats.candidateRate)} percent={whiteStats.candidateRate} />
+            <ReportBar label={t("matchRate")} value={formatPercent(whiteStats.matchRate)} percent={whiteStats.matchRate} />
             <ReportBar label={t("topMoveRate")} value={formatPercent(whiteStats.topRate)} percent={whiteStats.topRate} />
+            <ReportBar label="候选命中率" value={formatPercent(whiteStats.candidateRate)} percent={whiteStats.candidateRate} />
             <ReportBar label={t("averageScoreLoss")} value={formatOptionalNumber(whiteStats.averageScoreLoss, "目")} percent={scaleLossBar(whiteStats.averageScoreLoss)} />
             <ReportBar label={t("averageWinrateLoss")} value={`${formatFixed(whiteStats.averageWinrateLoss, 1)}%`} percent={scaleLossBar(whiteStats.averageWinrateLoss)} />
           </div>
@@ -1726,8 +1853,9 @@ function TianshuReportDialog({
         <div className="tianshu-report-summary-grid">
           <ReportMetric label={t("analyzed")} value={`${report.analyzed} ${t("moveCounterSuffix")}`} />
           <ReportMetric label={t("matchDegree")} value={formatFixed(matchDegree * 100, 1)} />
-          <ReportMetric label={t("matchRate")} value={formatPercent(report.candidateMatches / analyzed)} />
+          <ReportMetric label={t("matchRate")} value={formatPercent(matchRate)} />
           <ReportMetric label={t("topMoveHitRate")} value={formatPercent(report.topMatches / analyzed)} />
+          <ReportMetric label="候选命中率" value={formatPercent(candidateRate)} />
           <ReportMetric label={t("missedCandidates")} value={`${missed} ${t("moveCounterSuffix")}`} />
           <ReportMetric label={t("averageScoreLoss")} value={formatOptionalNumber(averageScoreLoss, "目")} />
           <ReportMetric label={t("averageWinrateLoss")} value={`${averageWinrateLoss.toFixed(1)}%`} />
@@ -1735,9 +1863,9 @@ function TianshuReportDialog({
         </div>
         <TianshuTrendChart details={report.details} startMove={report.startMove} endMove={report.endMove} t={t} />
         <div className="tianshu-report-footer">
-          <span>{t("black")}：{t("matchRate")} {formatPercent(blackStats.candidateRate)} {t("matchDegree")} {formatFixed(blackStats.matchDegree * 100, 1)}</span>
-          <span>{t("white")}：{t("matchRate")} {formatPercent(whiteStats.candidateRate)} {t("matchDegree")} {formatFixed(whiteStats.matchDegree * 100, 1)}</span>
-          <span>{t("statisticsCondition")}</span>
+          <span>{t("black")}：{t("matchRate")} {formatPercent(blackStats.matchRate)} {t("matchDegree")} {formatFixed(blackStats.matchDegree * 100, 1)}</span>
+          <span>{t("white")}：{t("matchRate")} {formatPercent(whiteStats.matchRate)} {t("matchDegree")} {formatFixed(whiteStats.matchDegree * 100, 1)}</span>
+          <span>统计条件：前 {MATCH_SETTINGS.bestNums} 候选；visits 占比阈值 {MATCH_SETTINGS.percentVisits}%；全局统计；目数损失仅在实战手命中候选时统计。</span>
         </div>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>{t("close")}</button>
@@ -1886,6 +2014,20 @@ function downloadTextFile(text: string, fileName: string, mimeType: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
 function fileStem(value: string): string {
   const stem = value
     .trim()
@@ -1942,6 +2084,7 @@ function buildResearchAnalysisSnapshot(
     endMove: range?.endMove ?? lastPoint?.moveNumber ?? lastDetail?.moveNumber ?? summary.analyzed,
     engineName: engineProfile?.name,
     knownScoreLosses: summary.knownScoreLosses,
+    matches: summary.matches,
     modelName: engineProfile?.modelPath ? engineProfile.modelPath.split("/").pop() : undefined,
     points,
     startMove: range?.startMove ?? points[0]?.moveNumber ?? summary.details[0]?.moveNumber ?? 1,
@@ -1990,19 +2133,12 @@ function createEmptyAutoAnalysisSummary(): AutoAnalysisSummary {
     candidateMatches: 0,
     details: [],
     knownScoreLosses: 0,
+    matches: 0,
     topMatches: 0,
     totalScoreLoss: 0,
     totalMatchScore: 0,
     totalWinrateLoss: 0
   };
-}
-
-function calculateMatchScore(candidateIndex: number, candidateCount: number): number {
-  if (candidateIndex === 0) {
-    return 1;
-  }
-  const denominator = Math.max(1, candidateCount - 1);
-  return Math.max(0.2, 1 - candidateIndex / denominator);
 }
 
 function calculateScoreLoss(
@@ -2026,6 +2162,7 @@ function summarizeReportSide(details: AutoAnalysisMoveDetail[], color: "black" |
       : null,
     averageWinrateLoss: sideDetails.reduce((total, detail) => total + detail.winrateLoss, 0) / analyzed,
     candidateRate: sideDetails.filter((detail) => detail.rank !== null).length / analyzed,
+    matchRate: sideDetails.filter((detail) => detail.isMatch).length / analyzed,
     matchDegree: sideDetails.reduce((total, detail) => total + detail.matchScore, 0) / analyzed,
     topRate: sideDetails.filter((detail) => detail.rank === 1).length / analyzed
   };

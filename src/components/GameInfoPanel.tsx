@@ -10,6 +10,7 @@ type GameInfoPanelProps = {
   onKomiChange: (value: number) => void;
   onRulesChange: (value: string) => void;
   onWhiteNameChange: (value: string) => void;
+  result?: string;
   rules: string;
   sourceFileName: string;
   totalMoves: number;
@@ -28,6 +29,7 @@ export function GameInfoPanel({
   onKomiChange,
   onRulesChange,
   onWhiteNameChange,
+  result,
   rules,
   sourceFileName,
   totalMoves,
@@ -100,6 +102,10 @@ export function GameInfoPanel({
         <div className="game-info-row">
           <dt>手数</dt>
           <dd>{currentMoveNumber} / {totalMoves}</dd>
+        </div>
+        <div className="game-info-row">
+          <dt>结果</dt>
+          <dd>{result || "未填写"}</dd>
         </div>
         <div className="game-info-row">
           <dt>提子</dt>

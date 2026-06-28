@@ -101,7 +101,7 @@ export function TopToolbar({
             ref={fileInputRef}
             className="file-input"
             type="file"
-            accept=".sgf,.gib,.brg,.json,.brg.json,.txt,application/json,application/x-go-sgf,text/plain"
+            accept=".sgf,.gib,.tsg,.brg,.json,.brg.json,.txt,application/json,application/x-go-sgf,text/plain"
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) {

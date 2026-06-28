@@ -7,7 +7,7 @@ TensuGo 的研究文档系统不是 SGF 查看器，也不是另一个 Lizzie / 
 核心价值：
 
 - 把“分析棋”升级为“沉淀研究成果”。
-- 用 `.brg` 承载文章结构、棋盘状态、变化、AI 结果和资源。
+- 用 `.tsg` 承载文章结构、棋盘状态、变化、AI 结果和资源。
 - 桌面端负责深度编辑和离线研究，网站端负责阅读、传播、评论、收藏和 Fork。
 - PDF/HTML/长图导出面向微信群、朋友圈、公众号和邮件传播。
 
@@ -20,12 +20,12 @@ TensuGo 的研究文档系统不是 SGF 查看器，也不是另一个 Lizzie / 
 - 从候选 PV 生成 variation block。
 - 对实战、AI 推荐、人类常见下法、错误变化做 comparison block。
 - 保留并编辑完整棋谱分支树：导入 SGF 后不能只保留线性主线，用户必须能在分支树中跳到任意节点、设为主分支、删除分支。
-- 保存为 `.brg.json`，后续升级为 zip-based `.brg`。
+- 保存为 `.tsg`，后续升级为 zip-based `.tsg`。
 - 预览整篇研究文章。
 - 导出 HTML，再用浏览器/Playwright 导出 PDF。
-- 网站端上传 `.brg` 后渲染为可交互文章。
+- 网站端上传 `.tsg` 后渲染为可交互文章。
 
-## 3. `.brg` JSON Schema 草案
+## 3. `.tsg` JSON Schema 草案
 
 当前 MVP 的 TypeScript 类型和 JSON Schema 草案在：
 
@@ -86,7 +86,7 @@ ai_analysis block 支持：
 - `ownershipMap`
 - `timestamp`
 
-## 4. `.brg` 示例文件
+## 4. `.tsg` 示例文件
 
 ```json
 {
@@ -217,7 +217,7 @@ ai_analysis block 支持：
 4. 摆出手动变化，或选择当前 AI/PV 变化。
 5. 点“插入变化”，生成 variation block。
 6. 点右侧分支树中的文本图标，主棋盘跳转到对应评论变化。
-7. 保存 `.brg`，或导出 PDF。
+7. 保存 `.tsg`，或导出 PDF。
 
 分支树要求：
 
@@ -241,7 +241,7 @@ ai_analysis block 支持：
 
 - 保存时写临时文件，再 rename。
 - 打开时先 JSON parse，再 schema validate。
-- 保留最近自动保存版本：`filename.brg.autosave.json`。
+- 保留最近自动保存版本：`filename.tsg.autosave.json`。
 - 文档内 `brgVersion` 明确，升级时走 migration。
 
 ## 6. 网站端发布设计
@@ -250,7 +250,7 @@ ai_analysis block 支持：
 
 组件：
 
-- `ResearchArticle`: 读取 `.brg` 并渲染整篇文章。
+- `ResearchArticle`: 读取 `.tsg` 并渲染整篇文章。
 - `BoardBlock`: 渲染静态/交互棋盘。
 - `VariationBlock`: 支持播放变化、跳转手数。
 - `AIAnalysisBlock`: 显示胜率、目差、PV。
@@ -269,9 +269,9 @@ SEO：
 
 Fork / Remix：
 
-- 在线文章保留原始 `.brg`。
+- 在线文章保留原始 `.tsg`。
 - Fork 生成新 document id，保留 `forkedFrom` 和原作者信息。
-- 评论、收藏、浏览量属于网站业务表，不写回 `.brg`。
+- 评论、收藏、浏览量属于网站业务表，不写回 `.tsg`。
 
 ## 7. PDF 导出设计
 
@@ -346,8 +346,8 @@ Tauri：
 packages/
   core/              # game tree, SGF/GIB, rules, coordinates
   board/             # React 棋盘、SVG 棋盘、标注层
-  document-schema/   # BRG types, schema, validation, migrations
-  renderer/          # BRG -> React/HTML/Markdown
+  document-schema/   # TSG types, schema, validation, migrations
+  renderer/          # TSG -> React/HTML/Markdown
   pdf-export/        # HTML -> PDF, long PNG export
 apps/
   desktop/           # Tauri + React 编辑器
@@ -360,7 +360,7 @@ apps/
 
 Week 1:
 
-- `.brg` schema/type。
+- `.tsg` schema/type。
 - SGF/GIB 到 internal move list。
 - board block 的局面固化。
 - SVG 棋盘导出。
@@ -369,7 +369,7 @@ Week 2:
 
 - block editor。
 - board/paragraph/variation block。
-- save/load `.brg.json`。
+- save/load `.tsg`。
 - 文档 block 与主棋盘联动。
 
 Week 3:

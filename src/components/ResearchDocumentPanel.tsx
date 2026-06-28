@@ -10,6 +10,8 @@ type ResearchDocumentPanelProps = {
   onSaveDocument: () => void;
   onUpdateCommentary: (markdown: string) => void;
   onUpdateDocumentMeta: (patch: { author?: string; title?: string }) => void;
+  onUpdateTextBlock: (blockId: string, markdown: string) => void;
+  selectedBlock: ResearchDocument["sections"][number]["blocks"][number] | null;
   t: Translator;
 };
 
@@ -22,9 +24,14 @@ export function ResearchDocumentPanel({
   onSaveDocument,
   onUpdateCommentary,
   onUpdateDocumentMeta,
+  onUpdateTextBlock,
+  selectedBlock,
   t
 }: ResearchDocumentPanelProps) {
   const blocks = document.sections.flatMap((section) => section.blocks);
+  const textButtonLabel = selectedBlock?.type === "paragraph" || selectedBlock?.type === "conclusion" ? "更新文字" : t("insertText");
+  const variationButtonLabel = selectedBlock?.type === "variation" ? "更新变化" : t("insertVariation");
+  void onUpdateTextBlock;
 
   return (
     <div className="research-panel">
@@ -56,8 +63,8 @@ export function ResearchDocumentPanel({
       </div>
 
       <div className="research-command-grid">
-        <button type="button" onClick={onAddVariation}>{t("insertVariation")}</button>
-        <button type="button" onClick={onAddText}>{t("insertText")}</button>
+        <button type="button" onClick={onAddVariation}>{variationButtonLabel}</button>
+        <button type="button" onClick={onAddText}>{textButtonLabel}</button>
         <button type="button" onClick={onSaveDocument}>{t("save")}</button>
         <button type="button" onClick={onExportPdf}>{t("export")}</button>
       </div>

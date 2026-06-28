@@ -50,14 +50,8 @@ export function renderResearchDocumentHtml(
     return renderResearchDocumentHtmlV2(document, activeGameTree, exportSettings);
   }
   const sourceMoves = resolveSourceMoves(document, activeGameTree);
-  const entries = buildVariationEntries(document, sourceMoves);
-  const pages = chunk(entries, exportSettings.variationsPerPage)
-    .map((pageEntries) => `
-      <section class="pdf-page">
-        ${pageEntries.map((entry) => renderVariationEntry(entry, exportSettings)).join("\n")}
-      </section>
-    `)
-    .join("\n");
+  const blocks = document.sections.flatMap((section) => section.blocks);
+  const flowHtml = renderFlowBlocks(blocks, document, sourceMoves, exportSettings);
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -70,11 +64,11 @@ export function renderResearchDocumentHtml(
 </head>
 <body>
   <article class="research-article">
-    <header class="article-header">
-      <h1>${escapeHtml(document.title)}</h1>
-      <p>${escapeHtml(document.sourceGame.players.black)} vs ${escapeHtml(document.sourceGame.players.white)} · ${escapeHtml(document.sourceGame.fileName)} · 作者：${escapeHtml(document.author || "未填写")}</p>
-    </header>
-    ${entries.length > 0 ? pages : `<section class="pdf-page empty-page"><p>还没有可导出的变化图。</p></section>`}
+    ${renderCoverPage(document)}
+    <main class="document-flow">
+      ${flowHtml || `<p class="empty-document">还没有正文内容。</p>`}
+    </main>
+    ${renderFinalTianshuReport(document.analysis)}
   </article>
 </body>
 </html>`;
@@ -103,6 +97,7 @@ function renderResearchDocumentHtmlV2(
     <main class="document-flow">
       ${flowHtml || `<p class="empty-document">还没有正文内容。</p>`}
     </main>
+    ${renderFinalTianshuReport(document.analysis)}
   </article>
 </body>
 </html>`;
@@ -114,31 +109,13 @@ function renderFlowBlocks(
   sourceMoves: ReviewMove[],
   exportSettings: ResearchExportSettings
 ): string {
+  const flowItems = buildFlowItems(blocks, sourceMoves);
+  const pages = paginateFlowItems(flowItems, exportSettings);
   const html: string[] = [];
-  for (let index = 0; index < blocks.length; index += 1) {
-    const block = blocks[index];
-    if (block.type === "variation") {
-      const next = blocks[index + 1];
-      const comment = next && (next.type === "paragraph" || next.type === "conclusion" || next.type === "quote") ? next : null;
-      html.push(renderVariationEntry(buildVariationEntry(block, comment, sourceMoves), exportSettings));
-      if (comment) {
-        index += 1;
-      }
-      continue;
-    }
-    if (block.type === "paragraph" || block.type === "conclusion") {
-      if (block.markdown.trim()) {
-        html.push(`<section class="text-block">${renderMarkdown(block.markdown)}</section>`);
-      }
-      continue;
-    }
-    if (block.type === "heading") {
-      html.push(`<h${block.level} class="doc-heading">${escapeHtml(block.text)}</h${block.level}>`);
-      continue;
-    }
-    if (block.type === "quote") {
-      html.push(`<section class="text-block"><blockquote>${escapeHtml(block.text)}</blockquote></section>`);
-    }
+  for (const page of pages) {
+    html.push(`<section class="pdf-page dynamic-page board-size-${page.size.name}">
+      ${page.items.map((item) => renderFlowItem(item, exportSettings, page.size.mm)).join("\n")}
+    </section>`);
   }
   if (!html.length && document.sections[0]?.blocks.length) {
     return `<p class="empty-document">当前文档没有可导出的正文块。</p>`;
@@ -146,30 +123,152 @@ function renderFlowBlocks(
   return html.join("\n");
 }
 
-function buildVariationEntries(
-  document: ResearchDocument,
-  sourceMoves: ReviewMove[]
-): Array<{ variation: Extract<ResearchBlock, { type: "variation" }>; comment: ResearchBlock | null; stones: ReviewMove[] }> {
-  const blocks = document.sections.flatMap((section) => section.blocks);
-  const fallbackComment =
-    blocks.find((block) => block.type === "paragraph" || block.type === "conclusion" || block.type === "quote") ?? null;
-  return blocks
-    .map((block, index) => {
-      if (block.type !== "variation") {
-        return null;
+type FlowItem =
+  | { type: "variation"; entry: VariationEntry }
+  | { type: "text"; block: Extract<ResearchBlock, { type: "paragraph" | "conclusion" | "quote" }> }
+  | { type: "heading"; block: Extract<ResearchBlock, { type: "heading" }> };
+
+type VariationEntry = {
+  variation: Extract<ResearchBlock, { type: "variation" }>;
+  comment: ResearchBlock | null;
+  stones: ReviewMove[];
+};
+
+type PageBoardSize = { name: "large" | "medium" | "small"; mm: number };
+
+function buildFlowItems(blocks: ResearchBlock[], sourceMoves: ReviewMove[]): FlowItem[] {
+  const items: FlowItem[] = [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (block.type === "variation") {
+      items.push({ type: "variation", entry: buildVariationEntry(block, null, sourceMoves) });
+      continue;
+    }
+    if ((block.type === "paragraph" || block.type === "conclusion") && block.markdown.trim()) {
+      items.push({ type: "text", block });
+      continue;
+    }
+    if (block.type === "heading") {
+      items.push({ type: "heading", block });
+      continue;
+    }
+    if (block.type === "quote") {
+      items.push({ type: "text", block });
+    }
+  }
+  return items;
+}
+
+function renderFlowItem(item: FlowItem, exportSettings: ResearchExportSettings, pageBoardSizeMm: number): string {
+  if (item.type === "variation") {
+    return renderVariationEntry(item.entry, exportSettings, pageBoardSizeMm);
+  }
+  if (item.type === "heading") {
+    return `<h${item.block.level} class="doc-heading">${escapeHtml(item.block.text)}</h${item.block.level}>`;
+  }
+  if (item.block.type === "quote") {
+    return `<section class="text-block"><blockquote>${escapeHtml(item.block.text)}</blockquote></section>`;
+  }
+  return `<section class="text-block">${renderMarkdown(item.block.markdown)}</section>`;
+}
+
+function paginateFlowItems(
+  items: FlowItem[],
+  exportSettings: ResearchExportSettings
+): Array<{ size: PageBoardSize; items: FlowItem[] }> {
+  const pages: Array<{ size: PageBoardSize; items: FlowItem[] }> = [];
+  const boardSizes = getPageBoardSizes(exportSettings);
+  let index = 0;
+  while (index < items.length) {
+    let end = index + 1;
+    let bestFit = choosePageBoardSize(items.slice(index, end), boardSizes, exportSettings);
+    if (!bestFit) {
+      pages.push({ size: boardSizes[boardSizes.length - 1], items: [items[index]] });
+      index += 1;
+      continue;
+    }
+    while (end < items.length) {
+      const nextItems = items.slice(index, end + 1);
+      const nextFit = choosePageBoardSize(nextItems, boardSizes, exportSettings);
+      if (!nextFit) {
+        break;
       }
-      const next = blocks[index + 1];
-      const comment = next && (next.type === "paragraph" || next.type === "conclusion" || next.type === "quote") ? next : fallbackComment;
-      return buildVariationEntry(block, comment, sourceMoves);
-    })
-    .filter(Boolean) as Array<{ variation: Extract<ResearchBlock, { type: "variation" }>; comment: ResearchBlock | null; stones: ReviewMove[] }>;
+      bestFit = nextFit;
+      end += 1;
+    }
+    pages.push({ size: bestFit, items: items.slice(index, end) });
+    index = end;
+  }
+  return pages;
+}
+
+function getPageBoardSizes(exportSettings: ResearchExportSettings): PageBoardSize[] {
+  return [
+    { name: "large", mm: exportSettings.boardSizeMm },
+    { name: "medium", mm: Math.round(exportSettings.boardSizeMm * 0.84) },
+    { name: "small", mm: Math.round(exportSettings.boardSizeMm * 0.74) }
+  ];
+}
+
+function choosePageBoardSize(
+  items: FlowItem[],
+  boardSizes: PageBoardSize[],
+  exportSettings: ResearchExportSettings
+): PageBoardSize | null {
+  const contentHeightMm = getPageContentHeightMm(exportSettings);
+  return boardSizes.find((size) => estimatePageHeightMm(items, size.mm, exportSettings) <= contentHeightMm) ?? null;
+}
+
+function getPageContentHeightMm(exportSettings: ResearchExportSettings): number {
+  const portraitHeight = exportSettings.pageSize === "a4" ? 297 : 279.4;
+  const portraitWidth = exportSettings.pageSize === "a4" ? 210 : 215.9;
+  const paperHeight = exportSettings.pageOrientation === "landscape" ? portraitWidth : portraitHeight;
+  return Math.max(80, paperHeight - exportSettings.pageMarginTopMm - exportSettings.pageMarginBottomMm);
+}
+
+function estimatePageHeightMm(items: FlowItem[], boardSizeMm: number, exportSettings: ResearchExportSettings): number {
+  return items.reduce((total, item, index) => {
+    const gap = index === 0 ? 0 : exportSettings.rowGapMm;
+    return total + gap + estimateFlowItemHeightMm(item, boardSizeMm, exportSettings);
+  }, 0);
+}
+
+function estimateFlowItemHeightMm(item: FlowItem, boardSizeMm: number, exportSettings: ResearchExportSettings): number {
+  if (item.type === "variation") {
+    const captionHeightMm = item.entry.variation.caption || item.entry.variation.name ? 4 : 0;
+    const titleHeightMm = item.entry.comment ? estimateCommentHeightMm(item.entry.comment) : 0;
+    return boardSizeMm + captionHeightMm + Math.min(18, titleHeightMm) + exportSettings.rowGapMm;
+  }
+  if (item.type === "heading") {
+    return item.block.level === 1 ? 10 : item.block.level === 2 ? 8 : 6;
+  }
+  return estimateCommentHeightMm(item.block);
+}
+
+function estimateCommentHeightMm(block: ResearchBlock): number {
+  const text =
+    block.type === "paragraph" || block.type === "conclusion"
+      ? block.markdown
+      : block.type === "quote"
+        ? block.text
+        : "";
+  const textLength = normalizedTextLength(text);
+  const charsPerLine = 38;
+  const estimatedLineCount = Math.max(1, Math.ceil(textLength / charsPerLine));
+  const baseParagraphMarginMm = 2.5;
+  const lineHeightMm = 4.7;
+  return baseParagraphMarginMm + estimatedLineCount * lineHeightMm;
+}
+
+function normalizedTextLength(text: string): number {
+  return text.replace(/[#*_`>\-[\]()]/g, "").replace(/\s+/g, "").length;
 }
 
 function buildVariationEntry(
   block: Extract<ResearchBlock, { type: "variation" }>,
   comment: ResearchBlock | null,
   sourceMoves: ReviewMove[]
-): { variation: Extract<ResearchBlock, { type: "variation" }>; comment: ResearchBlock | null; stones: ReviewMove[] } {
+): VariationEntry {
   const variationMoves = block.sequence
     .map((point, offset) => gtpPointToMove(point, block.boardSize, block.fromMoveNumber + offset + 1))
     .filter((move): move is ReviewMove => Boolean(move));
@@ -178,17 +277,20 @@ function buildVariationEntry(
 }
 
 function renderVariationEntry(
-  entry: { variation: Extract<ResearchBlock, { type: "variation" }>; comment: ResearchBlock | null; stones: ReviewMove[] },
-  exportSettings: ResearchExportSettings
+  entry: VariationEntry,
+  exportSettings: ResearchExportSettings,
+  pageBoardSizeMm: number
 ): string {
   const comment = renderComment(entry.comment);
-  return `<section class="variation-row">
+  return `<section class="variation-block">
+    <div class="variation-board-wrap">
     <div class="board-column">
-      ${renderBoardSvg(entry.variation.boardSize, entry.stones, entry.variation.sequence, exportSettings)}
+      ${renderBoardSvg(entry.variation.boardSize, entry.stones, entry.variation.sequence, exportSettings, pageBoardSizeMm)}
       <p class="caption">${escapeHtml(entry.variation.caption || entry.variation.name)}</p>
     </div>
     <div class="comment-column">
       ${comment || "<p>未填写评论。</p>"}
+    </div>
     </div>
   </section>`;
 }
@@ -211,25 +313,31 @@ function renderCoverPage(document: ResearchDocument): string {
     <header class="cover-header">
       <p class="kicker">TensuGo Research Document</p>
       <h1>${escapeHtml(document.title)}</h1>
-      <p>${escapeHtml(document.sourceGame.players.black)} vs ${escapeHtml(document.sourceGame.players.white)} · ${escapeHtml(document.sourceGame.fileName)} · 作者：${escapeHtml(document.author || "未填写")}</p>
     </header>
     <section class="cover-meta">
-      <span>棋盘：${document.sourceGame.boardSize} 路</span>
-      <span>规则：${escapeHtml(document.sourceGame.rules)}</span>
-      <span>贴目：${document.sourceGame.komi}</span>
-      <span>日期：${escapeHtml(document.sourceGame.gameDate ?? "未填写")}</span>
-      <span>总手数：${document.sourceGame.totalMoves}</span>
-      <span>版式：0.2</span>
+      ${metaItem("黑方", document.sourceGame.players.black)}
+      ${metaItem("白方", document.sourceGame.players.white)}
+      ${metaItem("日期", document.sourceGame.gameDate)}
+      ${metaItem("来源文件名", document.sourceGame.fileName)}
+      ${metaItem("规则", document.sourceGame.rules)}
+      ${metaItem("贴目", String(document.sourceGame.komi))}
+      ${metaItem("棋盘大小", `${document.sourceGame.boardSize} 路`)}
+      ${metaItem("结果", document.sourceGame.result)}
+      ${metaItem("作者", document.author)}
+      ${metaItem("createdBy", "TensuGo 1.0")}
     </section>
-    ${renderExecutiveSummary(document.analysis)}
-    ${renderWinrateChart(document.analysis)}
   </section>`;
 }
 
-function renderExecutiveSummary(analysis: ResearchAnalysisSnapshot | undefined): string {
+function metaItem(label: string, value: string | undefined): string {
+  return `<div class="meta-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "未填写")}</strong></div>`;
+}
+
+function renderExecutiveSummary(analysis: ResearchAnalysisSnapshot | undefined, includeTitle = true): string {
   const analyzed = analysis ? Math.max(1, analysis.analyzed) : 1;
   const averageWinrateLoss = analysis ? analysis.totalWinrateLoss / analyzed : null;
   const averageScoreLoss = analysis && analysis.knownScoreLosses > 0 ? analysis.totalScoreLoss / analysis.knownScoreLosses : null;
+  const matchRate = analysis ? (analysis.matches ?? analysis.details.filter((detail) => detail.isMatch).length) / analyzed : null;
   const candidateRate = analysis ? analysis.candidateMatches / analyzed : null;
   const topRate = analysis ? analysis.topMatches / analyzed : null;
   const matchDegree = analysis ? analysis.totalMatchScore / analyzed : null;
@@ -238,30 +346,43 @@ function renderExecutiveSummary(analysis: ResearchAnalysisSnapshot | undefined):
     null
   );
   return `<section class="executive-summary">
-    <h2>天书报告</h2>
+    ${includeTitle ? "<h2>天书报告</h2>" : ""}
     <div class="summary-grid">
       ${summaryMetric("AI 总体评价", renderStars(matchDegree))}
       ${summaryMetric("吻合度", percentText(matchDegree))}
-      ${summaryMetric("Top Move 命中率", percentText(topRate))}
-      ${summaryMetric("Candidate 命中率", percentText(candidateRate))}
+      ${summaryMetric("吻合率", percentText(matchRate))}
+      ${summaryMetric("最佳一选率 / Top Move 命中率", percentText(topRate))}
+      ${summaryMetric("候选命中率", percentText(candidateRate))}
       ${summaryMetric("平均胜率损失", averageWinrateLoss === null ? "—" : `${averageWinrateLoss.toFixed(1)}%`)}
-      ${summaryMetric("平均 Score Loss", averageScoreLoss === null ? "—" : averageScoreLoss.toFixed(1))}
+      ${summaryMetric("平均目差损失", averageScoreLoss === null ? "—" : averageScoreLoss.toFixed(1))}
       ${summaryMetric("最大失误", worst ? `第 ${worst.moveNumber} 手 / ${worst.winrateLoss.toFixed(1)}%` : "—")}
       ${summaryMetric("AI Engine", escapeHtml(analysis?.engineName ?? "—"))}
       ${summaryMetric("KataGo Model", escapeHtml(analysis?.modelName ?? "—"))}
       ${summaryMetric("分析范围", analysis ? `第 ${analysis.startMove}-${analysis.endMove} 手` : "—")}
+      ${summaryMetric("统计条件", `前 3 候选；visits 占比 ≥20%；全局统计；目数损失仅在实战手命中候选时统计`)}
     </div>
   </section>`;
 }
 
+function renderFinalTianshuReport(analysis: ResearchAnalysisSnapshot | undefined): string {
+  if (!analysis || analysis.analyzed <= 0) {
+    return `<section class="final-report-page"><h2>天书报告</h2><p>暂无天书报告，请先完成 AI 分析。</p></section>`;
+  }
+  return `<section class="final-report-page">
+    <h2>天书报告</h2>
+    ${renderWinrateChart(analysis)}
+    ${renderExecutiveSummary(analysis, false)}
+  </section>`;
+}
+
 function renderWinrateChart(analysis: ResearchAnalysisSnapshot | undefined): string {
-  const width = 760;
-  const height = 170;
+  const width = 900;
+  const height = 160;
   const left = 34;
   const right = width - 12;
   const top = 14;
   const bottom = height - 28;
-  const points = analysis?.points ?? [];
+  const points = (analysis?.details.length ? analysis.details : analysis?.points) ?? [];
   const startMove = analysis?.startMove ?? 1;
   const lastPoint = points.length > 0 ? points[points.length - 1] : null;
   const endMove = analysis?.endMove ?? Math.max(startMove + 1, lastPoint?.moveNumber ?? 1);
@@ -271,19 +392,67 @@ function renderWinrateChart(analysis: ResearchAnalysisSnapshot | undefined): str
     x: left + ((point.moveNumber - startMove) / span) * (right - left),
     y: bottom - (point.winrate / 100) * (bottom - top)
   }));
-  const polyline = plotted.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const lineSegments = splitContinuousChartSegments(plotted)
+    .map((segment) => segment.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "))
+    .filter(Boolean);
+  const analyzed = analysis ? Math.max(1, analysis.analyzed) : 1;
+  const matchRate = analysis ? (analysis.matches ?? analysis.details.filter((detail) => detail.isMatch).length) / analyzed : null;
+  const matchDegree = analysis ? analysis.totalMatchScore / analyzed : null;
+  const averageWinrateLoss = analysis ? analysis.totalWinrateLoss / analyzed : null;
   return `<section class="winrate-report">
     <h2>胜率变化图</h2>
+    <div class="tianshu-report-chart-tabs">
+      <span>胜率吻合</span>
+      <span>分段吻合度</span>
+      <span>胜率损失统计</span>
+      <span>目数损失</span>
+      <span>吻合度走势</span>
+    </div>
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="胜率变化图">
       ${[25, 50, 75].map((tick) => {
-        const y = bottom - (tick / 100) * (bottom - top);
-        return `<g><line class="chart-grid" x1="${left}" x2="${right}" y1="${y}" y2="${y}" /><text x="7" y="${y + 4}">${tick}</text></g>`;
-      }).join("")}
-      <line class="chart-axis" x1="${left}" x2="${right}" y1="${bottom}" y2="${bottom}" />
-      ${polyline ? `<polyline class="winrate-line" points="${polyline}" />` : `<text class="chart-empty" x="${width / 2}" y="${height / 2}" text-anchor="middle">尚未保存自动分析数据</text>`}
-      ${plotted.map((point) => `<circle class="winrate-dot" cx="${point.x}" cy="${point.y}" r="2.8" />`).join("")}
+    const y = bottom - (tick / 100) * (bottom - top);
+    return `<g><line class="tianshu-report-grid-line" x1="${left}" x2="${right}" y1="${y}" y2="${y}" /><text x="8" y="${y + 4}">${tick}</text></g>`;
+  }).join("")}
+      <line class="tianshu-report-axis" x1="${left}" x2="${right}" y1="${bottom}" y2="${bottom}" />
+      ${plotted.map((point) => `<rect class="${chartBarClass(point)}" height="${Math.max(0, bottom - point.y).toFixed(1)}" width="6" x="${(point.x - 3).toFixed(1)}" y="${point.y.toFixed(1)}" />`).join("")}
+      ${lineSegments.length ? lineSegments.map((line) => `<polyline class="tianshu-report-winrate-line" points="${line}" />`).join("") : `<text class="chart-empty" x="${width / 2}" y="${height / 2}" text-anchor="middle">尚未保存自动分析数据</text>`}
+      ${plotted.map((point) => `<circle class="${chartDotClass(point)}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="3.5" />`).join("")}
+      ${[startMove, Math.round((startMove + endMove) / 2), endMove].map((move) => {
+    const x = left + ((move - startMove) / span) * (right - left);
+    return `<text class="tianshu-report-move-label" x="${(x - 8).toFixed(1)}" y="${height - 8}">${move}</text>`;
+  }).join("")}
     </svg>
+    <p class="winrate-chart-footnote">分析范围：第 ${startMove}-${endMove} 手；吻合率 ${percentText(matchRate)}；吻合度 ${percentText(matchDegree)}；平均胜率损失 ${averageWinrateLoss === null ? "—" : `${averageWinrateLoss.toFixed(1)}%`}。</p>
   </section>`;
+}
+
+function splitContinuousChartSegments<T extends { moveNumber: number }>(points: T[]): T[][] {
+  const segments: T[][] = [];
+  for (const point of points) {
+    const current = segments[segments.length - 1];
+    if (!current || current.length === 0 || point.moveNumber !== current[current.length - 1].moveNumber + 1) {
+      segments.push([point]);
+    } else {
+      current.push(point);
+    }
+  }
+  return segments;
+}
+
+function chartBarClass(point: { moveNumber: number }): string {
+  const rank = "rank" in point ? point.rank : undefined;
+  return rank === null ? "tianshu-report-miss-bar" : "tianshu-report-hit-bar";
+}
+
+function chartDotClass(point: { moveNumber: number }): string {
+  const rank = "rank" in point ? point.rank : undefined;
+  if (rank === 1) {
+    return "tianshu-report-top-dot";
+  }
+  if (rank === null) {
+    return "tianshu-report-miss-dot";
+  }
+  return "tianshu-report-candidate-dot";
 }
 
 function summaryMetric(label: string, value: string): string {
@@ -306,7 +475,8 @@ function renderBoardSvg(
   boardSize: number,
   stones: { x: number; y: number; color: string; moveNumber: number; isLast?: boolean }[],
   sequence: string[],
-  exportSettings: ResearchExportSettings
+  exportSettings: ResearchExportSettings,
+  pageBoardSizeMm: number
 ): string {
   const size = 640;
   const boardMargin = exportSettings.boardEdgeMarginPx;
@@ -319,7 +489,7 @@ function renderBoardSvg(
   const point = (index: number) => gridStart + index * step;
   const coordLabels = "ABCDEFGHJKLMNOPQRSTUVWXYZ".slice(0, boardSize).split("");
   const labels = buildVariationLabels(sequence, boardSize);
-  return `<svg class="go-board-svg" viewBox="0 0 ${size} ${size}" role="img" aria-label="变化图">
+  return `<svg class="go-board-svg" style="max-height:${pageBoardSizeMm}mm;max-width:${pageBoardSizeMm}mm;" viewBox="0 0 ${size} ${size}" role="img" aria-label="变化图">
     <rect width="${size}" height="${size}" rx="8" fill="#d9aa67" />
     ${lines.map((line) => `<line x1="${point(0)}" y1="${point(line)}" x2="${point(boardSize - 1)}" y2="${point(line)}" />`).join("")}
     ${lines.map((line) => `<line x1="${point(line)}" y1="${point(0)}" x2="${point(line)}" y2="${point(boardSize - 1)}" />`).join("")}
@@ -435,20 +605,59 @@ function articleCss(exportSettings: ResearchExportSettings): string {
   .article-header { margin: 0 0 3mm; }
   h1 { font-size: 18px; line-height: 1.2; margin: 0; }
   .article-header p { color: #5f6e71; font-size: 10px; margin: 1mm 0 0; }
-  .pdf-page { break-after: page; display: grid; gap: ${exportSettings.rowGapMm}mm; grid-template-rows: repeat(2, auto); }
+  .pdf-page { break-after: page; }
   .pdf-page:last-child { break-after: auto; }
-  .variation-row { align-items: start; break-inside: avoid; display: grid; gap: ${exportSettings.columnGapMm}mm; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); min-height: 0; }
-  .board-column, .comment-column { min-width: 0; }
+  /* .variation-row 故意不用 display:grid/flex：Chromium 打印分页对这两种布局
+     的 break-inside:avoid 支持长期不可靠（子元素放不下时整个容器会被推到下
+     一页），改用 float 布局可以正确参与分页计算。 */
+  .variation-block { break-inside: auto; margin: 0 0 ${exportSettings.rowGapMm}mm; page-break-inside: auto; }
+  .variation-board-wrap { break-inside: avoid; overflow: hidden; page-break-inside: avoid; }
+  .board-column { box-sizing: border-box; float: left; width: 64%; }
+  .comment-column { box-sizing: border-box; float: left; width: 36%; }
   .go-board-svg { display: block; height: auto; margin: 0 auto; max-height: ${exportSettings.boardSizeMm}mm; max-width: ${exportSettings.boardSizeMm}mm; width: 100%; }
   .go-board-svg line { stroke: rgba(83, 57, 29, .8); stroke-width: 1.2; }
   .go-board-svg .star { fill: #1d1b18; }
   .go-board-svg text { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; pointer-events: none; }
   .go-board-svg .coord { fill: #283036; font-size: 12px; font-weight: 700; }
   .caption { color: #5e6d70; font-size: 9px; line-height: 1.15; margin: .8mm 0 0; text-align: center; }
-  .comment-column { border-left: 1px solid #d9e3e1; font-size: 10.5px; line-height: 1.45; padding-left: 4mm; }
+  .comment-column { border-left: 1px solid #d9e3e1; font-size: 10.5px; line-height: 1.45; padding-left: ${exportSettings.columnGapMm}mm; }
   .comment-column p { margin: 0 0 2.5mm; }
+  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 3mm; }
+  .document-flow .text-block p { margin: 0 0 2.5mm; orphans: 2; widows: 2; }
+  .empty-document { color: #7a898c; font-size: 12px; }
   blockquote { border-left: 3px solid #b7c8c5; color: #46575b; margin: 0; padding-left: 3mm; }
   .empty-page { align-items: center; display: flex; justify-content: center; }
+  .cover-page { break-after: page; display: grid; gap: 4mm; }
+  .cover-header { border-bottom: 1px solid #d6e0de; padding-bottom: 3mm; }
+  .cover-header .kicker { color: #087f8c; font-size: 9px; font-weight: 800; margin: 0 0 1.5mm; text-transform: uppercase; }
+  .cover-header h1 { font-size: 24px; line-height: 1.15; margin: 0; }
+  .cover-meta { display: grid; gap: 1.5mm 4mm; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .meta-item { border: 1px solid #d9e3e1; padding: 2mm; }
+  .meta-item span { color: #667477; display: block; font-size: 8.5px; margin-bottom: 1mm; }
+  .meta-item strong { color: #1f2a2d; display: block; font-size: 11px; overflow-wrap: anywhere; }
+  .final-report-page { break-before: page; }
+  .final-report-page h2 { font-size: 16px; margin: 0 0 4mm; }
+  .executive-summary, .winrate-report { break-inside: avoid; }
+  .executive-summary h2, .winrate-report h2 { font-size: 14px; margin: 0 0 2mm; }
+  .summary-grid { display: grid; gap: 2mm; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .summary-grid div { border: 1px solid #d9e3e1; min-height: 15mm; padding: 2mm; }
+  .summary-grid span { color: #667477; display: block; font-size: 8.5px; margin-bottom: 1.5mm; }
+  .summary-grid strong { color: #1f2a2d; display: block; font-size: 12px; overflow-wrap: anywhere; }
+  .winrate-report svg { background: #9f9f9f; border: 1px solid #7d8589; display: block; height: 52mm; width: 100%; }
+  .tianshu-report-chart-tabs { display: flex; flex-wrap: wrap; gap: 1.5mm; margin: 0 0 1.5mm; }
+  .tianshu-report-chart-tabs span { background: #edf4f5; border: 1px solid #c7d7dc; color: #28363b; font-size: 8.5px; font-weight: 700; padding: 1mm 1.8mm; }
+  .tianshu-report-grid-line { stroke: rgba(255, 255, 255, 0.9); stroke-dasharray: 4 5; stroke-width: 1; }
+  .tianshu-report-axis { stroke: rgba(255, 255, 255, 0.7); stroke-width: 1; }
+  .winrate-report svg text { fill: #ffffff; font-size: 11px; font-weight: 600; }
+  .tianshu-report-move-label { fill: #ffffff; }
+  .tianshu-report-hit-bar { fill: rgba(62, 198, 83, 0.72); }
+  .tianshu-report-miss-bar { fill: rgba(81, 91, 210, 0.72); }
+  .tianshu-report-winrate-line { fill: none; stroke: #22d7df; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }
+  .tianshu-report-top-dot { fill: #ff41d8; }
+  .tianshu-report-candidate-dot { fill: #fee053; }
+  .tianshu-report-miss-dot { fill: #d84b57; }
+  .winrate-chart-footnote { color: #425156; font-size: 9.5px; font-weight: 700; margin: 1.5mm 0 3mm; }
+  .chart-empty { fill: #879498; font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 `;
 }
 
@@ -461,24 +670,36 @@ function articleCssV2(exportSettings: ResearchExportSettings): string {
   .cover-header h1 { font-size: 24px; line-height: 1.15; margin: 0 0 2mm; }
   .cover-header p { color: #526165; font-size: 10px; margin: 0; }
   .cover-meta { display: grid; gap: 1.5mm 4mm; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .cover-meta span { border-bottom: 1px solid #e0e8e6; color: #354246; padding-bottom: 1mm; }
+  .meta-item { border: 1px solid #d9e3e1; padding: 2mm; }
+  .meta-item span { color: #667477; display: block; font-size: 8.5px; margin-bottom: 1mm; }
+  .meta-item strong { color: #1f2a2d; display: block; font-size: 11px; overflow-wrap: anywhere; }
   .executive-summary, .winrate-report { break-inside: avoid; }
   .executive-summary h2, .winrate-report h2 { font-size: 14px; margin: 0 0 2mm; }
   .summary-grid { display: grid; gap: 2mm; grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .summary-grid div { border: 1px solid #d9e3e1; min-height: 15mm; padding: 2mm; }
   .summary-grid span { color: #667477; display: block; font-size: 8.5px; margin-bottom: 1.5mm; }
   .summary-grid strong { color: #1f2a2d; display: block; font-size: 12px; overflow-wrap: anywhere; }
-  .winrate-report svg { border: 1px solid #d9e3e1; display: block; height: 38mm; width: 100%; }
-  .chart-grid { stroke: #d8e2e0; stroke-width: 1; }
-  .chart-axis { stroke: #6a787b; stroke-width: 1.2; }
-  .winrate-line { fill: none; stroke: #087f8c; stroke-linejoin: round; stroke-width: 2.2; }
-  .winrate-dot { fill: #087f8c; }
+  .winrate-report svg { background: #9f9f9f; border: 1px solid #7d8589; display: block; height: 52mm; width: 100%; }
+  .tianshu-report-chart-tabs { display: flex; flex-wrap: wrap; gap: 1.5mm; margin: 0 0 1.5mm; }
+  .tianshu-report-chart-tabs span { background: #edf4f5; border: 1px solid #c7d7dc; color: #28363b; font-size: 8.5px; font-weight: 700; padding: 1mm 1.8mm; }
+  .tianshu-report-grid-line { stroke: rgba(255, 255, 255, 0.9); stroke-dasharray: 4 5; stroke-width: 1; }
+  .tianshu-report-axis { stroke: rgba(255, 255, 255, 0.7); stroke-width: 1; }
+  .winrate-report svg text { fill: #ffffff; font-size: 11px; font-weight: 600; }
+  .tianshu-report-move-label { fill: #ffffff; }
+  .tianshu-report-hit-bar { fill: rgba(62, 198, 83, 0.72); }
+  .tianshu-report-miss-bar { fill: rgba(81, 91, 210, 0.72); }
+  .tianshu-report-winrate-line { fill: none; stroke: #22d7df; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }
+  .tianshu-report-top-dot { fill: #ff41d8; }
+  .tianshu-report-candidate-dot { fill: #fee053; }
+  .tianshu-report-miss-dot { fill: #d84b57; }
+  .winrate-chart-footnote { color: #425156; font-size: 9.5px; font-weight: 700; margin: 1.5mm 0 3mm; }
   .chart-empty { fill: #879498; font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   .document-flow { column-count: 1; }
-  .document-flow .text-block { margin: 0 0 3mm; }
+  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 3mm; }
   .document-flow .text-block p { margin: 0 0 2.5mm; orphans: 2; widows: 2; }
-  .document-flow .variation-row { break-inside: avoid; margin: 0 0 ${exportSettings.rowGapMm}mm; page-break-inside: avoid; }
-  .document-flow .variation-row + .text-block { margin-top: -1mm; }
+  .document-flow .variation-block + .text-block { margin-top: -1mm; }
   .empty-document { color: #7a898c; font-size: 12px; }
+  .final-report-page { break-before: page; }
+  .final-report-page h2 { font-size: 16px; margin: 0 0 4mm; }
   `;
 }

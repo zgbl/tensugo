@@ -33,7 +33,7 @@ export function AutoAnalysisDialog({
     return null;
   }
 
-  const defaultStart = Math.max(1, currentMoveNumber || 1);
+  const defaultStart = 1;
   const startAnalysis = () => {
     if (!formRef.current) {
       return;

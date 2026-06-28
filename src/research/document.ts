@@ -1,6 +1,6 @@
 import type { EngineCandidateMove } from "../engine/types";
 import { buildBoardPosition } from "../game/boardRules";
-import type { GameTree } from "../game/gameTree";
+import { createNodeId, type GameNode, type GameTree } from "../game/gameTree";
 import type { ReviewMove, ReviewStone } from "../game/sampleGame";
 import type {
   AiAnalysisBlock,
@@ -15,6 +15,7 @@ import type {
 } from "./types";
 
 const BRG_VERSION = "0.1" as const;
+const TSG_CREATED_BY = "TensuGo 1.0";
 
 export function createResearchDocument(snapshot: CurrentGameSnapshot): ResearchDocument {
   const now = new Date().toISOString();
@@ -35,6 +36,7 @@ export function createResearchDocument(snapshot: CurrentGameSnapshot): ResearchD
         white: snapshot.whiteName
       },
       gameDate: snapshot.gameDate,
+      result: snapshot.result,
       totalMoves: snapshot.totalMoves
     },
     tags: [],
@@ -80,6 +82,61 @@ export function removeBlock(document: ResearchDocument, blockId: string): Resear
   };
 }
 
+export function replaceBlock(document: ResearchDocument, blockId: string, nextBlock: ResearchBlock): ResearchDocument {
+  return updateBlock(document, blockId, (block) => ({
+    ...nextBlock,
+    id: block.id,
+    createdAt: block.createdAt,
+    updatedAt: new Date().toISOString()
+  }));
+}
+
+export function moveBlock(document: ResearchDocument, blockId: string, targetBlockId: string): ResearchDocument {
+  if (blockId === targetBlockId) {
+    return document;
+  }
+  const sections = document.sections.length > 0 ? document.sections : [{ id: createId("sec"), title: "正文", blocks: [] }];
+  let movedBlock: ResearchBlock | null = null;
+  const withoutMoved = sections.map((section) => {
+    const nextBlocks = section.blocks.filter((block) => {
+      if (block.id === blockId) {
+        movedBlock = block;
+        return false;
+      }
+      return true;
+    });
+    return { ...section, blocks: nextBlocks };
+  });
+  if (!movedBlock) {
+    return document;
+  }
+  const blockToMove = movedBlock;
+  let inserted = false;
+  const nextSections = withoutMoved.map((section) => {
+    const targetIndex = section.blocks.findIndex((block) => block.id === targetBlockId);
+    if (targetIndex < 0) {
+      return section;
+    }
+    inserted = true;
+    return {
+      ...section,
+      blocks: [
+        ...section.blocks.slice(0, targetIndex),
+        blockToMove,
+        ...section.blocks.slice(targetIndex)
+      ]
+    };
+  });
+  if (!inserted) {
+    return document;
+  }
+  return {
+    ...document,
+    updatedAt: new Date().toISOString(),
+    sections: nextSections
+  };
+}
+
 export function updateBlockMarkdown(document: ResearchDocument, blockId: string, markdown: string): ResearchDocument {
   return updateBlock(document, blockId, (block) => {
     if (block.type !== "paragraph" && block.type !== "conclusion") {
@@ -104,6 +161,7 @@ export function updateDocumentSource(document: ResearchDocument, snapshot: Curre
         white: snapshot.whiteName
       },
       gameDate: snapshot.gameDate,
+      result: snapshot.result,
       totalMoves: snapshot.totalMoves
     }
   };
@@ -200,9 +258,15 @@ export function createCandidateMovesBlock(moveNumber: number, candidates: Engine
 
 export function validateResearchDocument(value: unknown): ResearchDocument {
   if (!value || typeof value !== "object") {
-    throw new Error("不是有效的 BRG 文档。");
+    throw new Error("不是有效的 TSG 研究文件。");
   }
-  const record = value as Record<string, unknown>;
+  return migrateResearchFile(value as Record<string, unknown>);
+}
+
+export function migrateResearchFile(record: Record<string, unknown>): ResearchDocument {
+  if (record.format === "TSG" && record.version === 1) {
+    return fromTsgDocument(record);
+  }
   if (record.format === "brg" && record.version === "1.0") {
     return fromBrgDocument(record);
   }
@@ -213,13 +277,18 @@ export function validateResearchDocument(value: unknown): ResearchDocument {
 }
 
 export function toBrgDocument(document: ResearchDocument, gameTree?: GameTree) {
+  return toTsgDocument(document, gameTree);
+}
+
+export function toTsgDocument(document: ResearchDocument, gameTree?: GameTree) {
   const blocks = document.sections.flatMap((section) => section.blocks).map(toBrgBlock).filter(Boolean);
+  const compactGameTree = serializeGameTree(gameTree ?? document.gameTree);
   return {
-    format: "brg",
-    version: "1.0",
+    format: "TSG",
+    version: 1,
+    createdBy: TSG_CREATED_BY,
     tensugo: {
-      analysis: document.analysis,
-      gameTree: gameTree ?? document.gameTree
+      gameTree: compactGameTree
     },
     meta: {
       title: document.title,
@@ -229,7 +298,7 @@ export function toBrgDocument(document: ResearchDocument, gameTree?: GameTree) {
       tags: document.tags
     },
     source: {
-      format: inferSourceFormat(document.sourceGame.fileName),
+      type: inferSourceFormat(document.sourceGame.fileName),
       fileName: document.sourceGame.fileName,
       content: document.mainSgf ?? ""
     },
@@ -245,6 +314,10 @@ export function toBrgDocument(document: ResearchDocument, gameTree?: GameTree) {
     },
     blocks
   };
+}
+
+function fromTsgDocument(record: Record<string, unknown>): ResearchDocument {
+  return fromBrgDocument(record);
 }
 
 function createVariationBlockFromMoves(
@@ -286,14 +359,13 @@ function updateBlock(document: ResearchDocument, blockId: string, updater: (bloc
 
 function toBrgBlock(block: ResearchBlock) {
   if (block.type === "heading") {
-    return { id: block.id, type: "heading", level: block.level, text: block.text };
+    return { type: "heading", level: block.level, text: block.text };
   }
   if (block.type === "paragraph" || block.type === "conclusion") {
-    return { id: block.id, type: "paragraph", markdown: block.markdown };
+    return { type: "paragraph", title: block.title, markdown: block.markdown };
   }
   if (block.type === "board") {
     return {
-      id: block.id,
       type: "board",
       moveNumber: block.moveNumber,
       caption: block.caption,
@@ -304,7 +376,6 @@ function toBrgBlock(block: ResearchBlock) {
   }
   if (block.type === "variation") {
     return {
-      id: block.id,
       type: "variation",
       caption: block.caption,
       baseMoveNumber: block.fromMoveNumber,
@@ -313,24 +384,6 @@ function toBrgBlock(block: ResearchBlock) {
         color: moveColorAt(block.fromMoveNumber + index + 1),
         pos: gtpPointToTuple(point, block.boardSize)
       })).filter((move) => move.pos !== null)
-    };
-  }
-  if (block.type === "ai_analysis") {
-    return {
-      id: block.id,
-      type: "ai",
-      engine: block.engineName,
-      moveNumber: 0,
-      winrate: block.winrate,
-      scoreLead: block.scoreLead,
-      visits: block.visits,
-      candidates: block.candidateMoves.map((candidate) => ({
-        move: gtpPointToTuple(candidate.moveName, 19) ?? [0, 0],
-        winrate: candidate.winrate,
-        scoreLead: candidate.scoreLead,
-        visits: candidate.visits,
-        pv: candidate.pv.map((point) => gtpPointToTuple(point, 19)).filter(Boolean)
-      }))
     };
   }
   return null;
@@ -393,6 +446,7 @@ function fromBrgBlock(value: unknown, boardSize: number): ResearchBlock | null {
     return {
       id: stringValue(block.id, createId("blk")),
       type: "paragraph",
+      title: typeof block.title === "string" ? block.title : undefined,
       markdown: stringValue(block.markdown, ""),
       createdAt: now,
       updatedAt: now
@@ -493,7 +547,87 @@ function parseGameTreeExtension(record: Record<string, unknown>): GameTree | und
   if (!candidate || typeof candidate !== "object") {
     return undefined;
   }
-  return candidate as GameTree;
+  return hydrateGameTree(candidate);
+}
+
+type CompactGameTree = {
+  boardSize: number;
+  komi: number;
+  root: CompactGameNode;
+};
+
+type CompactGameNode = {
+  move?: GameNode["move"];
+  children: CompactGameNode[];
+};
+
+function serializeGameTree(tree: GameTree | undefined): CompactGameTree | undefined {
+  if (!tree) {
+    return undefined;
+  }
+  return {
+    boardSize: tree.boardSize,
+    komi: tree.komi,
+    root: serializeGameNode(tree.root)
+  };
+}
+
+function serializeGameNode(node: GameNode): CompactGameNode {
+  const serialized: CompactGameNode = {
+    children: node.children.map(serializeGameNode)
+  };
+  if (node.move) {
+    serialized.move = {
+      color: node.move.color,
+      point: node.move.point
+        ? {
+            col: node.move.point.col,
+            row: node.move.point.row
+          }
+        : null
+    };
+  }
+  return serialized;
+}
+
+function hydrateGameTree(value: unknown): GameTree | undefined {
+  const record = asRecord(value);
+  const root = asRecord(record.root);
+  if (!record.root || !Array.isArray(root.children)) {
+    return undefined;
+  }
+  return {
+    boardSize: numberValue(record.boardSize, 19),
+    komi: numberValue(record.komi, 7.5),
+    root: hydrateGameNode(root, true)
+  };
+}
+
+function hydrateGameNode(value: unknown, isRoot = false): GameNode {
+  const record = asRecord(value);
+  const move = asRecord(record.move);
+  const point = asRecord(move.point);
+  const hasMove = move.color === "black" || move.color === "white";
+  const node: GameNode = {
+    id: stringValue(record.id, isRoot ? "root" : createNodeId()),
+    children: Array.isArray(record.children) ? record.children.map((child) => hydrateGameNode(child)) : []
+  };
+  if (hasMove) {
+    node.move = {
+      color: move.color === "white" ? "white" : "black",
+      point:
+        move.point === null
+          ? null
+          : {
+              col: numberValue(point.col, 0),
+              row: numberValue(point.row, 0)
+            }
+    };
+  }
+  if (typeof record.comment === "string") {
+    node.comment = record.comment;
+  }
+  return node;
 }
 
 function parseAnalysisExtension(record: Record<string, unknown>): ResearchDocument["analysis"] {
