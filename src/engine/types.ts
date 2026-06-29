@@ -12,11 +12,20 @@ export type EngineProfile = {
   configPath: string;
   commandLine: string;
   exists: boolean;
+  source?: string;
 };
 
 export type EngineProbeResult = {
   ok: boolean;
   summary: string;
+  diagnostics: string;
+};
+
+export type EngineDiscoveryResult = {
+  platform: string;
+  localEngineSupported: boolean;
+  selected: EngineProfile;
+  candidates: EngineProfile[];
   diagnostics: string;
 };
 

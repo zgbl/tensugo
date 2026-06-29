@@ -2,6 +2,7 @@ import type { EngineCandidateMove } from "../engine/types";
 import { buildBoardPosition } from "../game/boardRules";
 import { createNodeId, type GameNode, type GameTree } from "../game/gameTree";
 import type { ReviewMove, ReviewStone } from "../game/sampleGame";
+import { appDisplayVersion } from "../version";
 import type {
   AiAnalysisBlock,
   BoardBlock,
@@ -15,7 +16,7 @@ import type {
 } from "./types";
 
 const BRG_VERSION = "0.1" as const;
-const TSG_CREATED_BY = "TensuGo 1.0";
+const TSG_CREATED_BY = appDisplayVersion();
 
 export function createResearchDocument(snapshot: CurrentGameSnapshot): ResearchDocument {
   const now = new Date().toISOString();
@@ -288,7 +289,8 @@ export function toTsgDocument(document: ResearchDocument, gameTree?: GameTree) {
     version: 1,
     createdBy: TSG_CREATED_BY,
     tensugo: {
-      gameTree: compactGameTree
+      gameTree: compactGameTree,
+      ...(document.analysis ? { analysis: document.analysis } : {})
     },
     meta: {
       title: document.title,
@@ -334,7 +336,7 @@ function createVariationBlockFromMoves(
     fromMoveNumber: baseMoveNumber,
     name,
     caption: `第 ${baseMoveNumber} 手后的变化`,
-    description: sequence.join(" "),
+    description: "",
     sequence,
     boardSize,
     position,
@@ -384,6 +386,29 @@ function toBrgBlock(block: ResearchBlock) {
         color: moveColorAt(block.fromMoveNumber + index + 1),
         pos: gtpPointToTuple(point, block.boardSize)
       })).filter((move) => move.pos !== null)
+    };
+  }
+  if (block.type === "ai_analysis") {
+    return {
+      type: "ai_analysis",
+      engineName: block.engineName,
+      modelName: block.modelName,
+      visits: block.visits,
+      winrate: block.winrate,
+      scoreLead: block.scoreLead,
+      policy: block.policy,
+      pv: block.pv,
+      candidateMoves: block.candidateMoves,
+      ownershipMap: block.ownershipMap,
+      timestamp: block.timestamp
+    };
+  }
+  if (block.type === "candidate_moves") {
+    return {
+      type: "candidate_moves",
+      moveNumber: block.moveNumber,
+      candidates: block.candidates,
+      note: block.note
     };
   }
   return null;
@@ -480,6 +505,35 @@ function fromBrgBlock(value: unknown, boardSize: number): ResearchBlock | null {
       sequence,
       stringValue(block.caption, "变化")
     );
+  }
+  if (type === "ai_analysis") {
+    return {
+      id: stringValue(block.id, createId("blk")),
+      type: "ai_analysis",
+      engineName: stringValue(block.engineName, ""),
+      modelName: typeof block.modelName === "string" ? block.modelName : undefined,
+      visits: numberValue(block.visits, 0),
+      winrate: numberValue(block.winrate, 0),
+      scoreLead: numberValue(block.scoreLead, 0),
+      policy: typeof block.policy === "number" ? block.policy : undefined,
+      pv: parseStringArray(block.pv),
+      candidateMoves: parseCandidateMoves(block.candidateMoves),
+      ownershipMap: typeof block.ownershipMap === "object" && Array.isArray(block.ownershipMap) ? block.ownershipMap.filter((n): n is number => typeof n === "number") : undefined,
+      timestamp: stringValue(block.timestamp, now),
+      createdAt: now,
+      updatedAt: now
+    };
+  }
+  if (type === "candidate_moves") {
+    return {
+      id: stringValue(block.id, createId("blk")),
+      type: "candidate_moves",
+      moveNumber: numberValue(block.moveNumber, 0),
+      candidates: parseCandidateMoves(block.candidates),
+      note: typeof block.note === "string" ? block.note : undefined,
+      createdAt: now,
+      updatedAt: now
+    };
   }
   return null;
 }
@@ -653,6 +707,28 @@ function numberValue(value: unknown, fallback: number): number {
 
 function fileStem(fileName: string): string {
   return fileName.replace(/\.[^.]+$/, "");
+}
+
+function parseStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : [];
+}
+
+function parseCandidateMoves(value: unknown): EngineCandidateMove[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(fromEngineCandidateMove).filter((m): m is EngineCandidateMove => m !== null);
+}
+
+function fromEngineCandidateMove(value: unknown): EngineCandidateMove | null {
+  const move = asRecord(value);
+  if (!move.moveName) return null;
+  return {
+    rank: numberValue(move.rank, 0),
+    moveName: stringValue(move.moveName, ""),
+    visits: numberValue(move.visits, 0),
+    winrate: numberValue(move.winrate, 0),
+    scoreLead: numberValue(move.scoreLead, 0),
+    pv: parseStringArray(move.pv)
+  };
 }
 
 function createId(prefix: string): string {

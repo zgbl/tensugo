@@ -1,0 +1,7 @@
+*
+!.gitignore
+!README.md
+!configs/
+!configs/.gitkeep
+!models/
+!models/.gitkeep

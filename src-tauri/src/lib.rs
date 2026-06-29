@@ -1,3 +1,7 @@
+mod engine_discovery;
+mod platform;
+
+use engine_discovery::{EngineDiscoveryResult, EngineProfile, EngineProfileCandidate};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -6,14 +10,12 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::AppHandle;
 
-const DEFAULT_EXECUTABLE: &str = "/opt/homebrew/bin/katago";
-const DEFAULT_MODEL: &str =
-    "/opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz";
-const DEFAULT_CONFIG: &str = "/Users/tuxy/App/KataGo/Config/winConfigs/default_gtp.cfg";
 const ANALYSIS_COLLECT_MIN_MS: u64 = 1_000;
 const ANALYSIS_COLLECT_MAX_MS: u64 = 3_000;
 const ANALYSIS_BOOT_WAIT_MS: u64 = 300_000;
+const ENGINE_TEST_BOOT_WAIT_MS: u64 = 15_000;
 const PDF_EXPORT_TIMEOUT_MS: u64 = 45_000;
 
 struct EngineState {
@@ -27,14 +29,6 @@ struct EngineSession {
     stdout_rx: Receiver<String>,
     stderr_rx: Receiver<String>,
     child: Child,
-}
-
-#[derive(Debug, Deserialize)]
-struct EngineProfile {
-    name: String,
-    executable_path: String,
-    model_path: String,
-    config_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,20 +49,22 @@ struct AnalyzeRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct EngineProfileCandidate {
-    name: String,
-    executable_path: String,
-    model_path: String,
-    config_path: String,
-    command_line: String,
-    exists: bool,
-}
-
-#[derive(Debug, Serialize)]
 struct EngineProbeResult {
     ok: bool,
     summary: String,
     diagnostics: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChoosePathRequest {
+    kind: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChoosePathResult {
+    selected: bool,
+    path: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,8 +113,13 @@ fn app_name() -> &'static str {
 }
 
 #[tauri::command]
-fn save_text_file_with_dialog(request: SaveTextFileRequest) -> SaveTextFileResult {
-    match choose_save_path(&request.default_name, request.default_dir.as_deref()) {
+fn platform_paths(app: AppHandle) -> Result<platform::PlatformPaths, String> {
+    platform::platform_paths(&app)
+}
+
+#[tauri::command]
+fn save_text_file_with_dialog(_app: AppHandle, request: SaveTextFileRequest) -> SaveTextFileResult {
+    match platform::choose_save_path(&request.default_name, request.default_dir.as_deref()) {
         Ok(Some(path)) => match std::fs::write(&path, request.content) {
             Ok(()) => SaveTextFileResult {
                 saved: true,
@@ -145,8 +146,8 @@ fn save_text_file_with_dialog(request: SaveTextFileRequest) -> SaveTextFileResul
 }
 
 #[tauri::command]
-fn save_pdf_with_dialog(request: SavePdfRequest) -> SaveTextFileResult {
-    match choose_save_path(&request.default_name, request.default_dir.as_deref()) {
+fn save_pdf_with_dialog(_app: AppHandle, request: SavePdfRequest) -> SaveTextFileResult {
+    match platform::choose_save_path(&request.default_name, request.default_dir.as_deref()) {
         Ok(Some(path)) => match render_html_to_pdf(&request.html, &path) {
             Ok(()) => SaveTextFileResult {
                 saved: true,
@@ -173,29 +174,44 @@ fn save_pdf_with_dialog(request: SavePdfRequest) -> SaveTextFileResult {
 }
 
 #[tauri::command]
-fn default_engine_profile() -> EngineProfileCandidate {
-    let executable_exists = std::path::Path::new(DEFAULT_EXECUTABLE).exists();
-    let model_exists = std::path::Path::new(DEFAULT_MODEL).exists();
-    let config_exists = std::path::Path::new(DEFAULT_CONFIG).exists();
+fn default_engine_profile(app: AppHandle) -> EngineProfileCandidate {
+    engine_discovery::discover_engine(&app, None).selected
+}
 
-    EngineProfileCandidate {
-        name: "本机 KataGo OpenCL".to_string(),
-        executable_path: DEFAULT_EXECUTABLE.to_string(),
-        model_path: DEFAULT_MODEL.to_string(),
-        config_path: DEFAULT_CONFIG.to_string(),
-        command_line: format!(
-            "{} gtp -model \"{}\" -config \"{}\"",
-            DEFAULT_EXECUTABLE, DEFAULT_MODEL, DEFAULT_CONFIG
-        ),
-        exists: executable_exists && model_exists && config_exists,
+#[tauri::command]
+fn discover_engine_profile(
+    app: AppHandle,
+    profile: Option<EngineProfile>,
+) -> EngineDiscoveryResult {
+    engine_discovery::discover_engine(&app, profile)
+}
+
+#[tauri::command]
+fn choose_engine_path(request: ChoosePathRequest) -> ChoosePathResult {
+    match platform::choose_file_path(&request.kind) {
+        Ok(Some(path)) => ChoosePathResult {
+            selected: true,
+            path: Some(path.display().to_string()),
+            error: None,
+        },
+        Ok(None) => ChoosePathResult {
+            selected: false,
+            path: None,
+            error: None,
+        },
+        Err(error) => ChoosePathResult {
+            selected: false,
+            path: None,
+            error: Some(error),
+        },
     }
 }
 
 #[tauri::command]
-fn probe_engine(profile: EngineProfile) -> EngineProbeResult {
+fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
     let mut diagnostics = Vec::new();
     diagnostics.push(format!("profile: {}", profile.name));
-    match engine_runtime_dir() {
+    match platform::engine_runtime_dir(&app) {
         Ok(path) => diagnostics.push(format!("runtime dir: {}", path.display())),
         Err(error) => diagnostics.push(format!("runtime dir unavailable: {}", error)),
     }
@@ -231,11 +247,7 @@ fn probe_engine(profile: EngineProfile) -> EngineProbeResult {
             }
 
             diagnostics.push("version probe: OK".to_string());
-            EngineProbeResult {
-                ok: true,
-                summary: stdout.lines().next().unwrap_or("KataGo 可用").to_string(),
-                diagnostics: diagnostics.join("\n"),
-            }
+            run_engine_start_test(&app, &profile, diagnostics)
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -254,8 +266,118 @@ fn probe_engine(profile: EngineProfile) -> EngineProbeResult {
     }
 }
 
+fn run_engine_start_test(
+    app: &AppHandle,
+    profile: &EngineProfile,
+    mut diagnostics: Vec<String>,
+) -> EngineProbeResult {
+    let runtime_dir = match platform::engine_runtime_dir(app) {
+        Ok(path) => path,
+        Err(error) => {
+            diagnostics.push(error);
+            return EngineProbeResult {
+                ok: false,
+                summary: "无法创建引擎运行目录".to_string(),
+                diagnostics: diagnostics.join("\n"),
+            };
+        }
+    };
+
+    let mut child = match Command::new(&profile.executable_path)
+        .current_dir(&runtime_dir)
+        .args([
+            "gtp",
+            "-model",
+            &profile.model_path,
+            "-config",
+            &profile.config_path,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            diagnostics.push(error.to_string());
+            return EngineProbeResult {
+                ok: false,
+                summary: "KataGo GTP 启动失败".to_string(),
+                diagnostics: diagnostics.join("\n"),
+            };
+        }
+    };
+
+    let mut stdin = child.stdin.take();
+    let stdout_rx = spawn_line_reader(child.stdout.take(), "stdout");
+    let stderr_rx = spawn_line_reader(child.stderr.take(), "stderr");
+    let deadline = Instant::now() + Duration::from_millis(ENGINE_TEST_BOOT_WAIT_MS);
+    let mut boot_log = Vec::new();
+    let mut ready = false;
+
+    while Instant::now() < deadline {
+        boot_log.extend(drain_receiver(&stdout_rx));
+        boot_log.extend(drain_receiver(&stderr_rx));
+        if boot_log.iter().any(|line| line.contains("GTP ready")) {
+            ready = true;
+            break;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                boot_log.extend(drain_receiver(&stdout_rx));
+                boot_log.extend(drain_receiver(&stderr_rx));
+                diagnostics.push(format!("gtp exited during boot: {}", status));
+                diagnostics.push(boot_log.join("\n"));
+                return EngineProbeResult {
+                    ok: false,
+                    summary: "KataGo GTP 启动期间退出".to_string(),
+                    diagnostics: diagnostics.join("\n"),
+                };
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(80)),
+            Err(error) => {
+                diagnostics.push(error.to_string());
+                return EngineProbeResult {
+                    ok: false,
+                    summary: "KataGo 状态检查失败".to_string(),
+                    diagnostics: diagnostics.join("\n"),
+                };
+            }
+        }
+    }
+
+    if let Some(stdin) = stdin.as_mut() {
+        let _ = writeln!(stdin, "quit");
+        let _ = stdin.flush();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    boot_log.extend(drain_receiver(&stdout_rx));
+    boot_log.extend(drain_receiver(&stderr_rx));
+    diagnostics.push(boot_log.join("\n"));
+
+    if ready {
+        EngineProbeResult {
+            ok: true,
+            summary: "KataGo GTP 启动测试通过".to_string(),
+            diagnostics: diagnostics.join("\n"),
+        }
+    } else {
+        EngineProbeResult {
+            ok: false,
+            summary: "KataGo GTP 启动超时".to_string(),
+            diagnostics: diagnostics.join("\n"),
+        }
+    }
+}
+
 #[tauri::command]
-fn analyze_position(state: tauri::State<EngineState>, request: AnalyzeRequest) -> AnalysisResult {
+fn analyze_position(
+    app: AppHandle,
+    state: tauri::State<EngineState>,
+    request: AnalyzeRequest,
+) -> AnalysisResult {
     let mut guard = match state.session.lock() {
         Ok(guard) => guard,
         Err(error) => {
@@ -271,7 +393,7 @@ fn analyze_position(state: tauri::State<EngineState>, request: AnalyzeRequest) -
 
     let profile_key = profile_key(&request.profile);
     if guard.as_ref().map(|session| session.profile_key.as_str()) != Some(profile_key.as_str()) {
-        *guard = match start_engine_session(&request.profile, &profile_key) {
+        *guard = match start_engine_session(&app, &request.profile, &profile_key) {
             Ok(session) => Some(session),
             Err(result) => return result,
         };
@@ -310,10 +432,11 @@ fn analyze_position(state: tauri::State<EngineState>, request: AnalyzeRequest) -
 }
 
 fn start_engine_session(
+    app: &AppHandle,
     profile: &EngineProfile,
     profile_key: &str,
 ) -> Result<EngineSession, AnalysisResult> {
-    let runtime_dir = match engine_runtime_dir() {
+    let runtime_dir = match platform::engine_runtime_dir(app) {
         Ok(path) => path,
         Err(error) => {
             return Err(AnalysisResult {
@@ -414,7 +537,10 @@ fn start_engine_session(
         thread::sleep(Duration::from_millis(100));
     }
     if !ready {
-        let tuning_hint = if boot_log.iter().any(|line| line.contains("Performing autotuning")) {
+        let tuning_hint = if boot_log
+            .iter()
+            .any(|line| line.contains("Performing autotuning"))
+        {
             "\nKataGo 正在进行首次 OpenCL 调优，可能需要几分钟，请等待缓存生成后重试。"
         } else {
             ""
@@ -586,17 +712,6 @@ fn request_position_key(request: &AnalyzeRequest) -> String {
     )
 }
 
-fn engine_runtime_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|error| error.to_string())?;
-    let path = PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("TensuGo")
-        .join("KataGoRuntime");
-    std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
-    Ok(path)
-}
-
 fn to_gtp_point(x: usize, y: usize, board_size: usize) -> String {
     const LABELS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
     let col = LABELS.get(x).copied().unwrap_or(b'?') as char;
@@ -670,22 +785,6 @@ fn parse_analysis_output(output: &str) -> Vec<CandidateMove> {
     candidates
 }
 
-fn choose_save_path(default_name: &str, default_dir: Option<&str>) -> Result<Option<PathBuf>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        choose_save_path_macos(default_name, default_dir)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = default_dir;
-        Err(format!(
-            "当前平台暂未实现原生保存对话框，请提供文件路径后再保存: {}",
-            default_name
-        ))
-    }
-}
-
 fn render_html_to_pdf(html: &str, pdf_path: &PathBuf) -> Result<(), String> {
     let chrome_path = find_chrome_executable()
         .ok_or_else(|| "未找到 Google Chrome，暂时无法导出 PDF。".to_string())?;
@@ -721,7 +820,9 @@ fn render_html_to_pdf(html: &str, pdf_path: &PathBuf) -> Result<(), String> {
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => {
-                let output = child.wait_with_output().map_err(|error| error.to_string())?;
+                let output = child
+                    .wait_with_output()
+                    .map_err(|error| error.to_string())?;
                 let _ = std::fs::remove_dir_all(&temp_dir);
                 if output.status.success() && pdf_path.exists() {
                     return Ok(());
@@ -737,7 +838,10 @@ fn render_html_to_pdf(html: &str, pdf_path: &PathBuf) -> Result<(), String> {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = std::fs::remove_dir_all(&temp_dir);
-                return Err("Chrome PDF 导出超时。请确认 Chrome 没有卡在权限弹窗或后台启动失败。".to_string());
+                return Err(
+                    "Chrome PDF 导出超时。请确认 Chrome 没有卡在权限弹窗或后台启动失败。"
+                        .to_string(),
+                );
             }
             Ok(None) => thread::sleep(Duration::from_millis(100)),
             Err(error) => {
@@ -758,48 +862,6 @@ fn find_chrome_executable() -> Option<PathBuf> {
     .iter()
     .map(PathBuf::from)
     .find(|path| path.exists())
-}
-
-#[cfg(target_os = "macos")]
-fn choose_save_path_macos(default_name: &str, default_dir: Option<&str>) -> Result<Option<PathBuf>, String> {
-    let mut script = format!(
-        "set chosenFile to choose file name with prompt \"保存 TensuGo 研究文档\" default name \"{}\"",
-        applescript_escape(default_name)
-    );
-    if let Some(default_dir) = default_dir.filter(|path| !path.trim().is_empty()) {
-        script.push_str(&format!(
-            " default location POSIX file \"{}\"",
-            applescript_escape(default_dir)
-        ));
-    }
-    script.push_str("\nPOSIX path of chosenFile");
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|error| error.to_string())?;
-
-    if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if path.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(PathBuf::from(path)))
-        }
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("User canceled") || stderr.contains("-128") {
-            Ok(None)
-        } else {
-            Err(stderr.trim().to_string())
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn applescript_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn token_after(line: &str, key: &str) -> Option<String> {
@@ -855,9 +917,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_name,
+            platform_paths,
             save_text_file_with_dialog,
             save_pdf_with_dialog,
             default_engine_profile,
+            discover_engine_profile,
+            choose_engine_path,
             probe_engine,
             analyze_position
         ])

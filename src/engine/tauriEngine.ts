@@ -1,16 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { EngineAnalysisResult, EngineProbeResult, EngineProfile } from "./types";
+import type { EngineAnalysisResult, EngineDiscoveryResult, EngineProbeResult, EngineProfile } from "./types";
 import type { ReviewMove } from "../game/sampleGame";
+import { platform } from "../platform";
 
-export const DEFAULT_ENGINE_PROFILE: EngineProfile = {
-  name: "本机 KataGo OpenCL",
-  executablePath: "/opt/homebrew/bin/katago",
-  modelPath: "/opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz",
-  configPath: "/Users/tuxy/App/KataGo/Config/winConfigs/default_gtp.cfg",
-  commandLine:
-    '/opt/homebrew/bin/katago gtp -model "/opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz" -config "/Users/tuxy/App/KataGo/Config/winConfigs/default_gtp.cfg"',
-  exists: true
-};
+export const DEFAULT_ENGINE_PROFILE: EngineProfile = platform.defaultEngineProfile;
 
 type TauriEngineProfile = {
   name: string;
@@ -19,6 +12,21 @@ type TauriEngineProfile = {
   config_path: string;
   command_line: string;
   exists: boolean;
+  source?: string;
+};
+
+type TauriEngineDiscoveryResult = {
+  platform: string;
+  local_engine_supported: boolean;
+  selected: TauriEngineProfile;
+  candidates: TauriEngineProfile[];
+  diagnostics: string;
+};
+
+type ChoosePathResult = {
+  selected: boolean;
+  path: string | null;
+  error: string | null;
 };
 
 type TauriCandidateMove = {
@@ -39,12 +47,29 @@ type TauriAnalysisResult = {
 };
 
 export function isTauriRuntime(): boolean {
-  return "__TAURI_INTERNALS__" in window;
+  return platform.isTauriRuntime();
 }
 
 export async function getDefaultEngineProfile(): Promise<EngineProfile> {
   const profile = await invoke<TauriEngineProfile>("default_engine_profile");
   return fromTauriProfile(profile);
+}
+
+export async function discoverEngineProfile(profile?: EngineProfile | null): Promise<EngineDiscoveryResult> {
+  const result = await invoke<TauriEngineDiscoveryResult>("discover_engine_profile", {
+    profile: profile ? toTauriProfile(profile) : null
+  });
+  return {
+    platform: result.platform,
+    localEngineSupported: result.local_engine_supported,
+    selected: fromTauriProfile(result.selected),
+    candidates: result.candidates.map(fromTauriProfile),
+    diagnostics: result.diagnostics
+  };
+}
+
+export async function chooseEnginePath(kind: "engine" | "model" | "config"): Promise<ChoosePathResult> {
+  return invoke<ChoosePathResult>("choose_engine_path", { request: { kind } });
 }
 
 export async function probeEngine(profile: EngineProfile): Promise<EngineProbeResult> {
@@ -97,7 +122,8 @@ function fromTauriProfile(profile: TauriEngineProfile): EngineProfile {
     modelPath: profile.model_path,
     configPath: profile.config_path,
     commandLine: profile.command_line,
-    exists: profile.exists
+    exists: profile.exists,
+    source: profile.source
   };
 }
 

@@ -80,6 +80,10 @@ export function cloneGameTree(tree: GameTree): GameTree {
 export function appendMoveToGameTree(tree: GameTree, parentNodeId: string, move: GameMove): { tree: GameTree; nodeId: string } {
   const nextTree = cloneGameTree(tree);
   const parent = findNode(nextTree.root, parentNodeId) ?? nextTree.root;
+  const existingChild = findChildByMove(parent, move);
+  if (existingChild) {
+    return { tree: nextTree, nodeId: existingChild.id };
+  }
   const nodeId = createNodeId();
   parent.children.push({
     id: nodeId,
@@ -87,6 +91,11 @@ export function appendMoveToGameTree(tree: GameTree, parentNodeId: string, move:
     children: []
   });
   return { tree: nextTree, nodeId };
+}
+
+export function findChildNodeIdByMove(tree: GameTree, parentNodeId: string, move: GameMove): string | null {
+  const parent = findNode(tree.root, parentNodeId) ?? tree.root;
+  return findChildByMove(parent, move)?.id ?? null;
 }
 
 export function appendVariationAtMoveNumber(
@@ -346,6 +355,20 @@ function findNode(node: GameNode, nodeId: string): GameNode | null {
     }
   }
   return null;
+}
+
+function findChildByMove(parent: GameNode, move: GameMove): GameNode | null {
+  return parent.children.find((child) => isSameMove(child.move, move)) ?? null;
+}
+
+function isSameMove(left: GameMove | undefined, right: GameMove): boolean {
+  if (!left || left.color !== right.color) {
+    return false;
+  }
+  if (!left.point || !right.point) {
+    return left.point === right.point;
+  }
+  return left.point.col === right.point.col && left.point.row === right.point.row;
 }
 
 function findParentNode(node: GameNode, nodeId: string): GameNode | null {

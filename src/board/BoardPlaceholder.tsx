@@ -37,12 +37,18 @@ export function BoardPlaceholder({
   const candidateBubbleSize = Math.max(20, Math.min(42, pixelSize * 0.056));
   const candidateFontSize = Math.max(7, Math.min(14, candidateBubbleSize * 0.34));
   const candidateRankOffset = Math.max(2, candidateBubbleSize * 0.13);
+  const occupiedPoints = new Set(stones.map((stone) => boardPointKey(stone.x, stone.y)));
   const candidatePoints = candidates
     .map((candidate) => ({
       candidate,
       point: gtpPointToBoardPoint(candidate.moveName, boardSize)
     }))
-    .filter((item): item is { candidate: EngineCandidateMove; point: { x: number; y: number } } => Boolean(item.point));
+    .filter((item): item is { candidate: EngineCandidateMove; point: { x: number; y: number } } => {
+      if (!item.point) {
+        return false;
+      }
+      return !occupiedPoints.has(boardPointKey(item.point.x, item.point.y));
+    });
   const starPoints = [3, 9, 15].flatMap((y) => [3, 9, 15].map((x) => ({ y, x })));
   const pointStyle = (x: number, y: number) =>
     ({
@@ -225,6 +231,10 @@ function gtpPointToBoardPoint(point: string, boardSize: number): { x: number; y:
     return null;
   }
   return { x, y };
+}
+
+function boardPointKey(x: number, y: number): string {
+  return `${x}:${y}`;
 }
 
 function formatVisits(visits: number): string {

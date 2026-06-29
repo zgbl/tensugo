@@ -3,6 +3,7 @@ import { buildBoardPosition } from "../game/boardRules";
 import { mainLineMovesFromTree, type GameTree } from "../game/gameTree";
 import type { ReviewMove } from "../game/sampleGame";
 import { parseGameRecord } from "../sgf/parseSgf";
+import { appDisplayVersion } from "../version";
 
 export type ExportFormat = "pdf" | "html";
 export type ExportLayoutVersion = "0.1" | "0.2";
@@ -141,10 +142,15 @@ function buildFlowItems(blocks: ResearchBlock[], sourceMoves: ReviewMove[]): Flo
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index];
     if (block.type === "variation") {
-      items.push({ type: "variation", entry: buildVariationEntry(block, null, sourceMoves) });
+      const nextBlock = blocks[index + 1];
+      const pairedComment = isCommentBlock(nextBlock) ? nextBlock : null;
+      items.push({ type: "variation", entry: buildVariationEntry(block, pairedComment, sourceMoves) });
+      if (pairedComment) {
+        index += 1;
+      }
       continue;
     }
-    if ((block.type === "paragraph" || block.type === "conclusion") && block.markdown.trim()) {
+    if (isCommentBlock(block) && block.type !== "quote") {
       items.push({ type: "text", block });
       continue;
     }
@@ -157,6 +163,16 @@ function buildFlowItems(blocks: ResearchBlock[], sourceMoves: ReviewMove[]): Flo
     }
   }
   return items;
+}
+
+function isCommentBlock(block: ResearchBlock | undefined): block is Extract<ResearchBlock, { type: "paragraph" | "conclusion" | "quote" }> {
+  if (!block) {
+    return false;
+  }
+  if (block.type === "paragraph" || block.type === "conclusion") {
+    return block.markdown.trim().length > 0;
+  }
+  return block.type === "quote" && block.text.trim().length > 0;
 }
 
 function renderFlowItem(item: FlowItem, exportSettings: ResearchExportSettings, pageBoardSizeMm: number): string {
@@ -281,7 +297,7 @@ function renderVariationEntry(
   exportSettings: ResearchExportSettings,
   pageBoardSizeMm: number
 ): string {
-  const comment = renderComment(entry.comment);
+  const comment = renderComment(entry.comment) || renderVariationDescription(entry.variation);
   return `<section class="variation-block">
     <div class="variation-board-wrap">
     <div class="board-column">
@@ -293,6 +309,14 @@ function renderVariationEntry(
     </div>
     </div>
   </section>`;
+}
+
+function renderVariationDescription(block: Extract<ResearchBlock, { type: "variation" }>): string {
+  const text = block.description.trim();
+  if (!text || text === block.sequence.join(" ")) {
+    return "";
+  }
+  return renderMarkdown(text);
 }
 
 function renderComment(block: ResearchBlock | null): string {
@@ -324,7 +348,7 @@ function renderCoverPage(document: ResearchDocument): string {
       ${metaItem("棋盘大小", `${document.sourceGame.boardSize} 路`)}
       ${metaItem("结果", document.sourceGame.result)}
       ${metaItem("作者", document.author)}
-      ${metaItem("createdBy", "TensuGo 1.0")}
+      ${metaItem("createdBy", appDisplayVersion())}
     </section>
   </section>`;
 }
@@ -622,8 +646,8 @@ function articleCss(exportSettings: ResearchExportSettings): string {
   .caption { color: #5e6d70; font-size: 9px; line-height: 1.15; margin: .8mm 0 0; text-align: center; }
   .comment-column { border-left: 1px solid #d9e3e1; font-size: 10.5px; line-height: 1.45; padding-left: ${exportSettings.columnGapMm}mm; }
   .comment-column p { margin: 0 0 2.5mm; }
-  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 3mm; }
-  .document-flow .text-block p { margin: 0 0 2.5mm; orphans: 2; widows: 2; }
+  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 1mm; }
+  .document-flow .text-block p { margin: 0 0 1.5mm; orphans: 2; widows: 2; }
   .empty-document { color: #7a898c; font-size: 12px; }
   blockquote { border-left: 3px solid #b7c8c5; color: #46575b; margin: 0; padding-left: 3mm; }
   .empty-page { align-items: center; display: flex; justify-content: center; }
@@ -695,7 +719,7 @@ function articleCssV2(exportSettings: ResearchExportSettings): string {
   .winrate-chart-footnote { color: #425156; font-size: 9.5px; font-weight: 700; margin: 1.5mm 0 3mm; }
   .chart-empty { fill: #879498; font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   .document-flow { column-count: 1; }
-  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 3mm; }
+  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 2mm; }
   .document-flow .text-block p { margin: 0 0 2.5mm; orphans: 2; widows: 2; }
   .document-flow .variation-block + .text-block { margin-top: -1mm; }
   .empty-document { color: #7a898c; font-size: 12px; }

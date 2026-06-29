@@ -3,17 +3,22 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const versionPath = resolve(root, "version.json");
 const packagePath = resolve(root, "package.json");
 const packageLockPath = resolve(root, "package-lock.json");
 const tauriConfigPath = resolve(root, "src-tauri", "tauri.conf.json");
 const cargoTomlPath = resolve(root, "src-tauri", "Cargo.toml");
+const cargoLockPath = resolve(root, "src-tauri", "Cargo.lock");
 const releaseInfoPath = resolve(root, "dist", "release-version.json");
 
-const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
-const currentVersion = packageJson.version;
-const nextVersion = bumpPatch(currentVersion);
-const displayVersion = toPaddedDisplayVersion(nextVersion);
+const versionInfo = JSON.parse(readFileSync(versionPath, "utf8"));
+const currentVersion = toSemver(versionInfo);
+versionInfo.patch += 1;
+const nextVersion = toSemver(versionInfo);
+const displayVersion = toDisplayVersion(versionInfo);
+writeFileSync(versionPath, `${JSON.stringify(versionInfo, null, 2)}\n`);
 
+const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
 packageJson.version = nextVersion;
 writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 
@@ -34,29 +39,28 @@ writeFileSync(
   cargoToml.replace(/^version = ".*"$/m, `version = "${nextVersion}"`)
 );
 
+const cargoLock = readFileSync(cargoLockPath, "utf8");
+writeFileSync(
+  cargoLockPath,
+  cargoLock.replace(/(\[\[package\]\]\nname = "tensugo"\nversion = ")[^"]+(")/m, `$1${nextVersion}$2`)
+);
+
 console.log(`TensuGo version bumped: ${currentVersion} -> ${nextVersion}`);
-console.log(`TensuGo display package version: ${displayVersion}`);
+console.log(`TensuGo display version: ${displayVersion}`);
 
-function bumpPatch(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-  if (!match) {
-    throw new Error(`Unsupported version format: ${version}`);
+function toSemver(info) {
+  if (!Number.isInteger(info.major) || !Number.isInteger(info.minor) || !Number.isInteger(info.patch)) {
+    throw new Error("version.json must contain integer major, minor, and patch fields.");
   }
-
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  const patch = Number(match[3]);
-
-  return `${major}.${minor}.${patch + 1}`;
+  return `${info.major}.${info.minor}.${info.patch}`;
 }
 
-function toPaddedDisplayVersion(version) {
-  const [major, minor, patch] = version.split(".");
-  return `${major}.${minor}.${patch.padStart(2, "0")}`;
+function toDisplayVersion(info) {
+  return `${info.name ?? "TensuGo"} ${toSemver(info)} ${info.stage ?? ""}`.trim();
 }
 
 mkdirSync(dirname(releaseInfoPath), { recursive: true });
 writeFileSync(
   releaseInfoPath,
-  `${JSON.stringify({ internalVersion: nextVersion, displayVersion }, null, 2)}\n`
+  `${JSON.stringify({ internalVersion: nextVersion, displayVersion, ...versionInfo }, null, 2)}\n`
 );

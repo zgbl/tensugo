@@ -11,7 +11,9 @@ import { TopToolbar } from "../components/TopToolbar";
 import type { EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
 import {
   analyzePosition,
+  chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
+  discoverEngineProfile,
   getDefaultEngineProfile,
   isTauriRuntime,
   probeEngine
@@ -21,6 +23,7 @@ import {
   appendMoveToGameTree,
   createEmptyGameTree,
   deleteSubtreeFromGameTree,
+  findChildNodeIdByMove,
   findMainLineEndNodeId,
   findVariationAnchorNodeId,
   flattenBranchTree,
@@ -35,6 +38,7 @@ import type { ReviewMove } from "../game/sampleGame";
 import { parseGameRecord } from "../sgf/parseSgf";
 import {
   appendBlock,
+  createCandidateMovesBlock,
   createManualVariationBlock,
   createParagraphBlock,
   createResearchDocument,
@@ -61,6 +65,7 @@ import {
 } from "../i18n";
 import type { ResearchBlock, ResearchDocument } from "../research/types";
 import { useGameStore } from "../stores/gameStore";
+import { APP_VERSION, appDisplayVersion } from "../version";
 
 type AutoAnalysisSummary = {
   analyzed: number;
@@ -112,6 +117,9 @@ type SaveTextFileResult = {
 
 const LAST_RESEARCH_SAVE_DIR_KEY = "tensugo.lastResearchSaveDir";
 const RESEARCH_EXPORT_SETTINGS_KEY = "tensugo.researchExportSettings";
+const INTERFACE_SETTINGS_KEY = "tensugo.interfaceSettings";
+const ENGINE_PROFILE_STORAGE_KEY = "tensugo.engineProfile";
+const DEFAULT_CANDIDATE_DISPLAY_LIMIT = 5;
 const INITIAL_GAME_TREE = createEmptyGameTree(19, 7.5);
 const INITIAL_SELECTED_NODE_ID = "root";
 const INITIAL_PATH_NODE_IDS: string[] = [];
@@ -128,11 +136,13 @@ export function App() {
   const [gameResult, setGameResult] = useState<string | undefined>(undefined);
   const [lastAction, setLastAction] = useState("空棋盘已就绪。点“开”选择 SGF，或点棋盘空交点开始摆棋。");
   const [sgfWarnings, setSgfWarnings] = useState<string[]>([]);
-  const [engineProfile, setEngineProfile] = useState<EngineProfile | null>(DEFAULT_ENGINE_PROFILE);
+  const [engineProfile, setEngineProfile] = useState<EngineProfile | null>(() => loadEngineProfile());
   const [engineStatus, setEngineStatus] = useState("引擎未配置");
   const [engineDiagnostics, setEngineDiagnostics] = useState("尚未运行引擎测试。");
   const [researchExportSettings, setResearchExportSettings] = useState<ResearchExportSettings>(() => loadResearchExportSettings());
+  const [candidateDisplayLimit, setCandidateDisplayLimit] = useState(() => loadCandidateDisplayLimit());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isAutoAnalysisOpen, setIsAutoAnalysisOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
   const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
@@ -145,7 +155,9 @@ export function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [hasAnalysisAttempted, setHasAnalysisAttempted] = useState(false);
   const [engineCandidates, setEngineCandidates] = useState<EngineCandidateMove[]>([]);
+  const [engineCandidatesPositionKey, setEngineCandidatesPositionKey] = useState<string | null>(null);
   const [analysisPoints, setAnalysisPoints] = useState<ReviewAnalysisPoint[]>([]);
+  const [showSavedAnalysis, setShowSavedAnalysis] = useState(false);
   const [previewCandidateRank, setPreviewCandidateRank] = useState<number | null>(null);
   const [candidateListVisible, setCandidateListVisible] = useState(true);
   const [coordinateLabelsVisible, setCoordinateLabelsVisible] = useState(true);
@@ -207,6 +219,10 @@ export function App() {
     [moves, boardSize, currentMoveNumber]
   );
   const stones = position.stones;
+  const currentPositionKey = useMemo(
+    () => candidatePositionKey(boardSize, komi, moves.slice(0, currentMoveNumber)),
+    [boardSize, currentMoveNumber, komi, moves]
+  );
   const currentSnapshot = useMemo(
     () =>
       makeSnapshot({
@@ -224,17 +240,27 @@ export function App() {
       }),
     [blackName, boardSize, currentMoveNumber, gameDate, gameResult, komi, moves, rules, sourceFileName, totalMoves, whiteName]
   );
-  const bestCandidate = engineCandidates[0];
+  const savedCandidates = useMemo(
+    () => findSavedCandidatesForMove(researchDocument, currentMoveNumber),
+    [currentMoveNumber, researchDocument]
+  );
+  const hasSavedAnalysis = useMemo(() => documentHasSavedAnalysis(researchDocument), [researchDocument]);
+  const liveEngineCandidates = engineCandidatesPositionKey === currentPositionKey ? engineCandidates : [];
+  const rawActiveCandidates = liveEngineCandidates.length > 0 ? liveEngineCandidates : showSavedAnalysis ? savedCandidates : [];
+  const boardActiveCandidates = filterCandidatesOnEmptyPoints(rawActiveCandidates, stones, boardSize);
+  const activeCandidates = boardActiveCandidates.slice(0, candidateDisplayLimit);
+  const isShowingSavedAnalysis = liveEngineCandidates.length === 0 && showSavedAnalysis && activeCandidates.length > 0;
+  const bestCandidate = activeCandidates[0];
   const previewCandidate =
-    engineCandidates.find((candidate) => candidate.rank === previewCandidateRank) ?? bestCandidate ?? null;
+    activeCandidates.find((candidate) => candidate.rank === previewCandidateRank) ?? bestCandidate ?? null;
   const displayedWinrate = bestCandidate?.winrate ?? 28;
   const displayedScoreLead = bestCandidate?.scoreLead ?? -3.4;
   const displayedVisits = bestCandidate?.visits ?? 137000;
-  const engineLabel = engineProfile?.name ?? "未配置";
+  const engineLabel = isShowingSavedAnalysis ? "TSG 静态分析" : engineProfile?.name ?? "未配置";
   const displayedVariationBaseMoveNumber = showVariationNumbers
     ? researchBaseMoveNumber ?? inferVariationBaseMoveNumber(moves, sourceMainLineMoves)
     : null;
-  const candidateCountText = engineCandidates.length > 0 ? `${engineCandidates.length} 个候选点` : "无候选点";
+  const candidateCountText = activeCandidates.length > 0 ? `${activeCandidates.length} 个候选点` : "无候选点";
   const branchRows = useMemo(() => flattenBranchTree(gameTree, selectedGameNodeId), [gameTree, selectedGameNodeId]);
   const selectedResearchBlock = useMemo(
     () =>
@@ -258,6 +284,7 @@ export function App() {
       )
     )
   );
+  const toolbarScale = toolbarScaleForBoardSize(boardPixelSize);
   useEffect(() => {
     isAnalysisEnabledRef.current = isAnalysisEnabled;
     if (isAnalysisEnabled) {
@@ -268,6 +295,11 @@ export function App() {
     }
     return undefined;
   }, [isAnalysisEnabled]);
+  useEffect(() => {
+    if (!hasSavedAnalysis && showSavedAnalysis) {
+      setShowSavedAnalysis(false);
+    }
+  }, [hasSavedAnalysis, showSavedAnalysis]);
   useEffect(() => {
     const handleResize = () => {
       setViewportSize({
@@ -285,13 +317,11 @@ export function App() {
       return;
     }
 
-    void getDefaultEngineProfile()
+    void discoverEngineProfile(loadEngineProfile())
       .then(async (profile) => {
-        setEngineProfile(profile);
-        setEngineStatus(profile.exists ? `已发现 ${profile.name}` : "默认引擎文件不完整");
-        const probe = await probeEngine(profile);
-        setEngineDiagnostics(probe.diagnostics);
-        setEngineStatus(probe.ok ? probe.summary : summarizeEngineFailure("probe-failed", probe.diagnostics));
+        setEngineProfile(profile.selected);
+        setEngineStatus(profile.selected.exists ? `已发现 ${profile.selected.name}` : "未发现完整 KataGo 配置");
+        setEngineDiagnostics(profile.diagnostics);
       })
       .catch((error) => {
         setEngineDiagnostics(String(error));
@@ -322,9 +352,30 @@ export function App() {
       setLastAction("当前没有可插入的研究内容。");
       return;
     }
-    setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), block));
+    setResearchDocument((document) =>
+      withCurrentAnalysisBlocks(appendBlock(updateDocumentSource(document, currentSnapshot), block))
+    );
     setSelectedResearchBlockId(block.id);
     setLastAction("已插入研究文档 block。");
+  };
+  const withCurrentAnalysisBlocks = (document: ResearchDocument): ResearchDocument => {
+    return withCandidateMovesBlock(document, currentMoveNumber, liveEngineCandidates);
+  };
+  const withCandidateMovesBlock = (
+    document: ResearchDocument,
+    moveNumber: number,
+    candidates: EngineCandidateMove[]
+  ): ResearchDocument => {
+    const candidateBlock = createCandidateMovesBlock(moveNumber, candidates);
+    if (!candidateBlock) {
+      return document;
+    }
+    const existingBlock = document.sections
+      .flatMap((section) => section.blocks)
+      .find((block) => block.type === "candidate_moves" && block.moveNumber === moveNumber);
+    return existingBlock
+      ? replaceBlock(document, existingBlock.id, candidateBlock)
+      : appendBlock(document, candidateBlock);
   };
   const researchDocumentWithAnalysis = (document: ResearchDocument): ResearchDocument => ({
     ...document,
@@ -336,13 +387,13 @@ export function App() {
     )
   });
   const saveResearchDocument = async () => {
-    const document = researchDocumentWithAnalysis(updateDocumentSource(researchDocument, currentSnapshot));
+    const document = researchDocumentWithAnalysis(withCurrentAnalysisBlocks(updateDocumentSource(researchDocument, currentSnapshot)));
     const json = JSON.stringify(toBrgDocument(document, gameTree));
     await saveTextFileWithDialog(json, fileStem(document.title) + ".tsg", `已保存 TensuGo 研究文件，大小 ${formatBytes(utf8ByteLength(json))}。`);
   };
   const exportResearchPdf = async () => {
     const html = renderResearchDocumentHtml(
-      researchDocumentWithAnalysis(updateDocumentSource(researchDocument, currentSnapshot)),
+      researchDocumentWithAnalysis(withCurrentAnalysisBlocks(updateDocumentSource(researchDocument, currentSnapshot))),
       gameTree,
       researchExportSettings
     );
@@ -455,7 +506,8 @@ export function App() {
         setAutoAnalysisSummary(null);
         setAnalysisPoints([]);
       }
-      setSelectedResearchBlockId(parsed.sections[0]?.blocks[0]?.id ?? null);
+      setShowSavedAnalysis(documentHasSavedAnalysis(parsed));
+      setSelectedResearchBlockId(firstVisibleResearchBlockId(parsed));
       setActiveCommentaryBlockId(parsed.sections[0]?.blocks.find((block) => block.type === "paragraph" || block.type === "conclusion")?.id ?? null);
       setCommentaryDraft("");
       setLastAction(`已打开研究文档 ${file.name}。`);
@@ -482,10 +534,12 @@ export function App() {
     if (selectedResearchBlock?.type === "paragraph" || selectedResearchBlock?.type === "conclusion") {
       setResearchDocument((document) => replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, textBlock));
       clearResearchBlockSelection();
+      setCommentaryDraft("");
       setLastAction("已更新文字 block。");
     } else {
       setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), textBlock));
       clearResearchBlockSelection();
+      setCommentaryDraft("");
       setLastAction("已插入纯文字。");
     }
   };
@@ -503,10 +557,74 @@ export function App() {
       return next;
     });
   };
+  const updateCandidateDisplayLimit = (value: number) => {
+    const nextLimit = normalizeCandidateDisplayLimit(value);
+    setCandidateDisplayLimit(nextLimit);
+    setPreviewCandidateRank(null);
+    window.localStorage.setItem(INTERFACE_SETTINGS_KEY, JSON.stringify({ candidateDisplayLimit: nextLimit }));
+  };
   const updateLanguage = (nextLanguage: AppLanguage) => {
     const normalized = normalizeLanguage(nextLanguage);
     setLanguage(normalized);
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, normalized);
+  };
+  const updateEngineProfile = (profile: EngineProfile) => {
+    setEngineProfile(profile);
+    window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  };
+  const autoDetectEngine = async () => {
+    if (!isTauriRuntime()) {
+      setEngineStatus("浏览器预览：请在 App 中自动检测引擎");
+      return;
+    }
+    setEngineStatus("正在自动检测 KataGo...");
+    try {
+      const result = await discoverEngineProfile(engineProfile);
+      updateEngineProfile(result.selected);
+      setEngineDiagnostics(result.diagnostics);
+      setEngineStatus(result.selected.exists ? `已发现 ${result.selected.name}（${result.selected.source ?? "auto"}）` : "未发现完整 KataGo 配置");
+    } catch (error) {
+      setEngineDiagnostics(String(error));
+      setEngineStatus(`自动检测失败: ${String(error)}`);
+    }
+  };
+  const chooseEngineConfigPath = async (kind: "engine" | "model" | "config") => {
+    if (!isTauriRuntime()) {
+      setEngineStatus("浏览器预览：请手动粘贴路径");
+      return;
+    }
+    const result = await chooseEnginePath(kind);
+    if (result.error) {
+      setEngineStatus(result.error);
+      return;
+    }
+    if (!result.selected || !result.path) {
+      return;
+    }
+    const patch =
+      kind === "engine"
+        ? { executablePath: result.path }
+        : kind === "model"
+        ? { modelPath: result.path }
+        : { configPath: result.path };
+    updateEngineProfile({
+      ...(engineProfile ?? DEFAULT_ENGINE_PROFILE),
+      ...patch,
+      name: engineProfile?.name || "用户 KataGo",
+      source: "用户配置"
+    });
+  };
+  const resetEngineProfile = async () => {
+    window.localStorage.removeItem(ENGINE_PROFILE_STORAGE_KEY);
+    if (!isTauriRuntime()) {
+      setEngineProfile(DEFAULT_ENGINE_PROFILE);
+      setEngineStatus("已重置引擎配置");
+      return;
+    }
+    const profile = await getDefaultEngineProfile();
+    setEngineProfile(profile);
+    setEngineDiagnostics(`已重置为自动发现结果：${profile.source ?? "auto"}`);
+    setEngineStatus(profile.exists ? `已发现 ${profile.name}` : "未发现完整 KataGo 配置");
   };
   const showResearchBlockOnBoard = (blockId: string) => {
     const block = researchDocument.sections.flatMap((section) => section.blocks).find((item) => item.id === blockId);
@@ -545,22 +663,31 @@ export function App() {
     }
   };
   const insertCurrentVariation = () => {
+    const commentary = commentaryDraft.trim();
     const baseMoveNumber = researchBaseMoveNumber ?? inferVariationBaseMoveNumber(moves, sourceMainLineMoves);
     if (baseMoveNumber !== null) {
       const variationMoves = moves.slice(baseMoveNumber, currentMoveNumber);
       if (variationMoves.length > 0) {
         const sequence = variationMoves.map((move) => moveToGtpPoint(move, boardSize));
-        const variationBlock = createManualVariationBlock(baseMoveNumber, boardSize, currentSnapshot.stones, sequence);
+        const variationBlock = withVariationComment(
+          createManualVariationBlock(baseMoveNumber, boardSize, currentSnapshot.stones, sequence),
+          commentary
+        );
         if (selectedResearchBlock?.type === "variation") {
-          setResearchDocument((document) => replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, variationBlock));
+          setResearchDocument((document) =>
+            withCurrentAnalysisBlocks(replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, variationBlock))
+          );
           clearResearchBlockSelection();
           setLastAction(`已更新 ${sequence.length} 手变化，并回到第 ${baseMoveNumber} 手。`);
         } else {
-          setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), variationBlock));
+          setResearchDocument((document) =>
+            withCurrentAnalysisBlocks(appendBlock(updateDocumentSource(document, currentSnapshot), variationBlock))
+          );
           clearResearchBlockSelection();
           setLastAction(`已插入 ${sequence.length} 手变化，并回到第 ${baseMoveNumber} 手。`);
         }
         setActiveCommentaryBlockId(null);
+        setCommentaryDraft("");
         setResearchBaseMoveNumber(null);
         jumpToMove(baseMoveNumber);
         return;
@@ -572,16 +699,22 @@ export function App() {
       appendResearchBlock(null);
       return;
     }
+    const commentedVariationBlock = withVariationComment(variationBlock, commentary);
     if (selectedResearchBlock?.type === "variation") {
-      setResearchDocument((document) => replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, variationBlock));
+      setResearchDocument((document) =>
+        withCurrentAnalysisBlocks(replaceBlock(updateDocumentSource(document, currentSnapshot), selectedResearchBlock.id, commentedVariationBlock))
+      );
       clearResearchBlockSelection();
       setLastAction("已更新当前变化。");
     } else {
-      setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), variationBlock));
+      setResearchDocument((document) =>
+        withCurrentAnalysisBlocks(appendBlock(updateDocumentSource(document, currentSnapshot), commentedVariationBlock))
+      );
       clearResearchBlockSelection();
       setLastAction("已插入当前变化。");
     }
     setActiveCommentaryBlockId(null);
+    setCommentaryDraft("");
   };
   const updateKomi = (nextKomi: number) => {
     invalidatePendingAnalysis();
@@ -727,6 +860,11 @@ export function App() {
     }
     const nextColorToPlay = getNextColor(currentMoveNumber);
     const parentNodeId = currentMoveNumber > 0 ? currentPathNodeIds[currentMoveNumber - 1] ?? "root" : "root";
+    const move = {
+      color: nextColorToPlay,
+      point: { col: x, row: y }
+    };
+    const existingChildNodeId = findChildNodeIdByMove(gameTree, parentNodeId, move);
     const { tree: nextTree, nodeId } = appendMoveToGameTree(gameTree, parentNodeId, {
       color: nextColorToPlay,
       point: { col: x, row: y }
@@ -750,7 +888,9 @@ export function App() {
     setAnalysisPoints((points) => points.filter((point) => point.moveNumber <= currentMoveNumber));
     setHasAnalysisAttempted(false);
     setLastAction(
-      isStartingManualVariation
+      existingChildNodeId
+        ? `已切换到已有分支第 ${nextMoves.length} 手，未创建重复分支。`
+        : isStartingManualVariation
         ? `已从第 ${currentMoveNumber} 手开始摆变化，当前变化第 1 手。`
         : `已落第 ${nextMoves.length} 手（${nextColorToPlay === "black" ? "黑棋" : "白棋"}）。`
     );
@@ -897,6 +1037,7 @@ export function App() {
     analysisRequestRef.current = requestId;
     const requestMoveNumber = currentMoveNumber;
     const requestMoves = moves.slice(0, currentMoveNumber);
+    const requestPositionKey = candidatePositionKey(boardSize, komi, requestMoves);
     const requestNextColor = nextColor;
     setIsAnalyzing(true);
     setHasAnalysisAttempted(true);
@@ -916,6 +1057,7 @@ export function App() {
       if (analysisRequestRef.current !== requestId) {
         return;
       }
+      setEngineCandidatesPositionKey(requestPositionKey);
       setEngineCandidates(result.candidates);
       setPreviewCandidateRank(null);
       if (result.candidates[0]) {
@@ -989,14 +1131,38 @@ export function App() {
       setIsAutoAnalyzing(false);
       return;
     }
-    if (!engineProfile) {
+    let profileForAnalysis = engineProfile;
+    if (!profileForAnalysis || !isCompleteEngineProfile(profileForAnalysis)) {
+      markAutoAnalysis("自动分析启动前正在检测 KataGo 配置...");
+      try {
+        const discovery = await discoverEngineProfile(profileForAnalysis);
+        profileForAnalysis = discovery.selected;
+        updateEngineProfile(discovery.selected);
+        setEngineDiagnostics((previous) => `${discovery.diagnostics}\n\n${previous}`.slice(0, 12000));
+      } catch (error) {
+        markAutoAnalysis(`自动检测 KataGo 失败: ${String(error)}`);
+        setIsAutoAnalyzing(false);
+        return;
+      }
+    }
+    if (!profileForAnalysis || !isCompleteEngineProfile(profileForAnalysis)) {
       markAutoAnalysis("AI 引擎还没有配置完成，不能自动分析。");
       setIsAutoAnalyzing(false);
       return;
     }
 
-    const startMove = Math.min(settings.startMove, settings.endMove);
-    const endMove = Math.max(settings.startMove, settings.endMove);
+    const analysisMoves = sourceMainLineMoves.length > 0 ? sourceMainLineMoves : moves;
+    if (analysisMoves.length === 0) {
+      markAutoAnalysis("自动分析未开始：当前棋谱没有可分析的主线手数。");
+      setEngineStatus("自动分析未开始：空棋谱");
+      setIsAutoAnalyzing(false);
+      return;
+    }
+
+    const requestedStartMove = Math.min(settings.startMove, settings.endMove);
+    const requestedEndMove = Math.max(settings.startMove, settings.endMove);
+    const startMove = Math.max(1, Math.min(analysisMoves.length, requestedStartMove));
+    const endMove = Math.max(startMove, Math.min(analysisMoves.length, requestedEndMove));
     const maxVisits = settings.visitsPerMove > 0
       ? settings.visitsPerMove
       : Math.max(20, Math.round(settings.secondsPerMove * 120));
@@ -1013,6 +1179,8 @@ export function App() {
       result: Awaited<ReturnType<typeof analyzePosition>>,
       countSummary: boolean
     ) => {
+      const positionMoveNumber = moveNumber - 1;
+      setEngineCandidatesPositionKey(candidatePositionKey(boardSize, komi, analysisMoves.slice(0, positionMoveNumber)));
       setEngineCandidates(result.candidates);
       setEngineDiagnostics((previous) =>
         `${buildAnalysisDiagnostics(result.rawOutput, result.diagnostics)}\n\n${previous}`.slice(0, 12000)
@@ -1032,6 +1200,7 @@ export function App() {
       const actualPoint = moveToGtpPoint(actualMove, boardSize);
       const actualCandidateIndex = result.candidates.findIndex((candidate) => candidate.moveName === actualPoint);
       if (countSummary) {
+        setResearchDocument((document) => withCandidateMovesBlock(document, positionMoveNumber, result.candidates));
         const actualCandidate = actualCandidateIndex >= 0 ? result.candidates[actualCandidateIndex] : null;
         const bestVisits = Math.max(1, ...result.candidates.map((candidate) => candidate.visits));
         const matchScore = actualCandidate ? actualCandidate.visits / bestVisits : 0;
@@ -1094,7 +1263,7 @@ export function App() {
           break;
         }
 
-        const actualMove = moves[moveNumber - 1];
+        const actualMove = analysisMoves[moveNumber - 1];
         if (!actualMove) {
           markAutoAnalysis(`自动分析跳过第 ${moveNumber} 手：棋谱中没有这手。`);
           continue;
@@ -1114,9 +1283,9 @@ export function App() {
           boardSize,
           komi,
           maxVisits: autoChunkVisits,
-          moves: moves.slice(0, positionMoveNumber),
+          moves: analysisMoves.slice(0, positionMoveNumber),
           nextColor: actualMove.color,
-          profile: engineProfile
+          profile: profileForAnalysis
         });
         let best = result.candidates[0];
         while (!autoAnalysisStopRef.current && best && settings.visitsPerMove === 0 && Date.now() - moveStartedAt < settings.secondsPerMove * 1000) {
@@ -1134,9 +1303,9 @@ export function App() {
             boardSize,
             komi,
             maxVisits: autoChunkVisits,
-            moves: moves.slice(0, positionMoveNumber),
+            moves: analysisMoves.slice(0, positionMoveNumber),
             nextColor: actualMove.color,
-            profile: engineProfile
+            profile: profileForAnalysis
           });
           best = result.candidates[0];
         }
@@ -1160,26 +1329,41 @@ export function App() {
         setEngineStatus(`自动分析已停止：完成 ${summary.analyzed} 手`);
         if (autoAnalysisFinishRef.current) {
           setAutoAnalysisResume(null);
-          openTianshuReport();
-          markAutoAnalysis(`自动分析已结束：完成 ${summary.analyzed} 手，已生成天书报告。`);
+          if (summary.analyzed > 0) {
+            openTianshuReport();
+            markAutoAnalysis(`自动分析已结束：完成 ${summary.analyzed} 手，已生成天书报告。`);
+          } else {
+            setEngineStatus("自动分析未完成：没有成功分析任何手");
+            markAutoAnalysis("自动分析未完成：没有成功分析任何手，未生成天书报告。");
+          }
         } else if (!stopReason && nextResumeMove <= endMove) {
           setAutoAnalysisResume({ ...settings, startMove: nextResumeMove, endMove });
           markAutoAnalysis(`自动分析已暂停，可从第 ${nextResumeMove} 手继续。`);
         } else {
           setAutoAnalysisResume(null);
-          openTianshuReport();
-          markAutoAnalysis(stopReason ?? `自动分析已停止：完成 ${summary.analyzed} 手，已生成天书报告。`);
+          if (summary.analyzed > 0) {
+            openTianshuReport();
+            markAutoAnalysis(stopReason ?? `自动分析已停止：完成 ${summary.analyzed} 手，已生成天书报告。`);
+          } else {
+            setEngineStatus("自动分析未完成：没有成功分析任何手");
+            markAutoAnalysis(stopReason ?? "自动分析未完成：没有成功分析任何手，未生成天书报告。");
+          }
         }
       } else {
         setAutoAnalysisResume(null);
-        showAutoAnalysisPosition(endMove);
-        openTianshuReport();
-        setEngineStatus(`自动分析完成：吻合率 ${formatPercent(summary.matches / Math.max(1, summary.analyzed))}`);
-        markAutoAnalysis(
-          `自动分析完成：${summary.analyzed} 手，吻合率 ${formatPercent(summary.matches / Math.max(1, summary.analyzed))}，候选命中率 ${formatPercent(
-            summary.candidateMatches / Math.max(1, summary.analyzed)
-          )}。`
-        );
+        if (summary.analyzed > 0) {
+          showAutoAnalysisPosition(endMove);
+          openTianshuReport();
+          setEngineStatus(`自动分析完成：吻合率 ${formatPercent(summary.matches / Math.max(1, summary.analyzed))}`);
+          markAutoAnalysis(
+            `自动分析完成：${summary.analyzed} 手，吻合率 ${formatPercent(summary.matches / Math.max(1, summary.analyzed))}，候选命中率 ${formatPercent(
+              summary.candidateMatches / Math.max(1, summary.analyzed)
+            )}。`
+          );
+        } else {
+          setEngineStatus("自动分析未完成：没有成功分析任何手");
+          markAutoAnalysis("自动分析未完成：没有成功分析任何手，请检查分析范围、颜色过滤和引擎配置。");
+        }
       }
     } catch (error) {
       setAutoAnalysisResume(null);
@@ -1269,11 +1453,14 @@ export function App() {
   };
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={{ "--toolbar-scale": toolbarScale } as CSSProperties}>
       <TopToolbar
+        boardPixelSize={boardPixelSize}
+        hasSavedAnalysis={hasSavedAnalysis}
         title="TensuGo"
         isResearchMode={isResearchMode}
         komi={komi}
+        showSavedAnalysis={showSavedAnalysis}
         showVariationNumbers={showVariationNumbers}
         onKomiChange={updateKomi}
         onOpenFile={openGameFile}
@@ -1284,7 +1471,18 @@ export function App() {
         onExportPdf={exportResearchPdf}
         onToggleAnalysis={toggleAnalysis}
         onOpenAutoAnalysis={() => setIsAutoAnalysisOpen(true)}
+        onOpenAbout={() => setIsAboutOpen(true)}
         onAddVariation={insertCurrentVariation}
+        onToggleSavedAnalysis={() => {
+          if (!hasSavedAnalysis) {
+            setLastAction("当前 TSG 没有已保存的 AI 分析。");
+            return;
+          }
+          setShowSavedAnalysis((visible) => {
+            setLastAction(visible ? "已隐藏 TSG 静态分析。" : "已显示 TSG 静态分析。");
+            return !visible;
+          });
+        }}
         onResearchModeChange={setResearchMode}
         onShowVariationNumbersChange={setShowVariationNumbers}
         t={t}
@@ -1425,7 +1623,7 @@ export function App() {
         <section className="board-stage" aria-label="Go board">
           <BoardPlaceholder
             boardSize={boardSize}
-            candidates={engineCandidates}
+            candidates={activeCandidates}
             coordinateLabelsVisible={coordinateLabelsVisible}
             moveNumberDisplay={moveNumberDisplay}
             pixelSize={boardPixelSize}
@@ -1459,7 +1657,7 @@ export function App() {
             <CandidatePanel
               baseStones={stones}
               boardSize={boardSize}
-              candidates={engineCandidates}
+              candidates={activeCandidates}
               candidateListVisible={candidateListVisible}
               currentMoveNumber={currentMoveNumber}
               nextColor={nextColor}
@@ -1525,6 +1723,7 @@ export function App() {
         t={t}
       />
       <SettingsDialog
+        candidateDisplayLimit={candidateDisplayLimit}
         engineDiagnostics={engineDiagnostics}
         engineStatus={engineStatus}
         exportSettings={researchExportSettings}
@@ -1533,14 +1732,69 @@ export function App() {
         open={isSettingsOpen}
         profile={engineProfile}
         onAnalyze={analyzeCurrentPosition}
+        onCandidateDisplayLimitChange={updateCandidateDisplayLimit}
         onClose={() => setIsSettingsOpen(false)}
         onExportSettingsChange={updateResearchExportSettings}
         onLanguageChange={updateLanguage}
+        onAutoDetect={autoDetectEngine}
+        onChoosePath={chooseEngineConfigPath}
         onProbe={probeCurrentEngine}
-        onProfileChange={setEngineProfile}
+        onProfileChange={updateEngineProfile}
+        onResetProfile={resetEngineProfile}
         t={t}
       />
+      <AboutDialog open={isAboutOpen} onClose={() => setIsAboutOpen(false)} />
     </main>
+  );
+}
+
+function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-dialog-title">
+        <div className="dialog-title-row">
+          <h2 id="about-dialog-title">About TensuGo / 关于 TensuGo</h2>
+          <button type="button" aria-label="Close" onClick={onClose}>×</button>
+        </div>
+        <div className="about-dialog-body">
+          <h3>{appDisplayVersion()}</h3>
+          <dl>
+            <div>
+              <dt>Build / Revision</dt>
+              <dd>{APP_VERSION.patch}</dd>
+            </div>
+            <div>
+              <dt>Product</dt>
+              <dd>A Go research and review document editor powered by KataGo.</dd>
+            </div>
+            <div>
+              <dt>Frontend</dt>
+              <dd>React + TypeScript</dd>
+            </div>
+            <div>
+              <dt>Desktop</dt>
+              <dd>Tauri</dd>
+            </div>
+            <div>
+              <dt>Engine</dt>
+              <dd>KataGo</dd>
+            </div>
+            <div>
+              <dt>Document format</dt>
+              <dd>TSG</dd>
+            </div>
+          </dl>
+          <p>© 2026 Xinyu Tu</p>
+        </div>
+        <div className="dialog-actions">
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1567,7 +1821,7 @@ function ResearchRightPane({
   const [branchPanePercent, setBranchPanePercent] = useState(34);
   const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
   const researchMarkers = useMemo(() => buildResearchMarkersByMove(document), [document]);
-  const blocks = document.sections.flatMap((section) => section.blocks);
+  const blocks = document.sections.flatMap((section) => section.blocks).filter(isVisibleResearchBlock);
 
   useEffect(() => {
     const tree = branchTreeRef.current;
@@ -1722,6 +1976,14 @@ function blockTypeLabel(block: ResearchBlock): string {
   return block.type;
 }
 
+function isVisibleResearchBlock(block: ResearchBlock): boolean {
+  return block.type !== "candidate_moves" && block.type !== "ai_analysis";
+}
+
+function firstVisibleResearchBlockId(document: ResearchDocument): string | null {
+  return document.sections.flatMap((section) => section.blocks).find(isVisibleResearchBlock)?.id ?? null;
+}
+
 function blockSummary(block: ResearchBlock): string {
   const text =
     block.type === "variation" ? block.caption || block.name :
@@ -1731,6 +1993,98 @@ function blockSummary(block: ResearchBlock): string {
     block.type === "board" ? block.caption ?? `第 ${block.moveNumber} 手局面` :
     "";
   return text.replace(/\s+/g, " ").trim().slice(0, 70) || "未填写";
+}
+
+function withVariationComment<T extends Extract<ResearchBlock, { type: "variation" }>>(block: T, markdown: string): T {
+  return markdown ? { ...block, description: markdown } : block;
+}
+
+function isCompleteEngineProfile(profile: EngineProfile): boolean {
+  return Boolean(profile.executablePath.trim() && profile.modelPath.trim() && profile.configPath.trim());
+}
+
+function documentHasSavedAnalysis(document: ResearchDocument): boolean {
+  if (document.analysis && document.analysis.analyzed > 0) {
+    return true;
+  }
+  return document.sections
+    .flatMap((section) => section.blocks)
+    .some((block) => block.type === "candidate_moves" && block.candidates.length > 0);
+}
+
+function toolbarScaleForBoardSize(boardPixelSize: number): number {
+  return clampNumber(boardPixelSize / 760, 0.9, 1.5, 1);
+}
+
+function findSavedCandidatesForMove(document: ResearchDocument, moveNumber: number): EngineCandidateMove[] {
+  const blocks = document.sections.flatMap((section) => section.blocks);
+  const currentMoveCandidates = blocks.find(
+    (block): block is Extract<ResearchBlock, { type: "candidate_moves" }> =>
+      block.type === "candidate_moves" && block.moveNumber === moveNumber && block.candidates.length > 0
+  );
+  if (currentMoveCandidates) {
+    return currentMoveCandidates.candidates;
+  }
+  const analyzedMoveNumber = moveNumber + 1;
+  const analysisDetail = document.analysis?.details.find(
+    (detail) => detail.moveNumber === analyzedMoveNumber && detail.actualMoveName
+  );
+  if (!analysisDetail?.actualMoveName) {
+    return [];
+  }
+  const analysisPoint = document.analysis?.points.find((point) => point.moveNumber === analyzedMoveNumber);
+  return [
+    {
+      rank: analysisDetail.rank ?? 1,
+      moveName: analysisDetail.actualMoveName,
+      visits: analysisPoint?.visits ?? 0,
+      winrate: analysisDetail.winrate,
+      scoreLead: analysisPoint?.scoreLead ?? 0,
+      pv: []
+    }
+  ];
+}
+
+function filterCandidatesOnEmptyPoints(
+  candidates: EngineCandidateMove[],
+  stones: Array<{ x: number; y: number }>,
+  boardSize: number
+): EngineCandidateMove[] {
+  if (candidates.length === 0 || stones.length === 0) {
+    return candidates;
+  }
+  const occupiedPoints = new Set(stones.map((stone) => boardPointKey(stone.x, stone.y)));
+  return candidates.filter((candidate) => {
+    const point = gtpPointToBoardPoint(candidate.moveName, boardSize);
+    return !point || !occupiedPoints.has(boardPointKey(point.x, point.y));
+  });
+}
+
+function candidatePositionKey(boardSize: number, komi: number, moves: ReviewMove[]): string {
+  const moveKey = moves.map((move) => `${move.color[0]}${move.x},${move.y}`).join(";");
+  return `${boardSize}|${komi}|${moveKey}`;
+}
+
+function gtpPointToBoardPoint(point: string, boardSize: number): { x: number; y: number } | null {
+  if (!point || point.toLowerCase() === "pass") {
+    return null;
+  }
+  const match = /^([A-HJ-Z])(\d+)$/i.exec(point);
+  if (!match) {
+    return null;
+  }
+  const labels = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+  const x = labels.indexOf(match[1].toUpperCase());
+  const row = Number(match[2]);
+  const y = boardSize - row;
+  if (x < 0 || x >= boardSize || !Number.isInteger(row) || y < 0 || y >= boardSize) {
+    return null;
+  }
+  return { x, y };
+}
+
+function boardPointKey(x: number, y: number): string {
+  return `${x}:${y}`;
 }
 
 function buildResearchMarkersByMove(document: ResearchDocument): Map<number, Array<{ id: string; label: string }>> {
@@ -2043,6 +2397,37 @@ function loadResearchExportSettings(): ResearchExportSettings {
   } catch {
     return DEFAULT_RESEARCH_EXPORT_SETTINGS;
   }
+}
+
+function loadCandidateDisplayLimit(): number {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(INTERFACE_SETTINGS_KEY) ?? "{}") as { candidateDisplayLimit?: number };
+    return normalizeCandidateDisplayLimit(value.candidateDisplayLimit);
+  } catch {
+    return DEFAULT_CANDIDATE_DISPLAY_LIMIT;
+  }
+}
+
+function loadEngineProfile(): EngineProfile {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(ENGINE_PROFILE_STORAGE_KEY) ?? "null") as Partial<EngineProfile> | null;
+    if (!value) {
+      return DEFAULT_ENGINE_PROFILE;
+    }
+    return {
+      ...DEFAULT_ENGINE_PROFILE,
+      ...value,
+      executablePath: value.executablePath ?? "",
+      modelPath: value.modelPath ?? "",
+      configPath: value.configPath ?? ""
+    };
+  } catch {
+    return DEFAULT_ENGINE_PROFILE;
+  }
+}
+
+function normalizeCandidateDisplayLimit(value: unknown): number {
+  return Math.round(clampNumber(typeof value === "number" ? value : undefined, 1, 12, DEFAULT_CANDIDATE_DISPLAY_LIMIT));
 }
 
 function normalizeResearchExportSettings(value: Partial<ResearchExportSettings>): ResearchExportSettings {

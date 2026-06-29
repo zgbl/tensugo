@@ -2,14 +2,18 @@ import { useRef } from "react";
 import type { Translator } from "../i18n";
 
 type TopToolbarProps = {
+  boardPixelSize: number;
+  hasSavedAnalysis: boolean;
   title: string;
   isResearchMode: boolean;
   komi: number;
+  showSavedAnalysis: boolean;
   showVariationNumbers: boolean;
   onAddVariation: () => void;
   onExportPdf: () => void;
   onKomiChange: (value: number) => void;
   onOpenAutoAnalysis: () => void;
+  onOpenAbout: () => void;
   onOpenFile: (file: File) => void;
   onNewGame: () => void;
   onOpenSettings: () => void;
@@ -17,21 +21,36 @@ type TopToolbarProps = {
   onResearchModeChange: (enabled: boolean) => void;
   onSaveResearch: () => void;
   onShowVariationNumbersChange: (enabled: boolean) => void;
+  onToggleSavedAnalysis: () => void;
   onToggleAnalysis: () => void;
   t: Translator;
 };
 
-const tools = ["新", "开", "存", "↶", "↷", "◀", "●", "○", "↔", "坐", "候", "主"];
+const tools = [
+  { key: "new", title: "New", icon: <NewIcon /> },
+  { key: "open", title: "Open", icon: <OpenIcon /> },
+  { key: "save", title: "Save", icon: <SaveIcon /> },
+  { key: "undo", title: "Undo", text: "↶" },
+  { key: "redo", title: "Redo", text: "↷" },
+  { key: "previous", title: "Previous", text: "◀" },
+  { key: "black", title: "Black", text: "●" },
+  { key: "white", title: "White", text: "○" },
+  { key: "swap", title: "Swap", text: "↔" }
+] as const;
 
 export function TopToolbar({
+  boardPixelSize: _boardPixelSize,
+  hasSavedAnalysis,
   title,
   isResearchMode,
   komi,
+  showSavedAnalysis,
   showVariationNumbers,
   onAddVariation,
   onExportPdf,
   onKomiChange,
   onOpenAutoAnalysis,
+  onOpenAbout,
   onOpenFile,
   onNewGame,
   onOpenSettings,
@@ -39,6 +58,7 @@ export function TopToolbar({
   onResearchModeChange,
   onSaveResearch,
   onShowVariationNumbersChange,
+  onToggleSavedAnalysis,
   onToggleAnalysis,
   t
 }: TopToolbarProps) {
@@ -76,25 +96,30 @@ export function TopToolbar({
         <Menu label={t("menuSettings")} items={[
           { label: t("preferences"), action: onOpenSettings }
         ]} />
+        <Menu label="Help" items={[
+          { label: "About TensuGo / 关于 TensuGo", action: onOpenAbout }
+        ]} />
       </div>
       <div className="top-toolbar">
         <nav className="tool-button-group" aria-label="Primary commands">
           {tools.map((tool) => (
             <button
               type="button"
-              key={tool}
-              className="tool-button"
+              key={tool.key}
+              className={`tool-button ${"icon" in tool ? "tool-button-icon" : ""}`}
               onClick={
-                tool === "开"
+                tool.key === "open"
                   ? () => fileInputRef.current?.click()
-                  : tool === "新"
+                  : tool.key === "new"
                     ? onNewGame
-                    : tool === "存"
+                    : tool.key === "save"
                       ? onSaveResearch
                     : undefined
               }
+              title={tool.title}
+              aria-label={tool.title}
             >
-              {tool}
+              {"icon" in tool ? tool.icon : tool.text}
             </button>
           ))}
           <input
@@ -146,9 +171,44 @@ export function TopToolbar({
           <label><input type="checkbox" defaultChecked /> {t("candidates")}</label>
           <label><input type="checkbox" defaultChecked /> {t("black")}</label>
           <label><input type="checkbox" defaultChecked /> {t("white")}</label>
+          <label className="tsg-analysis-toggle">
+            <input
+              type="checkbox"
+              checked={showSavedAnalysis}
+              disabled={!hasSavedAnalysis}
+              onChange={onToggleSavedAnalysis}
+            /> TSG分析
+          </label>
         </div>
       </div>
     </header>
+  );
+}
+
+function NewIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 3.5h8.4L19 8.1v12.4H6V3.5Z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M14 3.8V8h4.2M12.5 11v6M9.5 14h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function OpenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.8 19.5h16.4V8.7H11L9.2 5.5H3.8v14Z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M5 11.2h14.5l-1.7 8.3H3.8L5 11.2Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function SaveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 4h12.2L20 6.8V20H5V4Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M8 4.5v5h8v-5M8.2 20v-6.2h7.6V20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+    </svg>
   );
 }
 
