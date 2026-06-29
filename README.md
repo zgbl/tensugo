@@ -4,6 +4,8 @@ TensuGo is a Tauri desktop application for reviewing Weiqi/Go games with KataGo 
 
 The app uses a React + TypeScript frontend and a Rust/Tauri backend. The frontend renders the board, SGF/research workflow, candidate moves, review graph, and settings UI. The backend owns native filesystem access, platform paths, local KataGo process management, and bundled resource discovery.
 
+![TensuGo UI 截屏](Pic/mainUI.png)
+
 ## Current Status
 
 TensuGo is under active development. macOS is the primary tested platform today. The codebase has been prepared for Windows builds with platform isolation, but Windows packaging and native file dialogs still need real-machine validation. iOS and Android have explicit platform entries, but local KataGo execution is currently marked unsupported on mobile.
