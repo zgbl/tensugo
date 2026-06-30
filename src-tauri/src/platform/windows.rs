@@ -30,7 +30,19 @@ pub fn common_engine_roots() -> Vec<PathBuf> {
 }
 
 pub fn known_engine_profiles() -> Vec<KnownEngineProfile> {
-    Vec::new()
+    let lizzie_root = PathBuf::from(
+        r"C:\Apps\KataGo202306\2023-06-15-windows64+katago\2023-06-15-windows64+katago",
+    );
+
+    vec![(
+        "Lizzie KataGo TensorRT".to_string(),
+        lizzie_root.join("katago_tensorRT").join("katago.exe"),
+        lizzie_root
+            .join("weights")
+            .join("b18c384nbt-optimisticv13-s5971M.bin.gz"),
+        lizzie_root.join("katago_configs").join("default_gtp.cfg"),
+        "Windows 已知整合包".to_string(),
+    )]
 }
 
 pub fn choose_save_path(
