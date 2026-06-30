@@ -45,6 +45,7 @@ export type ResearchBlockType =
   | "heading"
   | "paragraph"
   | "board"
+  | "game_progress"
   | "variation"
   | "ai_analysis"
   | "candidate_moves"
@@ -97,6 +98,16 @@ export type BoardBlock = ResearchBlockBase<"board"> & {
   markers: BoardMarker[];
   arrows: BoardArrow[];
   caption?: string;
+};
+
+export type GameProgressBlock = ResearchBlockBase<"game_progress"> & {
+  startMoveNumber: number;
+  endMoveNumber: number;
+  boardSize: number;
+  position: ReviewStone[];
+  sequence: string[];
+  caption: string;
+  showCoordinates: boolean;
 };
 
 export type VariationBlock = ResearchBlockBase<"variation"> & {
@@ -164,6 +175,7 @@ export type ResearchBlock =
   | HeadingBlock
   | ParagraphBlock
   | BoardBlock
+  | GameProgressBlock
   | VariationBlock
   | AiAnalysisBlock
   | CandidateMovesBlock

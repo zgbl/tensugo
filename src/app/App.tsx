@@ -11,12 +11,14 @@ import { TopToolbar } from "../components/TopToolbar";
 import type { EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
 import {
   analyzePosition,
+  analyzePositionContinuous,
   chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
   discoverEngineProfile,
   getDefaultEngineProfile,
   isTauriRuntime,
-  probeEngine
+  probeEngine,
+  stopContinuousAnalysis
 } from "../engine/tauriEngine";
 import { buildBoardPosition, canPlayMove, getNextColor } from "../game/boardRules";
 import {
@@ -34,11 +36,12 @@ import {
   pathMovesWithMainContinuation,
   promoteNodeToMainLine
 } from "../game/gameTree";
-import type { ReviewMove } from "../game/sampleGame";
+import type { ReviewMove, ReviewStone } from "../game/sampleGame";
 import { parseGameRecord } from "../sgf/parseSgf";
 import {
   appendBlock,
   createCandidateMovesBlock,
+  createGameProgressBlock,
   createManualVariationBlock,
   createParagraphBlock,
   createResearchDocument,
@@ -144,6 +147,7 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isAutoAnalysisOpen, setIsAutoAnalysisOpen] = useState(false);
+  const [isGameProgressPanelOpen, setIsGameProgressPanelOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
   const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
   const [autoAnalysisSummary, setAutoAnalysisSummary] = useState<AutoAnalysisSummary | null>(null);
@@ -292,6 +296,9 @@ export function App() {
     } else if (analysisTimerRef.current !== null) {
       window.clearTimeout(analysisTimerRef.current);
       analysisTimerRef.current = null;
+      if (isTauriRuntime()) {
+        void stopContinuousAnalysis();
+      }
     }
     return undefined;
   }, [isAnalysisEnabled]);
@@ -336,7 +343,7 @@ export function App() {
     }
     setIsAnalyzing(false);
   };
-  const queueAnalysisIfEnabled = (delayMs = 220) => {
+  const queueAnalysisIfEnabled = (delayMs = 80) => {
     if (isAnalysisEnabled) {
       if (analysisTimerRef.current !== null) {
         window.clearTimeout(analysisTimerRef.current);
@@ -650,6 +657,12 @@ export function App() {
     }
     if (block.type === "board") {
       jumpToMove(block.moveNumber);
+      return;
+    }
+    if (block.type === "game_progress") {
+      jumpToMove(block.endMoveNumber);
+      setShowVariationNumbers(true);
+      setLastAction(`已跳到原棋谱第 ${block.endMoveNumber} 手。`);
     }
   };
   const setResearchMode = (enabled: boolean) => {
@@ -715,6 +728,18 @@ export function App() {
     }
     setActiveCommentaryBlockId(null);
     setCommentaryDraft("");
+  };
+  const insertGameProgress = (range: { startMoveNumber: number; endMoveNumber: number }) => {
+    const mainMoves = sourceMainLineMoves.length > 0 ? sourceMainLineMoves : mainLineMovesFromTree(gameTree);
+    const block = createGameProgressBlock(mainMoves.length > 0 ? mainMoves : moves, boardSize, range.startMoveNumber, range.endMoveNumber);
+    if (!block) {
+      setLastAction("当前没有可插入的原棋谱。");
+      return;
+    }
+    setResearchDocument((document) => appendBlock(updateDocumentSource(document, currentSnapshot), block));
+    setSelectedResearchBlockId(block.id);
+    setIsGameProgressPanelOpen(false);
+    setLastAction(`已插入原棋谱第 ${block.startMoveNumber}-${block.endMoveNumber} 手。`);
   };
   const updateKomi = (nextKomi: number) => {
     invalidatePendingAnalysis();
@@ -1046,10 +1071,9 @@ export function App() {
     setEngineDiagnostics("正在启动引擎 GTP 分析。等待 stdout/stderr...");
 
     try {
-      const result = await analyzePosition({
+      const result = await analyzePositionContinuous({
         boardSize,
         komi,
-        maxVisits: 80,
         moves: requestMoves,
         nextColor: requestNextColor,
         profile: engineProfile
@@ -1057,9 +1081,14 @@ export function App() {
       if (analysisRequestRef.current !== requestId) {
         return;
       }
-      setEngineCandidatesPositionKey(requestPositionKey);
-      setEngineCandidates(result.candidates);
-      setPreviewCandidateRank(null);
+      if (result.candidates.length > 0) {
+        setEngineCandidatesPositionKey(requestPositionKey);
+        setEngineCandidates((previous) =>
+          engineCandidatesPositionKey === requestPositionKey
+            ? mergeStableCandidates(previous, result.candidates)
+            : result.candidates
+        );
+      }
       if (result.candidates[0]) {
         setAnalysisPoints((points) =>
           upsertAnalysisPoint(points, {
@@ -1072,10 +1101,19 @@ export function App() {
       }
       setEngineDiagnostics(buildAnalysisDiagnostics(result.rawOutput, result.diagnostics));
       const failureSummary = summarizeEngineFailure(result.status, result.diagnostics);
-      setEngineStatus(result.ok ? `${engineProfile.name} / ${result.candidates.length} 个候选点` : failureSummary);
+      const isWaitingForCandidates = result.status === "waiting-for-candidates";
+      setEngineStatus(
+        result.ok
+          ? `${engineProfile.name} / ${result.candidates.length} 个候选点`
+          : isWaitingForCandidates
+            ? `${engineProfile.name} / 持续分析中，等待候选点...`
+            : failureSummary
+      );
       setLastAction(
         result.ok
           ? `AI 引擎已返回 ${result.candidates.length} 个候选点。`
+          : isWaitingForCandidates
+            ? "KataGo 持续分析已启动，正在等待首批候选点。"
           : `AI 引擎没有返回候选点：${failureSummary}`
       );
     } catch (error) {
@@ -1089,7 +1127,7 @@ export function App() {
       if (analysisRequestRef.current === requestId) {
         setIsAnalyzing(false);
         if (isAnalysisEnabledRef.current) {
-          queueAnalysisIfEnabled(1200);
+          queueAnalysisIfEnabled(300);
         }
       }
     }
@@ -1420,6 +1458,9 @@ export function App() {
     }
     setIsAnalysisEnabled(false);
     setIsAnalyzing(false);
+    if (isTauriRuntime()) {
+      void stopContinuousAnalysis();
+    }
     setLastAction("AI 分析已暂停。");
   };
   useEffect(() => {
@@ -1573,6 +1614,7 @@ export function App() {
               <ResearchDocumentPanel
                 document={researchDocument}
                 commentary={commentaryDraft}
+                onAddGameProgress={() => setIsGameProgressPanelOpen(true)}
                 onAddText={insertTextBlock}
                 onAddVariation={insertCurrentVariation}
                 onExportPdf={exportResearchPdf}
@@ -1744,7 +1786,86 @@ export function App() {
         t={t}
       />
       <AboutDialog open={isAboutOpen} onClose={() => setIsAboutOpen(false)} />
+      <GameProgressPanel
+        currentMoveNumber={currentMoveNumber}
+        open={isGameProgressPanelOpen}
+        totalMoves={sourceMainLineMoveCount || sourceMainLineMoves.length || moves.length}
+        onClose={() => setIsGameProgressPanelOpen(false)}
+        onInsert={insertGameProgress}
+      />
     </main>
+  );
+}
+
+function GameProgressPanel({
+  currentMoveNumber,
+  open,
+  totalMoves,
+  onClose,
+  onInsert
+}: {
+  currentMoveNumber: number;
+  open: boolean;
+  totalMoves: number;
+  onClose: () => void;
+  onInsert: (range: { startMoveNumber: number; endMoveNumber: number }) => void;
+}) {
+  const defaultEnd = Math.max(1, Math.min(totalMoves || 1, currentMoveNumber || totalMoves || 1));
+  const defaultStart = Math.max(1, Math.min(defaultEnd, defaultEnd - 9));
+  const [startMoveNumber, setStartMoveNumber] = useState(defaultStart);
+  const [endMoveNumber, setEndMoveNumber] = useState(defaultEnd);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const nextEnd = Math.max(1, Math.min(totalMoves || 1, currentMoveNumber || totalMoves || 1));
+    setStartMoveNumber(Math.max(1, Math.min(nextEnd, nextEnd - 9)));
+    setEndMoveNumber(nextEnd);
+  }, [currentMoveNumber, open, totalMoves]);
+
+  if (!open) {
+    return null;
+  }
+
+  const maxMove = Math.max(1, totalMoves);
+  const normalizedStart = clampNumber(startMoveNumber, 1, maxMove, 1);
+  const normalizedEnd = clampNumber(endMoveNumber, normalizedStart, maxMove, normalizedStart);
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="game-progress-dialog auto-analysis-dialog" role="dialog" aria-modal="true" aria-labelledby="game-progress-title">
+        <div className="dialog-title-row">
+          <h2 id="game-progress-title">插入棋谱</h2>
+          <button type="button" aria-label="Close" onClick={onClose}>×</button>
+        </div>
+        <label>
+          <span>开始手数</span>
+          <input
+            min={1}
+            max={maxMove}
+            type="number"
+            value={startMoveNumber}
+            onChange={(event) => setStartMoveNumber(Number(event.target.value))}
+          />
+        </label>
+        <label>
+          <span>结束手数</span>
+          <input
+            min={1}
+            max={maxMove}
+            type="number"
+            value={endMoveNumber}
+            onChange={(event) => setEndMoveNumber(Number(event.target.value))}
+          />
+        </label>
+        <p className="dialog-hint">主分支共 {totalMoves} 手；导出图中的手数会从所选开始手重新标为 1。</p>
+        <div className="dialog-actions">
+          <button type="button" onClick={onClose}>取消</button>
+          <button type="button" onClick={() => onInsert({ startMoveNumber: normalizedStart, endMoveNumber: normalizedEnd })}>插入</button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1942,11 +2063,18 @@ function ResearchRightPane({
               >
                 <span className="research-block-index">{index + 1}</span>
                 <span className={`research-block-icon ${block.type}`}>
-                  {block.type === "variation" ? <span className="mini-board-icon" /> : <span className="mini-text-icon">文</span>}
+                  {block.type === "variation" || block.type === "game_progress" ? <span className="mini-board-icon" /> : <span className="mini-text-icon">文</span>}
                 </span>
                 <span className="research-block-copy">
                   <strong>{blockTypeLabel(block)}</strong>
                   <span>{blockSummary(block)}</span>
+                  {block.type === "game_progress" ? (
+                    <ResearchBlockMiniBoard
+                      boardSize={block.boardSize}
+                      sequence={block.sequence}
+                      stones={block.position}
+                    />
+                  ) : null}
                 </span>
               </button>
             ))
@@ -1957,9 +2085,51 @@ function ResearchRightPane({
   );
 }
 
+function ResearchBlockMiniBoard({
+  boardSize,
+  sequence,
+  stones
+}: {
+  boardSize: number;
+  sequence: string[];
+  stones: ReviewStone[];
+}) {
+  const labels = useMemo(() => {
+    const nextLabels = new Map<string, number>();
+    sequence.forEach((point, index) => {
+      const parsed = gtpPointToBoardPoint(point, boardSize);
+      if (parsed) {
+        nextLabels.set(boardPointKey(parsed.x, parsed.y), index + 1);
+      }
+    });
+    return nextLabels;
+  }, [boardSize, sequence]);
+  const visibleStones = stones.filter((stone) => labels.has(boardPointKey(stone.x, stone.y)));
+
+  return (
+    <span className="research-mini-board" aria-label="棋谱进展预览">
+      {visibleStones.map((stone) => (
+        <span
+          className={`research-mini-stone ${stone.color}`}
+          key={`${stone.moveNumber}-${stone.x}-${stone.y}`}
+          style={{
+            "--mini-x": `${(stone.x / Math.max(1, boardSize - 1)) * 100}%`,
+            "--mini-y": `${(stone.y / Math.max(1, boardSize - 1)) * 100}%`
+          } as CSSProperties}
+        >
+          {labels.get(boardPointKey(stone.x, stone.y))}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function blockTypeLabel(block: ResearchBlock): string {
   if (block.type === "variation") {
     return "变化图";
+  }
+  if (block.type === "game_progress") {
+    return "棋谱进展";
   }
   if (block.type === "paragraph") {
     return "文字";
@@ -1987,6 +2157,7 @@ function firstVisibleResearchBlockId(document: ResearchDocument): string | null 
 function blockSummary(block: ResearchBlock): string {
   const text =
     block.type === "variation" ? block.caption || block.name :
+    block.type === "game_progress" ? block.caption :
     block.type === "paragraph" || block.type === "conclusion" ? block.markdown :
     block.type === "quote" ? block.text :
     block.type === "heading" ? block.text :
@@ -2045,6 +2216,30 @@ function findSavedCandidatesForMove(document: ResearchDocument, moveNumber: numb
   ];
 }
 
+function mergeStableCandidates(previous: EngineCandidateMove[], next: EngineCandidateMove[]): EngineCandidateMove[] {
+  if (previous.length === 0) {
+    return next;
+  }
+  const previousByMove = new Map(previous.map((candidate) => [candidate.moveName, candidate]));
+  const nextMoveNames = new Set(next.map((candidate) => candidate.moveName));
+  const merged = next.map((candidate) => {
+    const previousCandidate = previousByMove.get(candidate.moveName);
+    if (!previousCandidate) {
+      return candidate;
+    }
+    return {
+      ...candidate,
+      visits: Math.max(previousCandidate.visits, candidate.visits)
+    };
+  });
+  for (const candidate of previous) {
+    if (!nextMoveNames.has(candidate.moveName)) {
+      merged.push(candidate);
+    }
+  }
+  return merged.sort((left, right) => left.rank - right.rank);
+}
+
 function filterCandidatesOnEmptyPoints(
   candidates: EngineCandidateMove[],
   stones: Array<{ x: number; y: number }>,
@@ -2092,12 +2287,17 @@ function buildResearchMarkersByMove(document: ResearchDocument): Map<number, Arr
   for (const block of document.sections.flatMap((section) => section.blocks)) {
     const moveNumber =
       block.type === "variation" ? block.fromMoveNumber :
+      block.type === "game_progress" ? block.endMoveNumber :
       block.type === "board" ? block.moveNumber :
       null;
     if (moveNumber === null) {
       continue;
     }
-    const label = block.type === "variation" ? block.caption : block.type === "board" ? block.caption ?? "局面评论" : "候选点评论";
+    const label =
+      block.type === "variation" ? block.caption :
+      block.type === "game_progress" ? block.caption :
+      block.type === "board" ? block.caption ?? "局面评论" :
+      "候选点评论";
     markers.set(moveNumber, [...(markers.get(moveNumber) ?? []), { id: block.id, label }]);
   }
   return markers;
@@ -2446,7 +2646,8 @@ function normalizeResearchExportSettings(value: Partial<ResearchExportSettings>)
     boardEdgeMarginPx: clampNumber(value.boardEdgeMarginPx, 18, 80, DEFAULT_RESEARCH_EXPORT_SETTINGS.boardEdgeMarginPx),
     variationsPerPage: Math.round(clampNumber(value.variationsPerPage, 1, 4, DEFAULT_RESEARCH_EXPORT_SETTINGS.variationsPerPage)),
     rowGapMm: clampNumber(value.rowGapMm, 0, 20, DEFAULT_RESEARCH_EXPORT_SETTINGS.rowGapMm),
-    columnGapMm: clampNumber(value.columnGapMm, 0, 20, DEFAULT_RESEARCH_EXPORT_SETTINGS.columnGapMm)
+    columnGapMm: clampNumber(value.columnGapMm, 0, 20, DEFAULT_RESEARCH_EXPORT_SETTINGS.columnGapMm),
+    documentFontSizePt: clampNumber(value.documentFontSizePt, 10, 18, DEFAULT_RESEARCH_EXPORT_SETTINGS.documentFontSizePt)
   };
 }
 

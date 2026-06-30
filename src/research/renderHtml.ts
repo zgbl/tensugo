@@ -24,6 +24,7 @@ export type ResearchExportSettings = {
   variationsPerPage: number;
   rowGapMm: number;
   columnGapMm: number;
+  documentFontSizePt: number;
 };
 
 export const DEFAULT_RESEARCH_EXPORT_SETTINGS: ResearchExportSettings = {
@@ -39,7 +40,8 @@ export const DEFAULT_RESEARCH_EXPORT_SETTINGS: ResearchExportSettings = {
   boardEdgeMarginPx: 26,
   variationsPerPage: 2,
   rowGapMm: 3,
-  columnGapMm: 4
+  columnGapMm: 4,
+  documentFontSizePt: 13
 };
 
 export function renderResearchDocumentHtml(
@@ -126,6 +128,7 @@ function renderFlowBlocks(
 
 type FlowItem =
   | { type: "variation"; entry: VariationEntry }
+  | { type: "game_progress"; block: Extract<ResearchBlock, { type: "game_progress" }> }
   | { type: "text"; block: Extract<ResearchBlock, { type: "paragraph" | "conclusion" | "quote" }> }
   | { type: "heading"; block: Extract<ResearchBlock, { type: "heading" }> };
 
@@ -143,11 +146,15 @@ function buildFlowItems(blocks: ResearchBlock[], sourceMoves: ReviewMove[]): Flo
     const block = blocks[index];
     if (block.type === "variation") {
       const nextBlock = blocks[index + 1];
-      const pairedComment = isCommentBlock(nextBlock) ? nextBlock : null;
+      const pairedComment = isVariationCommentBlock(nextBlock) ? nextBlock : null;
       items.push({ type: "variation", entry: buildVariationEntry(block, pairedComment, sourceMoves) });
       if (pairedComment) {
         index += 1;
       }
+      continue;
+    }
+    if (block.type === "game_progress") {
+      items.push({ type: "game_progress", block });
       continue;
     }
     if (isCommentBlock(block) && block.type !== "quote") {
@@ -175,9 +182,19 @@ function isCommentBlock(block: ResearchBlock | undefined): block is Extract<Rese
   return block.type === "quote" && block.text.trim().length > 0;
 }
 
+function isVariationCommentBlock(block: ResearchBlock | undefined): block is Extract<ResearchBlock, { type: "paragraph" | "conclusion" | "quote" }> {
+  if (!isCommentBlock(block)) {
+    return false;
+  }
+  return !(block.type === "paragraph" && block.title === "pure_text");
+}
+
 function renderFlowItem(item: FlowItem, exportSettings: ResearchExportSettings, pageBoardSizeMm: number): string {
   if (item.type === "variation") {
     return renderVariationEntry(item.entry, exportSettings, pageBoardSizeMm);
+  }
+  if (item.type === "game_progress") {
+    return renderGameProgressBlock(item.block, exportSettings, pageBoardSizeMm);
   }
   if (item.type === "heading") {
     return `<h${item.block.level} class="doc-heading">${escapeHtml(item.block.text)}</h${item.block.level}>`;
@@ -255,6 +272,9 @@ function estimateFlowItemHeightMm(item: FlowItem, boardSizeMm: number, exportSet
     const titleHeightMm = item.entry.comment ? estimateCommentHeightMm(item.entry.comment) : 0;
     return boardSizeMm + captionHeightMm + Math.min(18, titleHeightMm) + exportSettings.rowGapMm;
   }
+  if (item.type === "game_progress") {
+    return boardSizeMm + 5 + exportSettings.rowGapMm;
+  }
   if (item.type === "heading") {
     return item.block.level === 1 ? 10 : item.block.level === 2 ? 8 : 6;
   }
@@ -307,6 +327,24 @@ function renderVariationEntry(
     <div class="comment-column">
       ${comment || "<p>未填写评论。</p>"}
     </div>
+    </div>
+  </section>`;
+}
+
+function renderGameProgressBlock(
+  block: Extract<ResearchBlock, { type: "game_progress" }>,
+  exportSettings: ResearchExportSettings,
+  pageBoardSizeMm: number
+): string {
+  return `<section class="variation-block game-progress-block">
+    <div class="variation-board-wrap">
+      <div class="board-column">
+        ${renderBoardSvg(block.boardSize, block.position, block.sequence, exportSettings, pageBoardSizeMm)}
+        <p class="caption">${escapeHtml(block.caption)}</p>
+      </div>
+      <div class="comment-column">
+        <p>主分支第 ${block.startMoveNumber}-${block.endMoveNumber} 手，图中编号从 1 开始。</p>
+      </div>
     </div>
   </section>`;
 }
@@ -644,9 +682,9 @@ function articleCss(exportSettings: ResearchExportSettings): string {
   .go-board-svg text { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; pointer-events: none; }
   .go-board-svg .coord { fill: #283036; font-size: 12px; font-weight: 700; }
   .caption { color: #5e6d70; font-size: 9px; line-height: 1.15; margin: .8mm 0 0; text-align: center; }
-  .comment-column { border-left: 1px solid #d9e3e1; font-size: 10.5px; line-height: 1.45; padding-left: ${exportSettings.columnGapMm}mm; }
+  .comment-column { border-left: 1px solid #d9e3e1; font-size: ${Math.max(10, exportSettings.documentFontSizePt - 1)}pt; line-height: 1.45; padding-left: ${exportSettings.columnGapMm}mm; }
   .comment-column p { margin: 0 0 2.5mm; }
-  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 1mm; }
+  .document-flow .text-block { font-size: ${exportSettings.documentFontSizePt}pt; line-height: 1.55; margin: 0 0 1mm; }
   .document-flow .text-block p { margin: 0 0 1.5mm; orphans: 2; widows: 2; }
   .empty-document { color: #7a898c; font-size: 12px; }
   blockquote { border-left: 3px solid #b7c8c5; color: #46575b; margin: 0; padding-left: 3mm; }
@@ -719,7 +757,7 @@ function articleCssV2(exportSettings: ResearchExportSettings): string {
   .winrate-chart-footnote { color: #425156; font-size: 9.5px; font-weight: 700; margin: 1.5mm 0 3mm; }
   .chart-empty { fill: #879498; font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   .document-flow { column-count: 1; }
-  .document-flow .text-block { font-size: 11pt; line-height: 1.55; margin: 0 0 2mm; }
+  .document-flow .text-block { font-size: ${exportSettings.documentFontSizePt}pt; line-height: 1.55; margin: 0 0 2mm; }
   .document-flow .text-block p { margin: 0 0 2.5mm; orphans: 2; widows: 2; }
   .document-flow .variation-block + .text-block { margin-top: -1mm; }
   .empty-document { color: #7a898c; font-size: 12px; }

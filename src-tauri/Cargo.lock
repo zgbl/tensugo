@@ -3152,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "tensugo"
-version = "0.5.44"
+version = "0.5.54"
 dependencies = [
  "serde",
  "serde_json",

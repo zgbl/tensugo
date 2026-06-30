@@ -490,7 +490,7 @@ button:hover {
 }
 
 .research-block-item {
-  align-items: center;
+  align-items: start;
   background: #ffffff;
   border: 1px solid #d3dddc;
   border-radius: 5px;
@@ -499,7 +499,6 @@ button:hover {
   display: grid;
   gap: 5px;
   grid-template-columns: 18px 24px minmax(0, 1fr);
-  height: 36px;
   min-height: 36px;
   padding: 3px 5px;
   text-align: left;
@@ -570,6 +569,49 @@ button:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.research-mini-board {
+  aspect-ratio: 1;
+  background:
+    linear-gradient(rgba(121, 85, 37, .72) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(121, 85, 37, .72) 1px, transparent 1px),
+    #d9aa67;
+  background-size: calc(100% / 18) calc(100% / 18);
+  border: 1px solid #8a622e;
+  display: block;
+  margin-top: 4px;
+  max-width: 180px;
+  min-width: 0;
+  position: relative;
+  width: min(100%, 180px);
+}
+
+.research-mini-stone {
+  align-items: center;
+  border-radius: 999px;
+  display: flex;
+  font-size: 8px;
+  font-weight: 800;
+  height: 16px;
+  justify-content: center;
+  left: var(--mini-x);
+  line-height: 1;
+  position: absolute;
+  top: var(--mini-y);
+  transform: translate(-50%, -50%);
+  width: 16px;
+}
+
+.research-mini-stone.black {
+  background: #111719;
+  color: #ffffff;
+}
+
+.research-mini-stone.white {
+  background: #f8faf7;
+  border: 1px solid #aeb9b5;
+  color: #14191b;
 }
 
 .info-list {
@@ -899,39 +941,48 @@ button:hover {
   border: 1px solid #9facb2;
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.28);
   color: #20242a;
-  padding: 12px;
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  padding: 8px 10px;
   width: min(1120px, calc(100vw - 72px));
+}
+
+.tianshu-report-report .dialog-title-row {
+  margin-bottom: 5px;
+  padding-bottom: 5px;
 }
 
 .tianshu-report-report-meta {
   color: #52616b;
   display: flex;
   flex-wrap: wrap;
-  font-size: 12px;
-  gap: 8px 18px;
-  margin-bottom: 10px;
+  font-size: 11px;
+  gap: 4px 14px;
+  margin-bottom: 6px;
 }
 
 .tianshu-report-report-main {
   display: grid;
-  gap: 10px;
+  gap: 6px;
   grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr) minmax(300px, 1fr);
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .tianshu-report-side-card,
 .tianshu-report-loss-panel {
-  background: #b9b9b9;
-  border: 1px solid #7d8589;
+  background: #eceff0;
+  border: 1px solid #aeb8bc;
   min-width: 0;
-  padding: 10px;
+  padding: 5px 7px;
 }
 
 .tianshu-report-side-card h3 {
-  font-size: 21px;
-  font-weight: 500;
-  margin: 0 0 10px;
-  text-align: center;
+  border-bottom: 1px solid #c9d2d6;
+  font-size: 13px;
+  font-weight: 800;
+  margin: 0 0 4px;
+  padding-bottom: 3px;
+  text-align: left;
 }
 
 .tianshu-report-side-card.black h3 {
@@ -939,32 +990,33 @@ button:hover {
 }
 
 .tianshu-report-side-card.white h3 {
-  color: #ffffff;
+  color: #27323a;
 }
 
 .tianshu-report-bar-row {
   align-items: center;
   display: grid;
-  gap: 8px;
-  grid-template-columns: 92px minmax(0, 1fr);
-  margin: 8px 0;
+  gap: 6px;
+  grid-template-columns: 82px minmax(0, 1fr);
+  margin: 3px 0;
 }
 
 .tianshu-report-bar-row > span {
   color: #1f262a;
-  font-size: 14px;
+  font-size: 11px;
   text-align: right;
 }
 
 .tianshu-report-bar-track {
-  background: #f7f9fa;
-  border: 1px solid #d2dcdf;
-  height: 30px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #cfd8dc;
+  height: 18px;
   position: relative;
 }
 
 .tianshu-report-bar-fill {
-  background: #b9d9ff;
+  background: rgba(77, 154, 232, .22);
   height: 100%;
   min-width: 2px;
 }
@@ -979,10 +1031,10 @@ button:hover {
 
 .tianshu-report-bar-track strong {
   color: #10171b;
-  font-size: 18px;
+  font-size: 13px;
   font-weight: 700;
-  left: 8px;
-  line-height: 30px;
+  left: 4px;
+  line-height: 18px;
   position: absolute;
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
   top: 0;
@@ -1011,13 +1063,13 @@ button:hover {
   border: 1px solid #c7c7c7;
   border-bottom: 0;
   color: #172026;
-  font-size: 13px;
-  padding: 4px 8px;
+  font-size: 11px;
+  padding: 2px 6px;
 }
 
 .tianshu-report-loss-panel {
   display: grid;
-  gap: 8px;
+  gap: 5px;
   grid-template-columns: 1fr 1fr;
 }
 
@@ -1026,33 +1078,33 @@ button:hover {
 }
 
 .tianshu-report-loss-distribution {
-  border: 1px solid #676f73;
-  padding: 8px;
+  border: 1px solid #9da8ad;
+  padding: 5px;
 }
 
 .tianshu-report-loss-distribution h4 {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
-  margin: 0 0 8px;
+  margin: 0 0 4px;
 }
 
 .tianshu-report-loss-row {
   align-items: center;
   display: grid;
-  gap: 6px;
+  gap: 4px;
   grid-template-columns: 44px minmax(0, 1fr) 24px;
-  margin: 8px 0;
+  margin: 3px 0;
 }
 
 .tianshu-report-loss-row span,
 .tianshu-report-loss-row strong {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 500;
 }
 
 .tianshu-report-loss-row div {
   background: #d7d7d7;
-  height: 18px;
+  height: 10px;
 }
 
 .tianshu-report-loss-row i {
@@ -1072,42 +1124,42 @@ button:hover {
 
 .tianshu-report-summary-grid {
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 10px;
+  gap: 2px 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 4px 0 6px;
 }
 
 .tianshu-report-report-metric {
-  background: #eef6f7;
-  border: 1px solid #c5d7dd;
-  border-radius: 6px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #d9e2e4;
   min-width: 0;
-  padding: 9px 10px;
+  padding: 2px 0;
 }
 
 .tianshu-report-report-metric span {
   color: #5b6870;
-  display: block;
-  font-size: 12px;
-  margin-bottom: 4px;
+  display: inline;
+  font-size: 11px;
+  margin: 0 6px 0 0;
 }
 
 .tianshu-report-report-metric strong {
   color: #14252b;
-  display: block;
-  font-size: 19px;
+  display: inline;
+  font-size: 13px;
   line-height: 1.15;
 }
 
 .tianshu-report-chart {
-  margin-bottom: 8px;
+  margin-bottom: 5px;
 }
 
 .tianshu-report-chart svg {
   background: #9f9f9f;
   border: 1px solid #7d8589;
   display: block;
-  height: 220px;
+  height: 154px;
   width: 100%;
 }
 
@@ -1164,9 +1216,13 @@ button:hover {
   color: #172026;
   display: flex;
   flex-wrap: wrap;
-  font-size: 13px;
-  gap: 8px 20px;
-  margin-bottom: 8px;
+  font-size: 11px;
+  gap: 3px 14px;
+  margin-bottom: 4px;
+}
+
+.tianshu-report-report .dialog-actions {
+  margin-top: 3px;
 }
 
 .settings-dialog {

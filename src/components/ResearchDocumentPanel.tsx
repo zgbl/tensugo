@@ -4,6 +4,7 @@ import type { Translator } from "../i18n";
 type ResearchDocumentPanelProps = {
   document: ResearchDocument;
   commentary: string;
+  onAddGameProgress: () => void;
   onAddText: () => void;
   onAddVariation: () => void;
   onExportPdf: () => void;
@@ -18,6 +19,7 @@ type ResearchDocumentPanelProps = {
 export function ResearchDocumentPanel({
   document,
   commentary,
+  onAddGameProgress,
   onAddText,
   onAddVariation,
   onExportPdf,
@@ -64,9 +66,10 @@ export function ResearchDocumentPanel({
 
       <div className="research-command-grid">
         <button type="button" onClick={onAddVariation}>{variationButtonLabel}</button>
+        <button type="button" onClick={onAddGameProgress}>插入棋谱</button>
         <button type="button" onClick={onAddText}>{textButtonLabel}</button>
         <button type="button" onClick={onSaveDocument}>{t("save")}</button>
-        <button type="button" onClick={onExportPdf}>{t("export")}</button>
+        <button type="button" onClick={onExportPdf}>导出PDF</button>
       </div>
     </div>
   );

@@ -181,6 +181,7 @@ For engine work, also use `设置 -> 引擎 -> Test Engine` with a real KataGo e
 ## More Documentation
 
 - [Code Structure](Docs/Code-Structure.md)
+- [KataGo Analysis Numbers](Docs/KataGo-Analysis-Numbers.md)
 - [KataGo Engine Configuration Guide](Docs/KataGo-Engine-Configuration-Guide.md)
 - [KataGo Troubleshooting](Docs/KataGo-Troubleshooting.md)
 - [Release v0.1 Scope](Docs/Release-v0.1.md)

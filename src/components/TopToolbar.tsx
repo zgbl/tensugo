@@ -78,7 +78,7 @@ export function TopToolbar({
           { label: t("newBoard"), action: onNewGame },
           { label: t("openDocument"), action: () => fileInputRef.current?.click() },
           { label: t("saveBrg"), action: onSaveResearch },
-          { label: t("export"), action: onExportPdf }
+          { label: "导出PDF", action: onExportPdf }
         ]} />
         <Menu label={t("menuView")} items={[
           { label: showVariationNumbers ? t("hideVariationNumbers") : t("showVariationNumbers"), action: () => onShowVariationNumbersChange(!showVariationNumbers) },

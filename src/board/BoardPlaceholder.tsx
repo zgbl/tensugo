@@ -140,7 +140,7 @@ export function BoardPlaceholder({
               role="button"
               tabIndex={0}
               className={`candidate-bubble ${candidate.rank === 1 ? "best" : ""}`}
-              key={`${candidate.rank}-${candidate.moveName}`}
+              key={candidate.moveName}
               style={pointStyle(point.x, point.y)}
               onClick={() => onPointClick(point.x, point.y)}
               onKeyDown={(event) => {

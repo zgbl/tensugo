@@ -12,8 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
-const ANALYSIS_COLLECT_MIN_MS: u64 = 1_000;
-const ANALYSIS_COLLECT_MAX_MS: u64 = 3_000;
+const ANALYSIS_COLLECT_MIN_MS: u64 = 120;
+const ANALYSIS_COLLECT_MAX_MS: u64 = 500;
+const CONTINUOUS_ANALYSIS_INTERVAL_CS: usize = 30;
 const ANALYSIS_BOOT_WAIT_MS: u64 = 300_000;
 const ENGINE_TEST_BOOT_WAIT_MS: u64 = 15_000;
 const PDF_EXPORT_TIMEOUT_MS: u64 = 45_000;
@@ -25,10 +26,18 @@ struct EngineState {
 struct EngineSession {
     profile_key: String,
     current_position_key: String,
+    continuous_analysis: Option<ContinuousAnalysisState>,
     stdin: ChildStdin,
     stdout_rx: Receiver<String>,
     stderr_rx: Receiver<String>,
     child: Child,
+}
+
+struct ContinuousAnalysisState {
+    position_key: String,
+    candidates: Vec<CandidateMove>,
+    raw_output_tail: Vec<String>,
+    diagnostics: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,7 +76,7 @@ struct ChoosePathResult {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct CandidateMove {
     rank: usize,
     move_name: String,
@@ -413,6 +422,11 @@ fn analyze_position(
     };
 
     let position_key = request_position_key(&request);
+    if session.continuous_analysis.is_some() {
+        let _ = writeln!(session.stdin, "stop");
+        let _ = session.stdin.flush();
+        session.continuous_analysis = None;
+    }
     drain_receiver(&session.stdout_rx);
     drain_receiver(&session.stderr_rx);
 
@@ -429,6 +443,97 @@ fn analyze_position(
     session.current_position_key = position_key;
 
     collect_analysis(session, request.max_visits)
+}
+
+#[tauri::command]
+fn analyze_position_continuous(
+    app: AppHandle,
+    state: tauri::State<EngineState>,
+    request: AnalyzeRequest,
+) -> AnalysisResult {
+    let mut guard = match state.session.lock() {
+        Ok(guard) => guard,
+        Err(error) => {
+            return AnalysisResult {
+                ok: false,
+                status: "engine-state-lock-failed".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: error.to_string(),
+            };
+        }
+    };
+
+    let profile_key = profile_key(&request.profile);
+    if guard.as_ref().map(|session| session.profile_key.as_str()) != Some(profile_key.as_str()) {
+        *guard = match start_engine_session(&app, &request.profile, &profile_key) {
+            Ok(session) => Some(session),
+            Err(result) => return result,
+        };
+    }
+
+    let session = match guard.as_mut() {
+        Some(session) => session,
+        None => {
+            return AnalysisResult {
+                ok: false,
+                status: "engine-session-missing".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: "KataGo session missing after startup.".to_string(),
+            };
+        }
+    };
+
+    let position_key = request_position_key(&request);
+    if session
+        .continuous_analysis
+        .as_ref()
+        .map(|analysis| analysis.position_key.as_str())
+        != Some(position_key.as_str())
+    {
+        let _ = writeln!(session.stdin, "stop");
+        let _ = session.stdin.flush();
+        drain_receiver(&session.stdout_rx);
+        drain_receiver(&session.stderr_rx);
+        if let Err(error) = write_continuous_position_commands(session, &request) {
+            *guard = None;
+            return AnalysisResult {
+                ok: false,
+                status: "engine-command-failed".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: error,
+            };
+        }
+        session.current_position_key = position_key.clone();
+        session.continuous_analysis = Some(ContinuousAnalysisState {
+            position_key,
+            candidates: Vec::new(),
+            raw_output_tail: Vec::new(),
+            diagnostics: "continuous KataGo analysis started".to_string(),
+        });
+    }
+
+    collect_continuous_analysis_snapshot(session)
+}
+
+#[tauri::command]
+fn stop_continuous_analysis(state: tauri::State<EngineState>) -> Result<(), String> {
+    let mut guard = state
+        .session
+        .lock()
+        .map_err(|error| format!("engine state lock failed: {}", error))?;
+    if let Some(session) = guard.as_mut() {
+        if session.continuous_analysis.is_some() {
+            writeln!(session.stdin, "stop").map_err(|error| error.to_string())?;
+            session.stdin.flush().map_err(|error| error.to_string())?;
+            session.continuous_analysis = None;
+            drain_receiver(&session.stdout_rx);
+            drain_receiver(&session.stderr_rx);
+        }
+    }
+    Ok(())
 }
 
 fn start_engine_session(
@@ -496,7 +601,8 @@ fn start_engine_session(
     let mut boot_log = Vec::new();
     let mut ready = false;
     while Instant::now() < boot_deadline {
-        let new_lines = drain_receiver(&stderr_rx);
+        let mut new_lines = drain_receiver(&stdout_rx);
+        new_lines.extend(drain_receiver(&stderr_rx));
         for line in &new_lines {
             if line.contains("Performing autotuning") || line.contains("Tuning ") {
                 boot_log.push(line.clone());
@@ -561,6 +667,7 @@ fn start_engine_session(
     Ok(EngineSession {
         profile_key: profile_key.to_string(),
         current_position_key: String::new(),
+        continuous_analysis: None,
         stdin,
         stdout_rx,
         stderr_rx,
@@ -569,6 +676,43 @@ fn start_engine_session(
 }
 
 fn write_position_commands(
+    session: &mut EngineSession,
+    request: &AnalyzeRequest,
+) -> Result<(), String> {
+    write_position_commands_with_visits(session, request, request.max_visits)
+}
+
+fn write_position_commands_with_visits(
+    session: &mut EngineSession,
+    request: &AnalyzeRequest,
+    max_visits: usize,
+) -> Result<(), String> {
+    writeln!(session.stdin, "boardsize {}", request.board_size)
+        .map_err(|error| error.to_string())?;
+    writeln!(session.stdin, "komi {}", request.komi).map_err(|error| error.to_string())?;
+    writeln!(session.stdin, "clear_board").map_err(|error| error.to_string())?;
+    for game_move in &request.moves {
+        let color = if game_move.color == "black" { "B" } else { "W" };
+        writeln!(
+            session.stdin,
+            "play {} {}",
+            color,
+            to_gtp_point(game_move.x, game_move.y, request.board_size)
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    let next_color = if request.next_color == "black" {
+        "B"
+    } else {
+        "W"
+    };
+    let max_visits = max_visits.clamp(1, 10000);
+    writeln!(session.stdin, "kata-analyze {} {}", next_color, max_visits)
+        .map_err(|error| error.to_string())?;
+    session.stdin.flush().map_err(|error| error.to_string())
+}
+
+fn write_continuous_position_commands(
     session: &mut EngineSession,
     request: &AnalyzeRequest,
 ) -> Result<(), String> {
@@ -591,15 +735,92 @@ fn write_position_commands(
     } else {
         "W"
     };
-    let max_visits = request.max_visits.clamp(1, 10000);
-    writeln!(session.stdin, "kata-analyze {} {}", next_color, max_visits)
-        .map_err(|error| error.to_string())?;
+    writeln!(
+        session.stdin,
+        "lz-analyze {} {}",
+        next_color, CONTINUOUS_ANALYSIS_INTERVAL_CS
+    )
+    .map_err(|error| error.to_string())?;
     session.stdin.flush().map_err(|error| error.to_string())
+}
+
+fn collect_continuous_analysis_snapshot(session: &mut EngineSession) -> AnalysisResult {
+    let stdout_lines = drain_receiver(&session.stdout_rx);
+    let stderr_lines = drain_receiver(&session.stderr_rx);
+    match session.child.try_wait() {
+        Ok(Some(status)) => {
+            let raw_output = stdout_lines.join("\n");
+            let diagnostics = format!(
+                "KataGo 持续分析期间退出，退出状态: {}\n{}",
+                status,
+                stderr_lines.join("\n")
+            );
+            session.continuous_analysis = None;
+            return AnalysisResult {
+                ok: false,
+                status: "engine-exited-during-analysis".to_string(),
+                candidates: Vec::new(),
+                raw_output,
+                diagnostics,
+            };
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return AnalysisResult {
+                ok: false,
+                status: "engine-status-failed".to_string(),
+                candidates: Vec::new(),
+                raw_output: stdout_lines.join("\n"),
+                diagnostics: format!("检查 KataGo 进程状态失败: {}", error),
+            };
+        }
+    }
+
+    let analysis = match session.continuous_analysis.as_mut() {
+        Some(analysis) => analysis,
+        None => {
+            return AnalysisResult {
+                ok: false,
+                status: "continuous-analysis-missing".to_string(),
+                candidates: Vec::new(),
+                raw_output: stdout_lines.join("\n"),
+                diagnostics: "No continuous analysis is active.".to_string(),
+            };
+        }
+    };
+
+    if !stdout_lines.is_empty() {
+        analysis.raw_output_tail.extend(stdout_lines);
+        let overflow = analysis.raw_output_tail.len().saturating_sub(160);
+        if overflow > 0 {
+            analysis.raw_output_tail.drain(0..overflow);
+        }
+        let parsed = parse_analysis_output(&analysis.raw_output_tail.join("\n"));
+        if !parsed.is_empty() {
+            analysis.candidates = parsed;
+        }
+    }
+    if !stderr_lines.is_empty() {
+        analysis.diagnostics = stderr_lines.join("\n");
+    }
+
+    AnalysisResult {
+        ok: !analysis.candidates.is_empty(),
+        status: if analysis.candidates.is_empty() {
+            "waiting-for-candidates"
+        } else {
+            "analyzed"
+        }
+        .to_string(),
+        candidates: analysis.candidates.clone(),
+        raw_output: analysis.raw_output_tail.join("\n"),
+        diagnostics: format!("continuous KataGo session\n{}", analysis.diagnostics),
+    }
 }
 
 fn collect_analysis(session: &mut EngineSession, max_visits: usize) -> AnalysisResult {
     let collect_ms = (max_visits as u64)
-        .saturating_mul(20)
+        .saturating_mul(6)
         .clamp(ANALYSIS_COLLECT_MIN_MS, ANALYSIS_COLLECT_MAX_MS);
     let deadline = Instant::now() + Duration::from_millis(collect_ms);
     let mut stdout_lines = Vec::new();
@@ -635,11 +856,11 @@ fn collect_analysis(session: &mut EngineSession, max_visits: usize) -> AnalysisR
             }
         }
         if stdout_lines.iter().any(|line| line.contains("info move")) {
-            thread::sleep(Duration::from_millis(60));
+            thread::sleep(Duration::from_millis(25));
             stdout_lines.extend(drain_receiver(&session.stdout_rx));
             break;
         }
-        thread::sleep(Duration::from_millis(30));
+        thread::sleep(Duration::from_millis(15));
     }
     let stdout = stdout_lines.join("\n");
     let stderr = stderr_lines.join("\n");
@@ -720,61 +941,29 @@ fn to_gtp_point(x: usize, y: usize, board_size: usize) -> String {
 }
 
 fn parse_analysis_output(output: &str) -> Vec<CandidateMove> {
-    let mut best_line = "";
-    let mut best_visits = 0usize;
-
-    for line in output.lines() {
-        if line.contains("info move") {
-            let visits = token_after(line, "visits")
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(0);
-            if visits >= best_visits {
-                best_visits = visits;
-                best_line = line;
+    let mut candidates: Vec<CandidateMove> = Vec::new();
+    for line in output.lines().filter(|line| line.contains("info move")) {
+        for segment in line.split(" info ") {
+            let normalized = if segment.starts_with("info ") {
+                segment.to_string()
+            } else if segment.starts_with("move ") {
+                format!("info {}", segment)
+            } else {
+                continue;
+            };
+            if let Some(candidate) = parse_candidate_line(&normalized, candidates.len() + 1) {
+                if let Some(existing) = candidates
+                    .iter_mut()
+                    .find(|item| item.move_name == candidate.move_name)
+                {
+                    if candidate.visits >= existing.visits {
+                        *existing = candidate;
+                    }
+                } else {
+                    candidates.push(candidate);
+                }
             }
         }
-    }
-
-    if best_line.is_empty() {
-        return Vec::new();
-    }
-
-    let mut candidates = Vec::new();
-    let segments: Vec<&str> = best_line.split(" info ").collect();
-
-    for segment in segments {
-        let line = if segment.starts_with("info ") {
-            segment.to_string()
-        } else if segment.starts_with("move ") {
-            format!("info {}", segment)
-        } else {
-            continue;
-        };
-
-        let move_name = match token_after(&line, "move") {
-            Some(value) => value,
-            None => continue,
-        };
-        let visits = token_after(&line, "visits")
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0);
-        let winrate = token_after(&line, "winrate")
-            .and_then(|value| value.parse::<f64>().ok())
-            .map(|value| value * 100.0)
-            .unwrap_or(0.0);
-        let score_lead = token_after(&line, "scoreLead")
-            .and_then(|value| value.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let pv = tokens_after_until_keyword(&line, "pv");
-
-        candidates.push(CandidateMove {
-            rank: candidates.len() + 1,
-            move_name,
-            visits,
-            winrate,
-            score_lead,
-            pv,
-        });
     }
 
     candidates.sort_by(|left, right| right.visits.cmp(&left.visits));
@@ -783,6 +972,40 @@ fn parse_analysis_output(output: &str) -> Vec<CandidateMove> {
     }
     candidates.truncate(12);
     candidates
+}
+
+fn parse_candidate_line(line: &str, rank: usize) -> Option<CandidateMove> {
+    let move_name = token_after(line, "move")?;
+    let visits = token_after(line, "visits")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let winrate = token_after(line, "winrate")
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(normalize_winrate)
+        .unwrap_or(0.0);
+    let score_lead = token_after(line, "scoreLead")
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let pv = tokens_after_until_keyword(line, "pv");
+    Some(CandidateMove {
+        rank,
+        move_name,
+        visits,
+        winrate,
+        score_lead,
+        pv,
+    })
+}
+
+fn normalize_winrate(value: f64) -> f64 {
+    if value <= 1.0 {
+        value * 100.0
+    } else if value <= 100.0 {
+        value
+    } else {
+        value / 100.0
+    }
+    .clamp(0.0, 100.0)
 }
 
 fn render_html_to_pdf(html: &str, pdf_path: &PathBuf) -> Result<(), String> {
@@ -924,7 +1147,9 @@ pub fn run() {
             discover_engine_profile,
             choose_engine_path,
             probe_engine,
-            analyze_position
+            analyze_position,
+            analyze_position_continuous,
+            stop_continuous_analysis
         ])
         .run(tauri::generate_context!())
         .expect("failed to run TensuGo");

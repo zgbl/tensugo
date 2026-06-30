@@ -93,7 +93,9 @@ export function SettingsDialog({
           ) : activeTab === "interface" ? (
             <InterfaceSettingsPanel
               candidateDisplayLimit={candidateDisplayLimit}
+              exportSettings={exportSettings}
               onCandidateDisplayLimitChange={onCandidateDisplayLimitChange}
+              onExportSettingsChange={onExportSettingsChange}
             />
           ) : (
             <LanguageSettingsPanel language={language} onChange={onLanguageChange} t={t} />
@@ -106,10 +108,14 @@ export function SettingsDialog({
 
 function InterfaceSettingsPanel({
   candidateDisplayLimit,
-  onCandidateDisplayLimitChange
+  exportSettings,
+  onCandidateDisplayLimitChange,
+  onExportSettingsChange
 }: {
   candidateDisplayLimit: number;
+  exportSettings: ResearchExportSettings;
   onCandidateDisplayLimitChange: (value: number) => void;
+  onExportSettingsChange: (patch: Partial<ResearchExportSettings>) => void;
 }) {
   return (
     <section className="export-settings-panel">
@@ -124,6 +130,17 @@ function InterfaceSettingsPanel({
             step="1"
             value={candidateDisplayLimit}
             onChange={(event) => onCandidateDisplayLimitChange(Number(event.target.value))}
+          />
+        </label>
+        <label>
+          PDF 正文字体
+          <input
+            type="number"
+            min="10"
+            max="18"
+            step="1"
+            value={exportSettings.documentFontSizePt}
+            onChange={(event) => onExportSettingsChange({ documentFontSizePt: Number(event.target.value) })}
           />
         </label>
       </div>

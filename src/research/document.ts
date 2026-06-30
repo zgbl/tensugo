@@ -9,6 +9,7 @@ import type {
   BoardMarker,
   CandidateMovesBlock,
   CurrentGameSnapshot,
+  GameProgressBlock,
   ParagraphBlock,
   ResearchBlock,
   ResearchDocument,
@@ -197,6 +198,37 @@ export function createBoardBlock(snapshot: CurrentGameSnapshot): BoardBlock {
   };
 }
 
+export function createGameProgressBlock(
+  moves: ReviewMove[],
+  boardSize: number,
+  startMoveNumber: number,
+  endMoveNumber: number
+): GameProgressBlock | null {
+  if (moves.length === 0) {
+    return null;
+  }
+  const start = clampMoveNumber(startMoveNumber, 1, moves.length);
+  const end = clampMoveNumber(endMoveNumber, start, moves.length);
+  const sequence = moves.slice(start - 1, end).map((move) => reviewMoveToGtpPoint(move, boardSize));
+  if (sequence.length === 0) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  return {
+    id: createId("blk"),
+    type: "game_progress",
+    startMoveNumber: start,
+    endMoveNumber: end,
+    boardSize,
+    position: buildBoardPosition(moves, boardSize, end).stones,
+    sequence,
+    caption: `原棋谱进展：第 ${start}-${end} 手`,
+    showCoordinates: true,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 export function createVariationBlock(snapshot: CurrentGameSnapshot, candidate: EngineCandidateMove | null): VariationBlock | null {
   const sequence = candidate?.pv?.length ? candidate.pv : [];
   if (sequence.length === 0) {
@@ -376,6 +408,18 @@ function toBrgBlock(block: ResearchBlock) {
       marks: block.markers.map(toBrgMarker)
     };
   }
+  if (block.type === "game_progress") {
+    return {
+      type: "game_progress",
+      startMoveNumber: block.startMoveNumber,
+      endMoveNumber: block.endMoveNumber,
+      boardSize: block.boardSize,
+      position: block.position,
+      sequence: block.sequence,
+      caption: block.caption,
+      showCoordinates: block.showCoordinates
+    };
+  }
   if (block.type === "variation") {
     return {
       type: "variation",
@@ -493,6 +537,21 @@ function fromBrgBlock(value: unknown, boardSize: number): ResearchBlock | null {
       updatedAt: now
     };
   }
+  if (type === "game_progress") {
+    return {
+      id: stringValue(block.id, createId("blk")),
+      type: "game_progress",
+      startMoveNumber: numberValue(block.startMoveNumber, 1),
+      endMoveNumber: numberValue(block.endMoveNumber, 1),
+      boardSize: numberValue(block.boardSize, boardSize),
+      position: parseStones(block.position),
+      sequence: parseStringArray(block.sequence),
+      caption: stringValue(block.caption, "原棋谱进展"),
+      showCoordinates: block.showCoordinates !== false,
+      createdAt: now,
+      updatedAt: now
+    };
+  }
   if (type === "variation") {
     const moves = Array.isArray(block.moves) ? block.moves : [];
     const sequence = moves.map((move) => tupleToGtpPoint(asRecord(move).pos, boardSize)).filter(Boolean) as string[];
@@ -589,6 +648,18 @@ function tupleToGtpPoint(value: unknown, boardSize: number): string | null {
     return null;
   }
   return `${labels[x]}${boardSize - y}`;
+}
+
+function reviewMoveToGtpPoint(move: ReviewMove, boardSize: number): string {
+  const labels = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+  return `${labels[move.x] ?? "A"}${boardSize - move.y}`;
+}
+
+function clampMoveNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
 function inferSourceFormat(fileName: string): "sgf" | "gib" {
@@ -711,6 +782,28 @@ function fileStem(fileName: string): string {
 
 function parseStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : [];
+}
+
+function parseStones(value: unknown): ReviewStone[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((stone) => {
+      const record = asRecord(stone);
+      const color = record.color === "white" ? "white" : record.color === "black" ? "black" : null;
+      if (!color) {
+        return null;
+      }
+      return {
+        color,
+        isLast: record.isLast === true,
+        moveNumber: numberValue(record.moveNumber, 0),
+        x: numberValue(record.x, 0),
+        y: numberValue(record.y, 0)
+      };
+    })
+    .filter((stone): stone is ReviewStone => stone !== null);
 }
 
 function parseCandidateMoves(value: unknown): EngineCandidateMove[] {

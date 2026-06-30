@@ -115,6 +115,48 @@ export async function analyzePosition(params: {
   };
 }
 
+export async function analyzePositionContinuous(params: {
+  boardSize: number;
+  komi: number;
+  moves: ReviewMove[];
+  nextColor: "black" | "white";
+  profile: EngineProfile;
+}): Promise<EngineAnalysisResult> {
+  const result = await invoke<TauriAnalysisResult>("analyze_position_continuous", {
+    request: {
+      profile: toTauriProfile(params.profile),
+      board_size: params.boardSize,
+      komi: params.komi,
+      moves: params.moves.map((move) => ({
+        color: move.color,
+        x: move.x,
+        y: move.y
+      })),
+      next_color: params.nextColor,
+      max_visits: 0
+    }
+  });
+
+  return {
+    ok: result.ok,
+    status: result.status,
+    candidates: result.candidates.map((candidate) => ({
+      rank: candidate.rank,
+      moveName: candidate.move_name,
+      visits: candidate.visits,
+      winrate: candidate.winrate,
+      scoreLead: candidate.score_lead,
+      pv: candidate.pv
+    })),
+    rawOutput: result.raw_output,
+    diagnostics: result.diagnostics
+  };
+}
+
+export async function stopContinuousAnalysis(): Promise<void> {
+  await invoke("stop_continuous_analysis");
+}
+
 function fromTauriProfile(profile: TauriEngineProfile): EngineProfile {
   return {
     name: profile.name,
