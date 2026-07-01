@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EngineProfile } from "../engine/types";
 
 type EngineConfigPanelProps = {
@@ -10,14 +10,16 @@ type EngineConfigPanelProps = {
   onChoosePath: (kind: "engine" | "model" | "config") => void;
   onProfileChange: (profile: EngineProfile) => void;
   onProbe: () => void;
-  onDeleteProfile: (profileKey: string) => void;
-  onMoveProfile: (profileKey: string, direction: "up" | "down") => void;
+  onDeleteProfile: (profileIndex: number) => void;
+  onMoveProfile: (profileIndex: number, direction: "up" | "down") => void;
+  onManualProfileAdd: (commandLine: string) => void;
   onResetProfile: () => void;
   onSaveProfile: () => void;
-  onSelectProfile: (profileKey: string) => void;
+  onSelectProfile: (profileIndex: number) => void;
   onSetDefaultProfile: () => void;
   profile: EngineProfile | null;
   profiles: EngineProfile[];
+  selectedProfileIndex: number;
 };
 
 export function EngineConfigPanel({
@@ -28,6 +30,7 @@ export function EngineConfigPanel({
   onAutoDetect,
   onChoosePath,
   onDeleteProfile,
+  onManualProfileAdd,
   onMoveProfile,
   onProfileChange,
   onProbe,
@@ -36,9 +39,11 @@ export function EngineConfigPanel({
   onSelectProfile,
   onSetDefaultProfile,
   profile,
-  profiles
+  profiles,
+  selectedProfileIndex
 }: EngineConfigPanelProps) {
   const diagnosticsRef = useRef<HTMLPreElement | null>(null);
+  const [manualCommandLine, setManualCommandLine] = useState("");
   const updateProfile = (patch: Partial<EngineProfile>) => {
     const base = profile ?? {
       name: "本机 KataGo",
@@ -50,10 +55,11 @@ export function EngineConfigPanel({
     };
     onProfileChange({ ...base, ...patch });
   };
-  const selectedKey = profile ? engineProfileKey(profile) : "";
-  const selectedProfile = profiles.find((item) => engineProfileKey(item) === selectedKey);
-  const selectedIndex = profiles.findIndex((item) => engineProfileKey(item) === selectedKey);
-  const selectedLocked = selectedProfile ? isProtectedEngineProfile(selectedProfile) : true;
+  const selectedIndex = selectedProfileIndex >= 0 && selectedProfileIndex < profiles.length
+    ? selectedProfileIndex
+    : profile
+      ? profiles.findIndex((item) => engineProfileKey(item) === engineProfileKey(profile))
+      : -1;
 
   useEffect(() => {
     const element = diagnosticsRef.current;
@@ -66,29 +72,33 @@ export function EngineConfigPanel({
   return (
     <div className="engine-config-panel">
       <h2>引擎配置</h2>
-      <section className="engine-profile-list" aria-label="已配置引擎">
+      <section className="engine-profile-list" aria-label="引擎列表">
         <div className="engine-profile-list-header">
-          <strong>已配置引擎</strong>
+          <strong>引擎列表</strong>
           <div className="engine-profile-list-tools">
             <button
               type="button"
-              disabled={!selectedKey || selectedIndex <= 0}
-              onClick={() => onMoveProfile(selectedKey, "up")}
+              onClick={() => {
+                if (selectedIndex <= 0 || selectedIndex >= profiles.length) { return; }
+                onMoveProfile(selectedIndex, "up");
+              }}
             >
               上移
             </button>
             <button
               type="button"
-              disabled={!selectedKey || selectedIndex < 0 || selectedIndex >= profiles.length - 1}
-              onClick={() => onMoveProfile(selectedKey, "down")}
+              onClick={() => {
+                if (selectedIndex < 0 || selectedIndex >= profiles.length - 1) { return; }
+                onMoveProfile(selectedIndex, "down");
+              }}
             >
               下移
             </button>
             <button
               type="button"
-              disabled={!selectedKey || selectedLocked}
-              title={selectedLocked ? "内置默认引擎不可删除" : "删除当前高亮引擎配置"}
-              onClick={() => onDeleteProfile(selectedKey)}
+              onClick={() => {
+                onDeleteProfile(selectedIndex);
+              }}
             >
               删除
             </button>
@@ -107,15 +117,21 @@ export function EngineConfigPanel({
             <tbody>
               {profiles.length === 0 ? (
                 <tr>
-                  <td colSpan={4}>尚未保存引擎。Auto Detect 会保留可用默认引擎，手动配置请保存到列表。</td>
+                  <td colSpan={4}>尚未保存引擎。Auto Detect 会显示可用候选项，手动配置请保存到列表。</td>
                 </tr>
               ) : (
-                profiles.map((item) => {
+                profiles.map((item, index) => {
                   const key = engineProfileKey(item);
-                  const selected = profile ? engineProfileKey(profile) === key : false;
+                  const selected = selectedIndex === index;
                   const locked = isProtectedEngineProfile(item);
                   return (
-                    <tr className={selected ? "active" : ""} key={key} onClick={() => onSelectProfile(key)}>
+                    <tr
+                      className={selected ? "active" : ""}
+                      key={`${key}:${index}`}
+                      onClick={() => {
+                        onSelectProfile(index);
+                      }}
+                    >
                       <td>{item.name}</td>
                       <td>{item.source ?? "用户配置"}</td>
                       <td>{locked ? "内置保底" : item.exists ? "可用" : "待测试"}</td>
@@ -182,6 +198,26 @@ export function EngineConfigPanel({
           {isAnalyzing ? "分析中" : "分析当前局面"}
         </button>
       </div>
+      <div className="manual-engine-command">
+        <label>
+          <span>手工命令</span>
+          <input
+            className="panel-input"
+            placeholder="/opt/homebrew/bin/katago gtp -model ... -config ..."
+            value={manualCommandLine}
+            onChange={(event) => setManualCommandLine(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            onManualProfileAdd(manualCommandLine);
+            setManualCommandLine("");
+          }}
+        >
+          添加手工配置
+        </button>
+      </div>
       <details className="engine-diagnostics" open>
         <summary>诊断</summary>
         <pre ref={diagnosticsRef}>{diagnostics}</pre>
@@ -200,5 +236,5 @@ function fileName(path: string): string {
 
 function isProtectedEngineProfile(profile: EngineProfile): boolean {
   const source = (profile.source ?? "").toLowerCase();
-  return source.includes("bundled") || source.includes("内置") || source.includes("known windows") || source.includes("已知");
+  return source.includes("known windows") || source.includes("windows 已知") || source.includes("windows known");
 }

@@ -225,6 +225,11 @@ fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
         Err(error) => diagnostics.push(format!("runtime dir unavailable: {}", error)),
     }
 
+    if !profile.command_line.trim().is_empty() {
+        diagnostics.push(format!("manual command: {}", profile.command_line));
+        return run_engine_start_test(&app, &profile, diagnostics);
+    }
+
     for (label, path) in [
         ("katago", profile.executable_path.as_str()),
         ("model", profile.model_path.as_str()),
@@ -307,15 +312,19 @@ fn run_engine_start_test(
         }
     };
 
-    let mut child = match Command::new(&profile.executable_path)
+    let mut command = match gtp_command(profile) {
+        Ok(command) => command,
+        Err(error) => {
+            diagnostics.push(error);
+            return EngineProbeResult {
+                ok: false,
+                summary: "手工命令解析失败".to_string(),
+                diagnostics: diagnostics.join("\n"),
+            };
+        }
+    };
+    let mut child = match command
         .current_dir(&runtime_dir)
-        .args([
-            "gtp",
-            "-model",
-            &profile.model_path,
-            "-config",
-            &profile.config_path,
-        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -699,16 +708,20 @@ fn start_engine_session(
         }
     };
 
-    let mut command = Command::new(&profile.executable_path);
+    let mut command = match gtp_command(profile) {
+        Ok(command) => command,
+        Err(error) => {
+            return Err(AnalysisResult {
+                ok: false,
+                status: "engine-command-parse-failed".to_string(),
+                candidates: Vec::new(),
+                raw_output: String::new(),
+                diagnostics: error,
+            });
+        }
+    };
     command
         .current_dir(&runtime_dir)
-        .args([
-            "gtp",
-            "-model",
-            &profile.model_path,
-            "-config",
-            &profile.config_path,
-        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1058,7 +1071,77 @@ fn drain_receiver(rx: &Receiver<String>) -> Vec<String> {
     lines
 }
 
+fn gtp_command(profile: &EngineProfile) -> Result<Command, String> {
+    if !profile.command_line.trim().is_empty() {
+        let parts = split_command_line(&profile.command_line)?;
+        let (program, args) = parts
+            .split_first()
+            .ok_or_else(|| "手工命令为空".to_string())?;
+        let mut command = Command::new(program);
+        command.args(args);
+        return Ok(command);
+    }
+
+    let mut command = Command::new(&profile.executable_path);
+    command.args([
+        "gtp",
+        "-model",
+        &profile.model_path,
+        "-config",
+        &profile.config_path,
+    ]);
+    Ok(command)
+}
+
+fn split_command_line(input: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '"' | '\'' => {
+                if quote == Some(ch) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(ch);
+                } else {
+                    current.push(ch);
+                }
+            }
+            ch if ch.is_whitespace() && quote.is_none() => {
+                if !current.is_empty() {
+                    parts.push(current.clone());
+                    current.clear();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if let Some(open_quote) = quote {
+        return Err(format!("手工命令引号未闭合: {}", open_quote));
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    if parts.is_empty() {
+        Err("手工命令为空".to_string())
+    } else {
+        Ok(parts)
+    }
+}
+
 fn profile_key(profile: &EngineProfile) -> String {
+    if !profile.command_line.trim().is_empty() {
+        return format!("manual:{}", profile.command_line.trim());
+    }
     format!(
         "{}|{}|{}",
         profile.executable_path, profile.model_path, profile.config_path

@@ -169,11 +169,12 @@ function fromTauriProfile(profile: TauriEngineProfile): EngineProfile {
   };
 }
 
-function toTauriProfile(profile: EngineProfile): Omit<TauriEngineProfile, "command_line" | "exists"> {
+function toTauriProfile(profile: EngineProfile): Omit<TauriEngineProfile, "exists"> {
   return {
     name: profile.name,
     executable_path: profile.executablePath,
     model_path: profile.modelPath,
-    config_path: profile.configPath
+    config_path: profile.configPath,
+    command_line: profile.commandLine
   };
 }

@@ -4,6 +4,8 @@ import type { EngineProfile } from "../engine/types";
 import { LANGUAGE_OPTIONS, type AppLanguage, type Translator } from "../i18n";
 import type { ResearchExportSettings } from "../research/renderHtml";
 
+type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
 type SettingsDialogProps = {
   candidateDisplayLimit: number;
   engineDiagnostics: string;
@@ -12,6 +14,7 @@ type SettingsDialogProps = {
   exportSettings: ResearchExportSettings;
   isAnalyzing: boolean;
   language: AppLanguage;
+  selectedEngineProfileIndex: number;
   onAnalyze: () => void;
   onClose: () => void;
   onCandidateDisplayLimitChange: (value: number) => void;
@@ -19,13 +22,14 @@ type SettingsDialogProps = {
   onLanguageChange: (language: AppLanguage) => void;
   onAutoDetect: () => void;
   onChoosePath: (kind: "engine" | "model" | "config") => void;
-  onDeleteProfile: (profileKey: string) => void;
-  onMoveProfile: (profileKey: string, direction: "up" | "down") => void;
+  onDeleteProfile: (profileIndex: number) => void;
+  onManualProfileAdd: (commandLine: string) => void;
+  onMoveProfile: (profileIndex: number, direction: "up" | "down") => void;
   onProbe: () => void;
   onProfileChange: (profile: EngineProfile) => void;
   onResetProfile: () => void;
   onSaveProfile: () => void;
-  onSelectProfile: (profileKey: string) => void;
+  onSelectProfile: (profileIndex: number) => void;
   onSetDefaultProfile: () => void;
   open: boolean;
   profile: EngineProfile | null;
@@ -40,6 +44,7 @@ export function SettingsDialog({
   exportSettings,
   isAnalyzing,
   language,
+  selectedEngineProfileIndex,
   onAnalyze,
   onClose,
   onCandidateDisplayLimitChange,
@@ -48,6 +53,7 @@ export function SettingsDialog({
   onAutoDetect,
   onChoosePath,
   onDeleteProfile,
+  onManualProfileAdd,
   onMoveProfile,
   onProbe,
   onProfileChange,
@@ -61,7 +67,17 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<"engine" | "export" | "interface" | "language">("engine");
   const [dialogOffset, setDialogOffset] = useState({ x: 0, y: 0 });
+  const [dialogSize, setDialogSize] = useState({ height: 780, width: 980 });
   const dragStartRef = useRef<{ pointerX: number; pointerY: number; x: number; y: number } | null>(null);
+  const resizeStartRef = useRef<{
+    direction: ResizeDirection;
+    height: number;
+    pointerX: number;
+    pointerY: number;
+    width: number;
+    x: number;
+    y: number;
+  } | null>(null);
 
   const startDrag = (event: React.MouseEvent<HTMLElement>) => {
     if ((event.target as HTMLElement).closest("button")) {
@@ -92,8 +108,50 @@ export function SettingsDialog({
     window.addEventListener("mouseup", handleUp);
   };
 
+  const startResize = (direction: ResizeDirection, event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    resizeStartRef.current = {
+      direction,
+      height: dialogSize.height,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      width: dialogSize.width,
+      x: dialogOffset.x,
+      y: dialogOffset.y
+    };
+    const handleMove = (moveEvent: MouseEvent) => {
+      const start = resizeStartRef.current;
+      if (!start) {
+        return;
+      }
+      const dx = moveEvent.clientX - start.pointerX;
+      const dy = moveEvent.clientY - start.pointerY;
+      const resizeLeft = start.direction.includes("w");
+      const resizeRight = start.direction.includes("e");
+      const resizeTop = start.direction.includes("n");
+      const resizeBottom = start.direction.includes("s");
+      const nextWidth = clamp(start.width + (resizeRight ? dx : 0) - (resizeLeft ? dx : 0), 620, window.innerWidth - 24);
+      const nextHeight = clamp(start.height + (resizeBottom ? dy : 0) - (resizeTop ? dy : 0), 420, window.innerHeight - 24);
+      setDialogSize({ height: nextHeight, width: nextWidth });
+      setDialogOffset({
+        x: resizeLeft ? start.x + start.width - nextWidth : start.x,
+        y: resizeTop ? start.y + start.height - nextHeight : start.y
+      });
+    };
+    const handleUp = () => {
+      resizeStartRef.current = null;
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  };
+
   const dialogStyle: CSSProperties = {
-    transform: `translate(${dialogOffset.x}px, ${dialogOffset.y}px)`
+    height: dialogSize.height,
+    transform: `translate(${dialogOffset.x}px, ${dialogOffset.y}px)`,
+    width: dialogSize.width
   };
 
   if (!open) {
@@ -128,12 +186,14 @@ export function SettingsDialog({
               diagnostics={engineDiagnostics}
               engineStatus={engineStatus}
               profiles={engineProfiles}
+              selectedProfileIndex={selectedEngineProfileIndex}
               isAnalyzing={isAnalyzing}
               profile={profile}
               onAnalyze={onAnalyze}
               onAutoDetect={onAutoDetect}
               onChoosePath={onChoosePath}
               onDeleteProfile={onDeleteProfile}
+              onManualProfileAdd={onManualProfileAdd}
               onMoveProfile={onMoveProfile}
               onProbe={onProbe}
               onProfileChange={onProfileChange}
@@ -155,9 +215,22 @@ export function SettingsDialog({
             <LanguageSettingsPanel language={language} onChange={onLanguageChange} t={t} />
           )}
         </div>
+        {(["n", "s", "e", "w", "ne", "nw", "se", "sw"] as ResizeDirection[]).map((direction) => (
+          <div
+            aria-label={`调整窗口大小 ${direction}`}
+            className={`settings-dialog-resize-handle resize-${direction}`}
+            key={direction}
+            onMouseDown={(event) => startResize(direction, event)}
+            role="presentation"
+          />
+        ))}
       </section>
     </div>
   );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function InterfaceSettingsPanel({

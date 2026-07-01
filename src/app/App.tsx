@@ -15,7 +15,6 @@ import {
   chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
   discoverEngineProfile,
-  getDefaultEngineProfile,
   isTauriRuntime,
   probeEngine,
   stopContinuousAnalysis
@@ -124,6 +123,7 @@ const INTERFACE_SETTINGS_KEY = "tensugo.interfaceSettings";
 const ENGINE_PROFILE_STORAGE_KEY = "tensugo.engineProfile";
 const ENGINE_PROFILES_STORAGE_KEY = "tensugo.engineProfiles";
 const ACTIVE_ENGINE_PROFILE_KEY = "tensugo.activeEngineProfileKey";
+const HIDDEN_ENGINE_PROFILE_KEYS = "tensugo.hiddenEngineProfileKeys";
 const DEFAULT_CANDIDATE_DISPLAY_LIMIT = 5;
 const INITIAL_GAME_TREE = createEmptyGameTree(19, 7.5);
 const INITIAL_SELECTED_NODE_ID = "root";
@@ -143,6 +143,7 @@ export function App() {
   const [sgfWarnings, setSgfWarnings] = useState<string[]>([]);
   const [engineProfile, setEngineProfile] = useState<EngineProfile | null>(() => loadEngineProfile());
   const [engineProfiles, setEngineProfiles] = useState<EngineProfile[]>(() => loadEngineProfiles());
+  const [selectedEngineProfileIndex, setSelectedEngineProfileIndex] = useState(0);
   const [engineStatus, setEngineStatus] = useState("引擎未配置");
   const [engineDiagnostics, setEngineDiagnostics] = useState("尚未运行引擎测试。");
   const [researchExportSettings, setResearchExportSettings] = useState<ResearchExportSettings>(() => loadResearchExportSettings());
@@ -345,29 +346,19 @@ export function App() {
       setEngineStatus("浏览器预览：分析需要在 Mac App 中运行");
       return;
     }
-
-    startEngineProgressLog("正在自动发现 KataGo 引擎...", [
-      "扫描内置资源、已知 Windows 整合包、常见安装目录和 PATH。",
-      "如果是第一次 OpenCL 调优，后续测试可能需要几分钟。"
-    ]);
-    void discoverEngineProfile(loadEngineProfile())
-      .then(async (profile) => {
-        stopEngineProgressLog();
-        const nextProfiles = mergeEngineProfiles(loadEngineProfiles(), profile.candidates);
-        setEngineProfiles(nextProfiles);
-        saveEngineProfiles(nextProfiles);
-        const activeKey = window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY);
-        const activeProfile = nextProfiles.find((item) => engineProfileKey(item) === activeKey) ?? profile.selected;
-        setEngineProfile(activeProfile);
-        setEngineStatus(profile.selected.exists ? `已发现 ${profile.selected.name}` : "未发现完整 KataGo 配置");
-        setEngineDiagnostics(profile.diagnostics);
-      })
-      .catch((error) => {
-        stopEngineProgressLog();
-        setEngineDiagnostics(String(error));
-        setEngineStatus(`引擎发现失败: ${String(error)}`);
-      });
-    return () => stopEngineProgressLog();
+    const savedProfiles = filterHiddenEngineProfiles(loadEngineProfiles());
+    const activeKey = window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY);
+    const activeProfile =
+      savedProfiles.find((item) => engineProfileKey(item) === activeKey) ??
+      savedProfiles.find(isCompleteEngineProfile) ??
+      savedProfiles[0] ??
+      filterHiddenEngineProfiles([loadEngineProfile()])[0] ??
+      DEFAULT_ENGINE_PROFILE;
+    setEngineProfiles(savedProfiles);
+    setSelectedEngineProfileIndex(Math.max(0, savedProfiles.findIndex((item) => engineProfileKey(item) === engineProfileKey(activeProfile))));
+    setEngineProfile(activeProfile);
+    setEngineStatus(isCompleteEngineProfile(activeProfile) ? `已加载引擎配置：${activeProfile.name}` : "引擎未配置，请手动选择或点击 Auto Detect");
+    setEngineDiagnostics("启动时不自动检测 KataGo。点击 Auto Detect 才会扫描系统路径。");
   }, []);
   const invalidatePendingAnalysis = () => {
     analysisRequestRef.current += 1;
@@ -613,6 +604,10 @@ export function App() {
     setEngineProfile(profile);
     window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(profile));
   };
+  const appendEngineDebug = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setEngineDiagnostics((previous) => `[${timestamp}] ${message}\n${previous}`.slice(0, 12000));
+  };
   const saveCurrentEngineProfile = () => {
     if (!engineProfile) {
       setEngineStatus("没有可保存的引擎配置");
@@ -621,48 +616,85 @@ export function App() {
     const nextProfiles = mergeEngineProfiles(engineProfiles, [{ ...engineProfile, source: engineProfile.source ?? "用户配置" }]);
     setEngineProfiles(nextProfiles);
     saveEngineProfiles(nextProfiles);
+    setSelectedEngineProfileIndex(nextProfiles.findIndex((profile) => engineProfileKey(profile) === engineProfileKey(engineProfile)));
     window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(engineProfile));
     setEngineStatus(`已添加/更新引擎：${engineProfile.name}`);
   };
-  const selectEngineProfile = (profileKey: string) => {
-    const selected = engineProfiles.find((profile) => engineProfileKey(profile) === profileKey);
+  const addManualEngineProfile = (commandLine: string) => {
+    const trimmed = commandLine.trim();
+    if (!trimmed) {
+      setEngineStatus("手工命令为空");
+      return;
+    }
+    const manualProfile: EngineProfile = {
+      ...DEFAULT_ENGINE_PROFILE,
+      name: "手工 KataGo 命令",
+      executablePath: "",
+      modelPath: "",
+      configPath: "",
+      commandLine: trimmed,
+      exists: true,
+      source: "手工命令"
+    };
+    const nextProfiles = mergeEngineProfiles(engineProfiles, [manualProfile]);
+    const nextIndex = Math.max(0, nextProfiles.findIndex((profile) => engineProfileKey(profile) === engineProfileKey(manualProfile)));
+    setEngineProfiles(nextProfiles);
+    saveEngineProfiles(nextProfiles);
+    setSelectedEngineProfileIndex(nextIndex);
+    updateEngineProfile(nextProfiles[nextIndex] ?? manualProfile);
+    setEngineStatus("已添加手工 KataGo 命令");
+  };
+  const selectEngineProfile = (profileIndex: number) => {
+    const selected = engineProfiles[profileIndex];
     if (!selected) {
       return;
     }
+    setSelectedEngineProfileIndex(profileIndex);
     updateEngineProfile(selected);
     setEngineStatus(`已选择引擎：${selected.name}`);
   };
-  const deleteEngineProfile = (profileKey: string) => {
-    const selected = engineProfiles.find((profile) => engineProfileKey(profile) === profileKey);
+  const deleteEngineProfile = (profileIndex: number) => {
+    appendEngineDebug(`delete requested: index=${profileIndex}, count=${engineProfiles.length}, selectedIndex=${selectedEngineProfileIndex}`);
+    const selected = engineProfiles[profileIndex];
     if (!selected) {
+      appendEngineDebug(`delete aborted: invalid index=${profileIndex}, count=${engineProfiles.length}`);
+      setEngineStatus(`删除失败：无效行号 ${profileIndex + 1}`);
       return;
     }
+    const profileKey = engineProfileKey(selected);
     if (isProtectedEngineProfile(selected)) {
+      appendEngineDebug(`delete blocked: protected source="${selected.source ?? ""}", key="${profileKey}"`);
       setEngineStatus("内置默认引擎不可删除");
       return;
     }
-    if (!window.confirm(`删除引擎配置“${selected.name}”？`)) {
-      return;
-    }
-    const nextProfiles = engineProfiles.filter((profile) => engineProfileKey(profile) !== profileKey);
+    appendEngineDebug(
+      `delete confirmed: index=${profileIndex}, name="${selected.name}", source="${selected.source ?? ""}", engine="${selected.executablePath}", model="${selected.modelPath}", config="${selected.configPath}", key="${profileKey}"`
+    );
+    saveHiddenEngineProfileKey(profileKey);
+    const nextProfiles = [...engineProfiles];
+    nextProfiles.splice(profileIndex, 1);
     setEngineProfiles(nextProfiles);
     saveEngineProfiles(nextProfiles);
+    const nextIndex = nextProfiles.length === 0 ? 0 : Math.min(profileIndex, nextProfiles.length - 1);
+    setSelectedEngineProfileIndex(nextIndex);
     const activeKey = window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY);
     const currentKey = engineProfile ? engineProfileKey(engineProfile) : "";
     if (activeKey === profileKey) {
       window.localStorage.removeItem(ACTIVE_ENGINE_PROFILE_KEY);
     }
     if (currentKey === profileKey) {
-      const fallback = nextProfiles.find(isProtectedEngineProfile) ?? nextProfiles[0] ?? DEFAULT_ENGINE_PROFILE;
+      window.localStorage.removeItem(ENGINE_PROFILE_STORAGE_KEY);
+      const fallback = nextProfiles[Math.min(profileIndex, nextProfiles.length - 1)] ?? DEFAULT_ENGINE_PROFILE;
       updateEngineProfile(fallback);
-      setEngineStatus(`已删除引擎：${selected.name}，当前切换到 ${fallback.name}`);
+      appendEngineDebug(`delete completed: before=${engineProfiles.length}, after=${nextProfiles.length}, fallback="${fallback.name}"`);
+      setEngineStatus(`已删除第 ${profileIndex + 1} 行引擎：${selected.name}，当前切换到 ${fallback.name}`);
       return;
     }
-    setEngineStatus(`已删除引擎：${selected.name}`);
+    appendEngineDebug(`delete completed: before=${engineProfiles.length}, after=${nextProfiles.length}`);
+    setEngineStatus(`已删除第 ${profileIndex + 1} 行引擎：${selected.name}`);
   };
-  const moveEngineProfile = (profileKey: string, direction: "up" | "down") => {
-    const index = engineProfiles.findIndex((profile) => engineProfileKey(profile) === profileKey);
-    if (index < 0) {
+  const moveEngineProfile = (index: number, direction: "up" | "down") => {
+    if (index < 0 || index >= engineProfiles.length) {
       return;
     }
     const targetIndex = direction === "up" ? index - 1 : index + 1;
@@ -674,6 +706,7 @@ export function App() {
     nextProfiles.splice(targetIndex, 0, selected);
     setEngineProfiles(nextProfiles);
     saveEngineProfiles(nextProfiles);
+    setSelectedEngineProfileIndex(targetIndex);
     setEngineStatus(`已调整引擎顺序：${selected.name}`);
   };
   const setCurrentEngineAsDefault = () => {
@@ -701,12 +734,20 @@ export function App() {
     try {
       const result = await discoverEngineProfile(engineProfile);
       stopEngineProgressLog();
-      updateEngineProfile(result.selected);
-      const nextProfiles = mergeEngineProfiles(engineProfiles, result.candidates);
+      const visibleCandidates = filterHiddenEngineProfiles(result.candidates);
+      const nextProfiles = mergeEngineProfiles(engineProfiles, visibleCandidates);
+      const selectedKey = engineProfileKey(result.selected);
+      const selectedProfile =
+        nextProfiles.find((profile) => engineProfileKey(profile) === selectedKey) ??
+        nextProfiles.find((profile) => profile.exists) ??
+        nextProfiles[0] ??
+        DEFAULT_ENGINE_PROFILE;
+      updateEngineProfile(selectedProfile);
       setEngineProfiles(nextProfiles);
       saveEngineProfiles(nextProfiles);
+      setSelectedEngineProfileIndex(Math.max(0, nextProfiles.findIndex((profile) => engineProfileKey(profile) === engineProfileKey(selectedProfile))));
       setEngineDiagnostics(result.diagnostics);
-      setEngineStatus(result.selected.exists ? `已发现 ${result.selected.name}（${result.selected.source ?? "auto"}）` : "未发现完整 KataGo 配置");
+      setEngineStatus(selectedProfile.exists ? `已发现 ${selectedProfile.name}（${selectedProfile.source ?? "auto"}）` : "未发现完整 KataGo 配置");
     } catch (error) {
       stopEngineProgressLog();
       setEngineDiagnostics(String(error));
@@ -800,18 +841,9 @@ export function App() {
   const resetEngineProfile = async () => {
     window.localStorage.removeItem(ENGINE_PROFILE_STORAGE_KEY);
     window.localStorage.removeItem(ACTIVE_ENGINE_PROFILE_KEY);
-    if (!isTauriRuntime()) {
-      setEngineProfile(DEFAULT_ENGINE_PROFILE);
-      setEngineStatus("已重置引擎配置");
-      return;
-    }
-    const profile = await getDefaultEngineProfile();
-    setEngineProfile(profile);
-    const nextProfiles = mergeEngineProfiles(engineProfiles, [profile]);
-    setEngineProfiles(nextProfiles);
-    saveEngineProfiles(nextProfiles);
-    setEngineDiagnostics(`已重置为自动发现结果：${profile.source ?? "auto"}`);
-    setEngineStatus(profile.exists ? `已发现 ${profile.name}` : "未发现完整 KataGo 配置");
+    setEngineProfile(DEFAULT_ENGINE_PROFILE);
+    setEngineDiagnostics("已重置引擎配置。不会自动检测；需要扫描时请手动点击 Auto Detect。");
+    setEngineStatus("已重置引擎配置");
   };
   const showResearchBlockOnBoard = (blockId: string) => {
     const block = researchDocument.sections.flatMap((section) => section.blocks).find((item) => item.id === blockId);
@@ -1358,17 +1390,9 @@ export function App() {
     }
     let profileForAnalysis = engineProfile;
     if (!profileForAnalysis || !isCompleteEngineProfile(profileForAnalysis)) {
-      markAutoAnalysis("自动分析启动前正在检测 KataGo 配置...");
-      try {
-        const discovery = await discoverEngineProfile(profileForAnalysis);
-        profileForAnalysis = discovery.selected;
-        updateEngineProfile(discovery.selected);
-        setEngineDiagnostics((previous) => `${discovery.diagnostics}\n\n${previous}`.slice(0, 12000));
-      } catch (error) {
-        markAutoAnalysis(`自动检测 KataGo 失败: ${String(error)}`);
-        setIsAutoAnalyzing(false);
-        return;
-      }
+      markAutoAnalysis("AI 引擎还没有配置完成。请在 设置 > 引擎 中手动配置，或手动点击 Auto Detect。");
+      setIsAutoAnalyzing(false);
+      return;
     }
     if (!profileForAnalysis || !isCompleteEngineProfile(profileForAnalysis)) {
       markAutoAnalysis("AI 引擎还没有配置完成，不能自动分析。");
@@ -1961,6 +1985,7 @@ export function App() {
         language={language}
         open={isSettingsOpen}
         profile={engineProfile}
+        selectedEngineProfileIndex={selectedEngineProfileIndex}
         onAnalyze={analyzeCurrentPosition}
         onCandidateDisplayLimitChange={updateCandidateDisplayLimit}
         onClose={() => setIsSettingsOpen(false)}
@@ -1969,6 +1994,7 @@ export function App() {
         onAutoDetect={autoDetectEngine}
         onChoosePath={chooseEngineConfigPath}
         onDeleteProfile={deleteEngineProfile}
+        onManualProfileAdd={addManualEngineProfile}
         onMoveProfile={moveEngineProfile}
         onProbe={probeCurrentEngine}
         onProfileChange={updateEngineProfile}
@@ -2364,6 +2390,9 @@ function withVariationComment<T extends Extract<ResearchBlock, { type: "variatio
 }
 
 function isCompleteEngineProfile(profile: EngineProfile): boolean {
+  if (profile.commandLine.trim()) {
+    return true;
+  }
   return Boolean(profile.executablePath.trim() && profile.modelPath.trim() && profile.configPath.trim());
 }
 
@@ -2812,7 +2841,8 @@ function loadEngineProfile(): EngineProfile {
       ...value,
       executablePath: value.executablePath ?? "",
       modelPath: value.modelPath ?? "",
-      configPath: value.configPath ?? ""
+      configPath: value.configPath ?? "",
+      commandLine: value.commandLine ?? ""
     };
   } catch {
     return DEFAULT_ENGINE_PROFILE;
@@ -2822,9 +2852,9 @@ function loadEngineProfile(): EngineProfile {
 function loadEngineProfiles(): EngineProfile[] {
   try {
     const value = JSON.parse(window.localStorage.getItem(ENGINE_PROFILES_STORAGE_KEY) ?? "[]") as Partial<EngineProfile>[];
-    const profiles = value.map(normalizeEngineProfile).filter((profile) => profile.executablePath || profile.modelPath || profile.configPath);
+    const profiles = value.map(normalizeEngineProfile).filter((profile) => profile.executablePath || profile.modelPath || profile.configPath || profile.commandLine);
     const legacy = loadEngineProfile();
-    return mergeEngineProfiles(profiles, legacy.executablePath || legacy.modelPath || legacy.configPath ? [legacy] : []);
+    return mergeEngineProfiles(profiles, legacy.executablePath || legacy.modelPath || legacy.configPath || legacy.commandLine ? [legacy] : []);
   } catch {
     return [];
   }
@@ -2860,13 +2890,47 @@ function mergeEngineProfiles(existing: EngineProfile[], incoming: EngineProfile[
   return Array.from(map.values());
 }
 
+function loadHiddenEngineProfileKeys(): Set<string> {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(HIDDEN_ENGINE_PROFILE_KEYS) ?? "[]") as string[];
+    return new Set(value.filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveHiddenEngineProfileKey(profileKey: string) {
+  if (!profileKey) {
+    return;
+  }
+  const keys = loadHiddenEngineProfileKeys();
+  keys.add(profileKey);
+  window.localStorage.setItem(HIDDEN_ENGINE_PROFILE_KEYS, JSON.stringify(Array.from(keys)));
+}
+
+function filterHiddenEngineProfiles(profiles: EngineProfile[]): EngineProfile[] {
+  const hiddenKeys = loadHiddenEngineProfileKeys();
+  if (hiddenKeys.size === 0) {
+    return profiles;
+  }
+  return profiles.filter((profile) => !hiddenKeys.has(engineProfileKey(profile)));
+}
+
 function engineProfileKey(profile: EngineProfile): string {
-  return [profile.executablePath, profile.modelPath, profile.configPath].join("|");
+  if (profile.commandLine.trim()) {
+    return `manual:${profile.commandLine.trim().toLowerCase()}`;
+  }
+  const parts = [normalizeEnginePath(profile.executablePath), normalizeEnginePath(profile.modelPath), normalizeEnginePath(profile.configPath)];
+  return parts.some(Boolean) ? parts.join("|") : "";
+}
+
+function normalizeEnginePath(path: string): string {
+  return path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
 function isProtectedEngineProfile(profile: EngineProfile): boolean {
   const source = (profile.source ?? "").toLowerCase();
-  return source.includes("bundled") || source.includes("内置") || source.includes("known windows") || source.includes("已知");
+  return source.includes("known windows") || source.includes("windows 已知") || source.includes("windows known");
 }
 
 function normalizeCandidateDisplayLimit(value: unknown): number {

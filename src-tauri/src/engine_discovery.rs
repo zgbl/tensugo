@@ -11,6 +11,8 @@ pub struct EngineProfile {
     pub executable_path: String,
     pub model_path: String,
     pub config_path: String,
+    #[serde(default)]
+    pub command_line: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +42,7 @@ impl From<EngineProfileCandidate> for EngineProfile {
             executable_path: candidate.executable_path,
             model_path: candidate.model_path,
             config_path: candidate.config_path,
+            command_line: candidate.command_line,
         }
     }
 }
@@ -108,12 +111,30 @@ pub fn discover_engine(
 }
 
 fn profile_has_paths(profile: &EngineProfile) -> bool {
+    if !profile.command_line.trim().is_empty() {
+        return true;
+    }
     !profile.executable_path.trim().is_empty()
         || !profile.model_path.trim().is_empty()
         || !profile.config_path.trim().is_empty()
 }
 
 fn candidate_from_profile(profile: EngineProfile, source: &str) -> EngineProfileCandidate {
+    if !profile.command_line.trim().is_empty() {
+        return EngineProfileCandidate {
+            name: if profile.name.trim().is_empty() {
+                "手工 KataGo 命令".to_string()
+            } else {
+                profile.name
+            },
+            executable_path: profile.executable_path,
+            model_path: profile.model_path,
+            config_path: profile.config_path,
+            command_line: profile.command_line,
+            exists: false,
+            source: source.to_string(),
+        };
+    }
     let executable = PathBuf::from(profile.executable_path);
     let root = executable
         .parent()

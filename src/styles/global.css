@@ -1312,14 +1312,88 @@ button:hover {
   border: 1px solid #aeb8be;
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.28);
   color: #20242a;
-  height: min(820px, calc(100vh - 40px));
+  height: min(780px, calc(100vh - 40px));
   max-height: calc(100vh - 24px);
   max-width: calc(100vw - 24px);
-  min-height: 520px;
-  min-width: 760px;
+  min-height: 420px;
+  min-width: 620px;
   overflow: hidden;
-  resize: both;
-  width: min(900px, calc(100vw - 40px));
+  position: relative;
+  width: min(980px, calc(100vw - 40px));
+}
+
+.settings-dialog-resize-handle {
+  background: transparent;
+  position: absolute;
+  z-index: 5;
+}
+
+.settings-dialog-resize-handle.resize-n,
+.settings-dialog-resize-handle.resize-s {
+  height: 8px;
+  left: 12px;
+  right: 12px;
+}
+
+.settings-dialog-resize-handle.resize-n {
+  cursor: ns-resize;
+  top: 0;
+}
+
+.settings-dialog-resize-handle.resize-s {
+  bottom: 0;
+  cursor: ns-resize;
+}
+
+.settings-dialog-resize-handle.resize-e,
+.settings-dialog-resize-handle.resize-w {
+  bottom: 12px;
+  top: 12px;
+  width: 8px;
+}
+
+.settings-dialog-resize-handle.resize-e {
+  cursor: ew-resize;
+  right: 0;
+}
+
+.settings-dialog-resize-handle.resize-w {
+  cursor: ew-resize;
+  left: 0;
+}
+
+.settings-dialog-resize-handle.resize-ne,
+.settings-dialog-resize-handle.resize-nw,
+.settings-dialog-resize-handle.resize-se,
+.settings-dialog-resize-handle.resize-sw {
+  height: 16px;
+  width: 16px;
+}
+
+.settings-dialog-resize-handle.resize-ne {
+  cursor: nesw-resize;
+  right: 0;
+  top: 0;
+}
+
+.settings-dialog-resize-handle.resize-nw {
+  cursor: nwse-resize;
+  left: 0;
+  top: 0;
+}
+
+.settings-dialog-resize-handle.resize-se {
+  border-bottom: 12px solid #8fb0b5;
+  border-left: 12px solid transparent;
+  bottom: 3px;
+  cursor: nwse-resize;
+  right: 3px;
+}
+
+.settings-dialog-resize-handle.resize-sw {
+  bottom: 0;
+  cursor: nesw-resize;
+  left: 0;
 }
 
 .settings-dialog-header {
@@ -1389,6 +1463,20 @@ button:hover {
   background: #ffffff;
   border-color: #b8c3c8;
   color: #20242a;
+}
+
+.manual-engine-command {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  margin-top: 10px;
+}
+
+.manual-engine-command label {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 82px minmax(0, 1fr);
 }
 
 .settings-dialog .engine-status-line {
