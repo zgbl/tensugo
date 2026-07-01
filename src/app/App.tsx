@@ -122,6 +122,8 @@ const LAST_RESEARCH_SAVE_DIR_KEY = "tensugo.lastResearchSaveDir";
 const RESEARCH_EXPORT_SETTINGS_KEY = "tensugo.researchExportSettings";
 const INTERFACE_SETTINGS_KEY = "tensugo.interfaceSettings";
 const ENGINE_PROFILE_STORAGE_KEY = "tensugo.engineProfile";
+const ENGINE_PROFILES_STORAGE_KEY = "tensugo.engineProfiles";
+const ACTIVE_ENGINE_PROFILE_KEY = "tensugo.activeEngineProfileKey";
 const DEFAULT_CANDIDATE_DISPLAY_LIMIT = 5;
 const INITIAL_GAME_TREE = createEmptyGameTree(19, 7.5);
 const INITIAL_SELECTED_NODE_ID = "root";
@@ -140,6 +142,7 @@ export function App() {
   const [lastAction, setLastAction] = useState("空棋盘已就绪。点“开”选择 SGF，或点棋盘空交点开始摆棋。");
   const [sgfWarnings, setSgfWarnings] = useState<string[]>([]);
   const [engineProfile, setEngineProfile] = useState<EngineProfile | null>(() => loadEngineProfile());
+  const [engineProfiles, setEngineProfiles] = useState<EngineProfile[]>(() => loadEngineProfiles());
   const [engineStatus, setEngineStatus] = useState("引擎未配置");
   const [engineDiagnostics, setEngineDiagnostics] = useState("尚未运行引擎测试。");
   const [researchExportSettings, setResearchExportSettings] = useState<ResearchExportSettings>(() => loadResearchExportSettings());
@@ -326,7 +329,12 @@ export function App() {
 
     void discoverEngineProfile(loadEngineProfile())
       .then(async (profile) => {
-        setEngineProfile(profile.selected);
+        const nextProfiles = mergeEngineProfiles(loadEngineProfiles(), profile.candidates);
+        setEngineProfiles(nextProfiles);
+        saveEngineProfiles(nextProfiles);
+        const activeKey = window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY);
+        const activeProfile = nextProfiles.find((item) => engineProfileKey(item) === activeKey) ?? profile.selected;
+        setEngineProfile(activeProfile);
         setEngineStatus(profile.selected.exists ? `已发现 ${profile.selected.name}` : "未发现完整 KataGo 配置");
         setEngineDiagnostics(profile.diagnostics);
       })
@@ -579,6 +587,37 @@ export function App() {
     setEngineProfile(profile);
     window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(profile));
   };
+  const saveCurrentEngineProfile = () => {
+    if (!engineProfile) {
+      setEngineStatus("没有可保存的引擎配置");
+      return;
+    }
+    const nextProfiles = mergeEngineProfiles(engineProfiles, [{ ...engineProfile, source: engineProfile.source ?? "用户配置" }]);
+    setEngineProfiles(nextProfiles);
+    saveEngineProfiles(nextProfiles);
+    window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(engineProfile));
+    setEngineStatus(`已添加/更新引擎：${engineProfile.name}`);
+  };
+  const selectEngineProfile = (profileKey: string) => {
+    const selected = engineProfiles.find((profile) => engineProfileKey(profile) === profileKey);
+    if (!selected) {
+      return;
+    }
+    updateEngineProfile(selected);
+    setEngineStatus(`已选择引擎：${selected.name}`);
+  };
+  const setCurrentEngineAsDefault = () => {
+    if (!engineProfile) {
+      setEngineStatus("没有可设为默认的引擎配置");
+      return;
+    }
+    const nextProfiles = mergeEngineProfiles(engineProfiles, [engineProfile]);
+    setEngineProfiles(nextProfiles);
+    saveEngineProfiles(nextProfiles);
+    window.localStorage.setItem(ACTIVE_ENGINE_PROFILE_KEY, engineProfileKey(engineProfile));
+    window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(engineProfile));
+    setEngineStatus(`已设为默认引擎：${engineProfile.name}`);
+  };
   const autoDetectEngine = async () => {
     if (!isTauriRuntime()) {
       setEngineStatus("浏览器预览：请在 App 中自动检测引擎");
@@ -588,6 +627,9 @@ export function App() {
     try {
       const result = await discoverEngineProfile(engineProfile);
       updateEngineProfile(result.selected);
+      const nextProfiles = mergeEngineProfiles(engineProfiles, result.candidates);
+      setEngineProfiles(nextProfiles);
+      saveEngineProfiles(nextProfiles);
       setEngineDiagnostics(result.diagnostics);
       setEngineStatus(result.selected.exists ? `已发现 ${result.selected.name}（${result.selected.source ?? "auto"}）` : "未发现完整 KataGo 配置");
     } catch (error) {
@@ -669,6 +711,7 @@ export function App() {
   };
   const resetEngineProfile = async () => {
     window.localStorage.removeItem(ENGINE_PROFILE_STORAGE_KEY);
+    window.localStorage.removeItem(ACTIVE_ENGINE_PROFILE_KEY);
     if (!isTauriRuntime()) {
       setEngineProfile(DEFAULT_ENGINE_PROFILE);
       setEngineStatus("已重置引擎配置");
@@ -676,6 +719,9 @@ export function App() {
     }
     const profile = await getDefaultEngineProfile();
     setEngineProfile(profile);
+    const nextProfiles = mergeEngineProfiles(engineProfiles, [profile]);
+    setEngineProfiles(nextProfiles);
+    saveEngineProfiles(nextProfiles);
     setEngineDiagnostics(`已重置为自动发现结果：${profile.source ?? "auto"}`);
     setEngineStatus(profile.exists ? `已发现 ${profile.name}` : "未发现完整 KataGo 配置");
   };
@@ -1813,6 +1859,7 @@ export function App() {
       <SettingsDialog
         candidateDisplayLimit={candidateDisplayLimit}
         engineDiagnostics={engineDiagnostics}
+        engineProfiles={engineProfiles}
         engineStatus={engineStatus}
         exportSettings={researchExportSettings}
         isAnalyzing={isAnalyzing}
@@ -1829,6 +1876,9 @@ export function App() {
         onProbe={probeCurrentEngine}
         onProfileChange={updateEngineProfile}
         onResetProfile={resetEngineProfile}
+        onSaveProfile={saveCurrentEngineProfile}
+        onSelectProfile={selectEngineProfile}
+        onSetDefaultProfile={setCurrentEngineAsDefault}
         t={t}
       />
       <AboutDialog open={isAboutOpen} onClose={() => setIsAboutOpen(false)} />
@@ -2670,6 +2720,51 @@ function loadEngineProfile(): EngineProfile {
   } catch {
     return DEFAULT_ENGINE_PROFILE;
   }
+}
+
+function loadEngineProfiles(): EngineProfile[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(ENGINE_PROFILES_STORAGE_KEY) ?? "[]") as Partial<EngineProfile>[];
+    const profiles = value.map(normalizeEngineProfile).filter((profile) => profile.executablePath || profile.modelPath || profile.configPath);
+    const legacy = loadEngineProfile();
+    return mergeEngineProfiles(profiles, legacy.executablePath || legacy.modelPath || legacy.configPath ? [legacy] : []);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeEngineProfile(value: Partial<EngineProfile>): EngineProfile {
+  return {
+    ...DEFAULT_ENGINE_PROFILE,
+    ...value,
+    name: value.name || "用户 KataGo",
+    executablePath: value.executablePath ?? "",
+    modelPath: value.modelPath ?? "",
+    configPath: value.configPath ?? "",
+    commandLine: value.commandLine ?? "",
+    exists: Boolean(value.exists),
+    source: value.source
+  };
+}
+
+function saveEngineProfiles(profiles: EngineProfile[]) {
+  window.localStorage.setItem(ENGINE_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
+}
+
+function mergeEngineProfiles(existing: EngineProfile[], incoming: EngineProfile[]): EngineProfile[] {
+  const map = new Map<string, EngineProfile>();
+  for (const profile of [...existing, ...incoming].map(normalizeEngineProfile)) {
+    const key = engineProfileKey(profile);
+    if (!key) {
+      continue;
+    }
+    map.set(key, { ...map.get(key), ...profile });
+  }
+  return Array.from(map.values());
+}
+
+function engineProfileKey(profile: EngineProfile): string {
+  return [profile.executablePath, profile.modelPath, profile.configPath].join("|");
 }
 
 function normalizeCandidateDisplayLimit(value: unknown): number {

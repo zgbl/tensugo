@@ -262,11 +262,15 @@ fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             diagnostics.push(format!("version exit status: {}", output.status));
+            diagnostics.push(engine_status_report(
+                &profile,
+                Some(&output.status.to_string()),
+            ));
             if !stdout.trim().is_empty() {
                 diagnostics.push(stdout);
             }
             diagnostics.push(stderr.clone());
-            diagnostics.push(engine_start_hint(&stderr));
+            diagnostics.push(engine_start_hint(&diagnostics.join("\n")));
             EngineProbeResult {
                 ok: false,
                 summary: "KataGo 启动失败".to_string(),
@@ -401,34 +405,124 @@ fn run_engine_start_test(
 fn engine_start_hint(log: &str) -> String {
     let lower = log.to_ascii_lowercase();
     let mut hints = Vec::new();
-    if log.trim().is_empty() {
-        hints.push("提示: KataGo 未输出错误信息就退出。CUDA/cuDNN/NVIDIA 驱动或 VC++ 运行库不匹配时，Windows 可能只返回退出码而不写 stderr。请先在命令行运行 `katago.exe version`，并确认下载的是适合本机 CUDA/显卡驱动的版本。");
+    if lower.contains("0xc0000135") {
+        hints.push("Recommendation: Windows could not load a required runtime library. Verify the Microsoft Visual C++ Runtime, and if this is a CUDA build, verify the CUDA runtime and cuDNN libraries. To identify the exact missing DLL, open katago.exe using Dependencies.exe (modern Dependency Walker).");
     }
-    if lower.contains("cudart")
-        || lower.contains("cudnn")
-        || lower.contains("cuda")
-        || lower.contains("nvcuda")
-        || lower.contains("tensorrt")
-    {
-        hints.push("提示: 当前 KataGo 是 CUDA/GPU 版本。请确认已安装匹配的 NVIDIA 驱动、CUDA Runtime 和 cuDNN，并优先使用 NVIDIA 10xx-50xx 系列独显运行。GTX 1080 建议优先使用 CUDA 版，不要选择 TensorRT 专用包。");
+    if lower.contains("0xc000007b") {
+        hints.push("Recommendation: Windows reported an invalid image format. Verify that KataGo and all runtime libraries are x64 and not mixed with 32-bit DLLs.");
     }
     if lower.contains("tuning") || lower.contains("timing cache") {
-        hints.push("提示: GPU 版 KataGo 首次启动可能会进行调优或生成缓存，耗时数十秒到数分钟。缓存生成后后续启动会明显变快。");
+        hints.push("Note: GPU builds can tune or generate caches on first start. This can take seconds to minutes; later starts are usually faster.");
     }
     if lower.contains("dll") || lower.contains("126") || lower.contains("module could not be found")
     {
-        hints.push("提示: Windows 报 DLL 缺失时，通常需要把 KataGo 发布包完整解压，保留 exe 同目录下的所有 dll，或安装对应 VC++/CUDA 运行库。");
+        hints.push("Recommendation: Windows reported a missing module. Keep the KataGo package fully extracted, preserve DLLs next to katago.exe, and verify required runtimes.");
     }
     if lower.contains("no cuda") || lower.contains("no gpu") || lower.contains("no devices") {
-        hints.push(
-            "提示: 没有检测到可用 NVIDIA GPU。请检查显卡驱动，或之后改用 CPU/OpenCL 版本 KataGo。",
-        );
+        hints.push("Recommendation: KataGo reported no usable GPU device. Check GPU drivers or use another KataGo backend.");
     }
 
     if hints.is_empty() {
-        "提示: 如果这是新下载的 GPU 版 KataGo，请确认发布包完整解压，模型文件与 GTP 配置文件路径正确。".to_string()
+        "Recommendation: Verify the KataGo package is fully extracted and that engine, model, and config paths are correct.".to_string()
     } else {
         hints.join("\n")
+    }
+}
+
+fn engine_status_report(profile: &EngineProfile, exit_status: Option<&str>) -> String {
+    let mut lines = Vec::new();
+    lines.push("Engine Status".to_string());
+    lines.push("".to_string());
+    lines.push(status_line(
+        "Engine executable found",
+        std::path::Path::new(&profile.executable_path).exists(),
+    ));
+    lines.push(status_line(
+        "Model found",
+        std::path::Path::new(&profile.model_path).exists(),
+    ));
+    lines.push(status_line(
+        "Config found",
+        std::path::Path::new(&profile.config_path).exists(),
+    ));
+    lines.push(status_line("Profile", true));
+
+    if let Some(status) = exit_status {
+        lines.push(status_line("Engine startup failed", false));
+        lines.push("".to_string());
+        if let Some(code) = extract_windows_exit_code(status) {
+            lines.push("Exit code:".to_string());
+            lines.push(code.to_string());
+            if let Some(info) = windows_exit_code_info(code) {
+                lines.push("".to_string());
+                lines.push("Meaning:".to_string());
+                lines.push(info.name.to_string());
+                lines.push("".to_string());
+                lines.push(info.description.to_string());
+                if !info.possible_missing_libraries.is_empty() {
+                    lines.push("".to_string());
+                    lines.push("Possible missing runtime libraries:".to_string());
+                    for library in info.possible_missing_libraries {
+                        lines.push(format!("- {}", library));
+                    }
+                    lines.push("".to_string());
+                    lines.push(
+                        "These are possible missing libraries, not a confirmed list.".to_string(),
+                    );
+                }
+            }
+        } else {
+            lines.push("Exit status:".to_string());
+            lines.push(status.to_string());
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn status_line(label: &str, ok: bool) -> String {
+    format!("{} {}", if ok { "OK" } else { "FAIL" }, label)
+}
+
+struct WindowsExitCodeInfo {
+    name: &'static str,
+    description: &'static str,
+    possible_missing_libraries: &'static [&'static str],
+}
+
+fn extract_windows_exit_code(status: &str) -> Option<&str> {
+    let lower = status.to_ascii_lowercase();
+    ["0xc0000135", "0xc000007b", "0xc0000005"]
+        .into_iter()
+        .find(|code| lower.contains(code))
+}
+
+fn windows_exit_code_info(code: &str) -> Option<WindowsExitCodeInfo> {
+    match code.to_ascii_lowercase().as_str() {
+        "0xc0000135" => Some(WindowsExitCodeInfo {
+            name: "STATUS_DLL_NOT_FOUND",
+            description: "Windows could not load one or more required DLLs before KataGo started.",
+            possible_missing_libraries: &[
+                "vcruntime140.dll",
+                "msvcp140.dll",
+                "cudart64_12.dll",
+                "cublas64_12.dll",
+                "cublasLt64_12.dll",
+                "cudnn64_8.dll",
+            ],
+        }),
+        "0xc000007b" => Some(WindowsExitCodeInfo {
+            name: "STATUS_INVALID_IMAGE_FORMAT",
+            description:
+                "Windows loaded a binary or DLL with the wrong architecture or an invalid format.",
+            possible_missing_libraries: &[],
+        }),
+        "0xc0000005" => Some(WindowsExitCodeInfo {
+            name: "STATUS_ACCESS_VIOLATION",
+            description: "The engine process crashed while accessing memory.",
+            possible_missing_libraries: &[],
+        }),
+        _ => None,
     }
 }
 

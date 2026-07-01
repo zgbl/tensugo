@@ -10,7 +10,11 @@ type EngineConfigPanelProps = {
   onProfileChange: (profile: EngineProfile) => void;
   onProbe: () => void;
   onResetProfile: () => void;
+  onSaveProfile: () => void;
+  onSelectProfile: (profileKey: string) => void;
+  onSetDefaultProfile: () => void;
   profile: EngineProfile | null;
+  profiles: EngineProfile[];
 };
 
 export function EngineConfigPanel({
@@ -23,7 +27,11 @@ export function EngineConfigPanel({
   onProfileChange,
   onProbe,
   onResetProfile,
-  profile
+  onSaveProfile,
+  onSelectProfile,
+  onSetDefaultProfile,
+  profile,
+  profiles
 }: EngineConfigPanelProps) {
   const updateProfile = (patch: Partial<EngineProfile>) => {
     const base = profile ?? {
@@ -40,6 +48,43 @@ export function EngineConfigPanel({
   return (
     <div className="engine-config-panel">
       <h2>引擎配置</h2>
+      <section className="engine-profile-list" aria-label="已配置引擎">
+        <div className="engine-profile-list-header">
+          <strong>已配置引擎</strong>
+        </div>
+        <div className="engine-profile-table-wrap">
+          <table className="engine-profile-table">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>来源</th>
+                <th>状态</th>
+                <th>模型</th>
+              </tr>
+            </thead>
+            <tbody>
+              {profiles.length === 0 ? (
+                <tr>
+                  <td colSpan={4}>尚未保存引擎。Auto Detect 会保留可用默认引擎，手动配置请保存到列表。</td>
+                </tr>
+              ) : (
+                profiles.map((item) => {
+                  const key = engineProfileKey(item);
+                  const selected = profile ? engineProfileKey(profile) === key : false;
+                  return (
+                    <tr className={selected ? "active" : ""} key={key} onClick={() => onSelectProfile(key)}>
+                      <td>{item.name}</td>
+                      <td>{item.source ?? "用户配置"}</td>
+                      <td>{item.exists ? "可用" : "待测试"}</td>
+                      <td>{fileName(item.modelPath)}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
       <div className="engine-status-card">
         <span>当前状态</span>
         <strong>{engineStatus}</strong>
@@ -87,6 +132,8 @@ export function EngineConfigPanel({
         <button type="button" onClick={onAutoDetect}>Auto Detect</button>
         <button type="button" onClick={onProbe}>Test Engine</button>
         <button type="button" onClick={() => onChoosePath("config")}>Choose Config</button>
+        <button type="button" onClick={onSaveProfile}>保存到列表</button>
+        <button type="button" onClick={onSetDefaultProfile}>设为默认</button>
         <button type="button" onClick={onResetProfile}>Reset to Default</button>
         <button type="button" onClick={onAnalyze} disabled={isAnalyzing}>
           {isAnalyzing ? "分析中" : "分析当前局面"}
@@ -98,4 +145,12 @@ export function EngineConfigPanel({
       </details>
     </div>
   );
+}
+
+function engineProfileKey(profile: EngineProfile): string {
+  return [profile.executablePath, profile.modelPath, profile.configPath].join("|");
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() ?? "";
 }

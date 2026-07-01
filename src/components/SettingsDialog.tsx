@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import { EngineConfigPanel } from "./EngineConfigPanel";
 import type { EngineProfile } from "../engine/types";
 import { LANGUAGE_OPTIONS, type AppLanguage, type Translator } from "../i18n";
@@ -7,6 +7,7 @@ import type { ResearchExportSettings } from "../research/renderHtml";
 type SettingsDialogProps = {
   candidateDisplayLimit: number;
   engineDiagnostics: string;
+  engineProfiles: EngineProfile[];
   engineStatus: string;
   exportSettings: ResearchExportSettings;
   isAnalyzing: boolean;
@@ -21,6 +22,9 @@ type SettingsDialogProps = {
   onProbe: () => void;
   onProfileChange: (profile: EngineProfile) => void;
   onResetProfile: () => void;
+  onSaveProfile: () => void;
+  onSelectProfile: (profileKey: string) => void;
+  onSetDefaultProfile: () => void;
   open: boolean;
   profile: EngineProfile | null;
   t: Translator;
@@ -29,6 +33,7 @@ type SettingsDialogProps = {
 export function SettingsDialog({
   candidateDisplayLimit,
   engineDiagnostics,
+  engineProfiles,
   engineStatus,
   exportSettings,
   isAnalyzing,
@@ -43,11 +48,49 @@ export function SettingsDialog({
   onProbe,
   onProfileChange,
   onResetProfile,
+  onSaveProfile,
+  onSelectProfile,
+  onSetDefaultProfile,
   open,
   profile,
   t
 }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<"engine" | "export" | "interface" | "language">("engine");
+  const [dialogOffset, setDialogOffset] = useState({ x: 0, y: 0 });
+  const dragStartRef = useRef<{ pointerX: number; pointerY: number; x: number; y: number } | null>(null);
+
+  const startDrag = (event: React.MouseEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    dragStartRef.current = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      x: dialogOffset.x,
+      y: dialogOffset.y
+    };
+    const handleMove = (moveEvent: MouseEvent) => {
+      const start = dragStartRef.current;
+      if (!start) {
+        return;
+      }
+      setDialogOffset({
+        x: start.x + moveEvent.clientX - start.pointerX,
+        y: start.y + moveEvent.clientY - start.pointerY
+      });
+    };
+    const handleUp = () => {
+      dragStartRef.current = null;
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  };
+
+  const dialogStyle: CSSProperties = {
+    transform: `translate(${dialogOffset.x}px, ${dialogOffset.y}px)`
+  };
 
   if (!open) {
     return null;
@@ -60,9 +103,10 @@ export function SettingsDialog({
         aria-modal="true"
         className="settings-dialog"
         role="dialog"
+        style={dialogStyle}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="settings-dialog-header">
+        <header className="settings-dialog-header" onMouseDown={startDrag}>
           <h2>{t("settings")}</h2>
           <button type="button" onClick={onClose}>{t("close")}</button>
         </header>
@@ -79,6 +123,7 @@ export function SettingsDialog({
             <EngineConfigPanel
               diagnostics={engineDiagnostics}
               engineStatus={engineStatus}
+              profiles={engineProfiles}
               isAnalyzing={isAnalyzing}
               profile={profile}
               onAnalyze={onAnalyze}
@@ -87,6 +132,9 @@ export function SettingsDialog({
               onProbe={onProbe}
               onProfileChange={onProfileChange}
               onResetProfile={onResetProfile}
+              onSaveProfile={onSaveProfile}
+              onSelectProfile={onSelectProfile}
+              onSetDefaultProfile={onSetDefaultProfile}
             />
           ) : activeTab === "export" ? (
             <ExportSettingsPanel settings={exportSettings} onChange={onExportSettingsChange} t={t} />
