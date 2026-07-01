@@ -608,12 +608,58 @@ export function App() {
     if (!result.selected || !result.path) {
       return;
     }
-    const patch =
-      kind === "engine"
-        ? { executablePath: result.path }
-        : kind === "model"
-        ? { modelPath: result.path }
-        : { configPath: result.path };
+    if (kind === "engine") {
+      const baseProfile = {
+        ...(engineProfile ?? DEFAULT_ENGINE_PROFILE),
+        executablePath: result.path,
+        modelPath: "",
+        configPath: "",
+        name: engineProfile?.name || "用户 KataGo",
+        source: "用户选择"
+      };
+      try {
+        setEngineStatus("正在根据 katago.exe 自动查找模型和配置...");
+        const discovery = await discoverEngineProfile(baseProfile);
+        updateEngineProfile(discovery.selected);
+        setEngineDiagnostics(discovery.diagnostics);
+        setEngineStatus(
+          discovery.selected.exists
+            ? `已配置 ${discovery.selected.name}（${discovery.selected.source ?? "auto"}）`
+            : "已选择 katago.exe，但还需要模型或配置文件"
+        );
+      } catch (error) {
+        updateEngineProfile(baseProfile);
+        setEngineDiagnostics(String(error));
+        setEngineStatus(`已选择 katago.exe，自动补全失败: ${String(error)}`);
+      }
+      return;
+    }
+    if (kind === "model") {
+      const baseProfile = {
+        ...(engineProfile ?? DEFAULT_ENGINE_PROFILE),
+        modelPath: result.path,
+        configPath: "",
+        name: engineProfile?.name || "用户 KataGo",
+        source: "用户选择"
+      };
+      try {
+        setEngineStatus("正在根据权重文件自动查找 GTP 配置...");
+        const discovery = await discoverEngineProfile(baseProfile);
+        updateEngineProfile(discovery.selected);
+        setEngineDiagnostics(discovery.diagnostics);
+        setEngineStatus(
+          discovery.selected.exists
+            ? `已配置 ${discovery.selected.name}（${discovery.selected.source ?? "auto"}）`
+            : "已选择权重文件，但还需要 katago.exe 或配置文件"
+        );
+      } catch (error) {
+        updateEngineProfile(baseProfile);
+        setEngineDiagnostics(String(error));
+        setEngineStatus(`已选择权重文件，自动补全失败: ${String(error)}`);
+      }
+      return;
+    }
+    const patch = { configPath: result.path };
     updateEngineProfile({
       ...(engineProfile ?? DEFAULT_ENGINE_PROFILE),
       ...patch,

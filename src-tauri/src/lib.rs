@@ -16,7 +16,7 @@ const ANALYSIS_COLLECT_MIN_MS: u64 = 120;
 const ANALYSIS_COLLECT_MAX_MS: u64 = 500;
 const CONTINUOUS_ANALYSIS_INTERVAL_CS: usize = 30;
 const ANALYSIS_BOOT_WAIT_MS: u64 = 300_000;
-const ENGINE_TEST_BOOT_WAIT_MS: u64 = 15_000;
+const ENGINE_TEST_BOOT_WAIT_MS: u64 = 180_000;
 const PDF_EXPORT_TIMEOUT_MS: u64 = 45_000;
 
 struct EngineState {
@@ -259,8 +259,14 @@ fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
             run_engine_start_test(&app, &profile, diagnostics)
         }
         Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            diagnostics.push(format!("version exit status: {}", output.status));
+            if !stdout.trim().is_empty() {
+                diagnostics.push(stdout);
+            }
             diagnostics.push(stderr.clone());
+            diagnostics.push(engine_start_hint(&stderr));
             EngineProbeResult {
                 ok: false,
                 summary: "KataGo 启动失败".to_string(),
@@ -270,7 +276,12 @@ fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
         Err(error) => EngineProbeResult {
             ok: false,
             summary: "无法执行 KataGo".to_string(),
-            diagnostics: format!("{}\n{}", diagnostics.join("\n"), error),
+            diagnostics: format!(
+                "{}\n{}\n{}",
+                diagnostics.join("\n"),
+                error,
+                engine_start_hint(&error.to_string())
+            ),
         },
     }
 }
@@ -309,6 +320,7 @@ fn run_engine_start_test(
         Ok(child) => child,
         Err(error) => {
             diagnostics.push(error.to_string());
+            diagnostics.push(engine_start_hint(&error.to_string()));
             return EngineProbeResult {
                 ok: false,
                 summary: "KataGo GTP 启动失败".to_string(),
@@ -337,6 +349,7 @@ fn run_engine_start_test(
                 boot_log.extend(drain_receiver(&stderr_rx));
                 diagnostics.push(format!("gtp exited during boot: {}", status));
                 diagnostics.push(boot_log.join("\n"));
+                diagnostics.push(engine_start_hint(&diagnostics.join("\n")));
                 return EngineProbeResult {
                     ok: false,
                     summary: "KataGo GTP 启动期间退出".to_string(),
@@ -376,8 +389,46 @@ fn run_engine_start_test(
         EngineProbeResult {
             ok: false,
             summary: "KataGo GTP 启动超时".to_string(),
-            diagnostics: diagnostics.join("\n"),
+            diagnostics: format!(
+                "{}\n{}",
+                diagnostics.join("\n"),
+                engine_start_hint(&diagnostics.join("\n"))
+            ),
         }
+    }
+}
+
+fn engine_start_hint(log: &str) -> String {
+    let lower = log.to_ascii_lowercase();
+    let mut hints = Vec::new();
+    if log.trim().is_empty() {
+        hints.push("提示: KataGo 未输出错误信息就退出。CUDA/cuDNN/NVIDIA 驱动或 VC++ 运行库不匹配时，Windows 可能只返回退出码而不写 stderr。请先在命令行运行 `katago.exe version`，并确认下载的是适合本机 CUDA/显卡驱动的版本。");
+    }
+    if lower.contains("cudart")
+        || lower.contains("cudnn")
+        || lower.contains("cuda")
+        || lower.contains("nvcuda")
+        || lower.contains("tensorrt")
+    {
+        hints.push("提示: 当前 KataGo 是 CUDA/GPU 版本。请确认已安装匹配的 NVIDIA 驱动、CUDA Runtime 和 cuDNN，并优先使用 NVIDIA 10xx-50xx 系列独显运行。GTX 1080 建议优先使用 CUDA 版，不要选择 TensorRT 专用包。");
+    }
+    if lower.contains("tuning") || lower.contains("timing cache") {
+        hints.push("提示: GPU 版 KataGo 首次启动可能会进行调优或生成缓存，耗时数十秒到数分钟。缓存生成后后续启动会明显变快。");
+    }
+    if lower.contains("dll") || lower.contains("126") || lower.contains("module could not be found")
+    {
+        hints.push("提示: Windows 报 DLL 缺失时，通常需要把 KataGo 发布包完整解压，保留 exe 同目录下的所有 dll，或安装对应 VC++/CUDA 运行库。");
+    }
+    if lower.contains("no cuda") || lower.contains("no gpu") || lower.contains("no devices") {
+        hints.push(
+            "提示: 没有检测到可用 NVIDIA GPU。请检查显卡驱动，或之后改用 CPU/OpenCL 版本 KataGo。",
+        );
+    }
+
+    if hints.is_empty() {
+        "提示: 如果这是新下载的 GPU 版 KataGo，请确认发布包完整解压，模型文件与 GTP 配置文件路径正确。".to_string()
+    } else {
+        hints.join("\n")
     }
 }
 

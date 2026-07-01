@@ -56,8 +56,19 @@ pub fn choose_save_path(
 }
 
 pub fn choose_file_path(kind: &str) -> Result<Option<PathBuf>, String> {
-    Err(format!(
-        "{} 文件选择器尚未接入当前平台。可以先手动粘贴路径。",
-        kind
-    ))
+    let mut dialog = rfd::FileDialog::new();
+    dialog = match kind {
+        "engine" => dialog
+            .set_title("选择 katago.exe")
+            .add_filter("KataGo Engine", &["exe"]),
+        "model" => dialog
+            .set_title("选择 KataGo 权重文件")
+            .add_filter("KataGo Model", &["gz", "bin", "txt"]),
+        "config" => dialog
+            .set_title("选择 KataGo GTP 配置")
+            .add_filter("KataGo Config", &["cfg"]),
+        _ => dialog.set_title("选择文件"),
+    };
+
+    Ok(dialog.pick_file())
 }

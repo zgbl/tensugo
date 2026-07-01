@@ -114,11 +114,32 @@ fn profile_has_paths(profile: &EngineProfile) -> bool {
 }
 
 fn candidate_from_profile(profile: EngineProfile, source: &str) -> EngineProfileCandidate {
+    let executable = PathBuf::from(profile.executable_path);
+    let root = executable
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let model = if profile.model_path.trim().is_empty() {
+        find_first_model_near_engine(&root).unwrap_or_default()
+    } else {
+        PathBuf::from(profile.model_path)
+    };
+    let config = if profile.config_path.trim().is_empty() {
+        find_first_config_near_engine(&root).unwrap_or_default()
+    } else {
+        PathBuf::from(profile.config_path)
+    };
+    let name = if profile.name.trim().is_empty() {
+        "用户 KataGo".to_string()
+    } else {
+        profile.name
+    };
+
     EngineProfileCandidate {
-        name: profile.name,
-        executable_path: profile.executable_path,
-        model_path: profile.model_path,
-        config_path: profile.config_path,
+        name,
+        executable_path: executable.display().to_string(),
+        model_path: model.display().to_string(),
+        config_path: config.display().to_string(),
         command_line: String::new(),
         exists: false,
         source: source.to_string(),
@@ -230,6 +251,10 @@ fn find_first_model(root: &Path) -> Option<PathBuf> {
     find_first_with_extensions(root, &["bin.gz", "txt.gz", "gz"])
 }
 
+fn find_first_model_near_engine(root: &Path) -> Option<PathBuf> {
+    find_first_with_extensions_in_dirs(&engine_related_dirs(root), &["bin.gz", "txt.gz", "gz"])
+}
+
 fn find_first_config(root: &Path) -> Option<PathBuf> {
     find_first_config_in_dirs(&[
         root.to_path_buf(),
@@ -239,15 +264,44 @@ fn find_first_config(root: &Path) -> Option<PathBuf> {
     ])
 }
 
+fn find_first_config_near_engine(root: &Path) -> Option<PathBuf> {
+    find_first_config_in_dirs(&engine_related_dirs(root))
+}
+
+fn engine_related_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for base in root.ancestors().take(5) {
+        dirs.push(base.to_path_buf());
+        dirs.push(base.join("models"));
+        dirs.push(base.join("Models"));
+        dirs.push(base.join("weights"));
+        dirs.push(base.join("Weights"));
+        dirs.push(base.join("configs"));
+        dirs.push(base.join("katago_configs"));
+        dirs.push(base.join("share").join("katago"));
+        dirs.push(base.join("share").join("katago").join("models"));
+        dirs.push(base.join("share").join("katago").join("configs"));
+    }
+    dirs
+}
+
 fn find_first_with_extensions(root: &Path, extensions: &[&str]) -> Option<PathBuf> {
-    for dir in [
-        root.to_path_buf(),
-        root.join("models"),
-        root.join("configs"),
-        root.join("share").join("katago"),
-        root.join("share").join("katago").join("models"),
-        root.join("share").join("katago").join("configs"),
-    ] {
+    find_first_with_extensions_in_dirs(
+        &[
+            root.to_path_buf(),
+            root.join("models"),
+            root.join("configs"),
+            root.join("share").join("katago"),
+            root.join("share").join("katago").join("models"),
+            root.join("share").join("katago").join("configs"),
+        ],
+        extensions,
+    )
+}
+
+fn find_first_with_extensions_in_dirs(dirs: &[PathBuf], extensions: &[&str]) -> Option<PathBuf> {
+    let mut best = None;
+    for dir in dirs {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(_) => continue,
@@ -262,11 +316,34 @@ fn find_first_with_extensions(root: &Path, extensions: &[&str]) -> Option<PathBu
                 .and_then(|value| value.to_str())
                 .unwrap_or_default();
             if extensions.iter().any(|extension| name.ends_with(extension)) {
-                return Some(path);
+                if best.as_ref().map_or(true, |current: &PathBuf| {
+                    model_rank(&path) > model_rank(current)
+                }) {
+                    best = Some(path);
+                }
             }
         }
     }
-    None
+    best
+}
+
+fn model_rank(path: &Path) -> usize {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut score = 0;
+    if name.ends_with(".bin.gz") {
+        score += 20;
+    }
+    if name.contains("kata1-") {
+        score += 10;
+    }
+    if name.contains("b28") || name.contains("b40") || name.contains("b60") {
+        score += 5;
+    }
+    score
 }
 
 fn find_first_config_in_dirs(dirs: &[PathBuf]) -> Option<PathBuf> {
