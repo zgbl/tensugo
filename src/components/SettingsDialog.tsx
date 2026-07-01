@@ -19,6 +19,8 @@ type SettingsDialogProps = {
   onLanguageChange: (language: AppLanguage) => void;
   onAutoDetect: () => void;
   onChoosePath: (kind: "engine" | "model" | "config") => void;
+  onDeleteProfile: (profileKey: string) => void;
+  onMoveProfile: (profileKey: string, direction: "up" | "down") => void;
   onProbe: () => void;
   onProfileChange: (profile: EngineProfile) => void;
   onResetProfile: () => void;
@@ -45,6 +47,8 @@ export function SettingsDialog({
   onLanguageChange,
   onAutoDetect,
   onChoosePath,
+  onDeleteProfile,
+  onMoveProfile,
   onProbe,
   onProfileChange,
   onResetProfile,
@@ -129,6 +133,8 @@ export function SettingsDialog({
               onAnalyze={onAnalyze}
               onAutoDetect={onAutoDetect}
               onChoosePath={onChoosePath}
+              onDeleteProfile={onDeleteProfile}
+              onMoveProfile={onMoveProfile}
               onProbe={onProbe}
               onProfileChange={onProfileChange}
               onResetProfile={onResetProfile}

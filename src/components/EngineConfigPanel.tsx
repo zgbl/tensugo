@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { EngineProfile } from "../engine/types";
 
 type EngineConfigPanelProps = {
@@ -9,6 +10,8 @@ type EngineConfigPanelProps = {
   onChoosePath: (kind: "engine" | "model" | "config") => void;
   onProfileChange: (profile: EngineProfile) => void;
   onProbe: () => void;
+  onDeleteProfile: (profileKey: string) => void;
+  onMoveProfile: (profileKey: string, direction: "up" | "down") => void;
   onResetProfile: () => void;
   onSaveProfile: () => void;
   onSelectProfile: (profileKey: string) => void;
@@ -24,6 +27,8 @@ export function EngineConfigPanel({
   onAnalyze,
   onAutoDetect,
   onChoosePath,
+  onDeleteProfile,
+  onMoveProfile,
   onProfileChange,
   onProbe,
   onResetProfile,
@@ -33,6 +38,7 @@ export function EngineConfigPanel({
   profile,
   profiles
 }: EngineConfigPanelProps) {
+  const diagnosticsRef = useRef<HTMLPreElement | null>(null);
   const updateProfile = (patch: Partial<EngineProfile>) => {
     const base = profile ?? {
       name: "本机 KataGo",
@@ -44,6 +50,18 @@ export function EngineConfigPanel({
     };
     onProfileChange({ ...base, ...patch });
   };
+  const selectedKey = profile ? engineProfileKey(profile) : "";
+  const selectedProfile = profiles.find((item) => engineProfileKey(item) === selectedKey);
+  const selectedIndex = profiles.findIndex((item) => engineProfileKey(item) === selectedKey);
+  const selectedLocked = selectedProfile ? isProtectedEngineProfile(selectedProfile) : true;
+
+  useEffect(() => {
+    const element = diagnosticsRef.current;
+    if (!element) {
+      return;
+    }
+    element.scrollTop = element.scrollHeight;
+  }, [diagnostics]);
 
   return (
     <div className="engine-config-panel">
@@ -51,6 +69,30 @@ export function EngineConfigPanel({
       <section className="engine-profile-list" aria-label="已配置引擎">
         <div className="engine-profile-list-header">
           <strong>已配置引擎</strong>
+          <div className="engine-profile-list-tools">
+            <button
+              type="button"
+              disabled={!selectedKey || selectedIndex <= 0}
+              onClick={() => onMoveProfile(selectedKey, "up")}
+            >
+              上移
+            </button>
+            <button
+              type="button"
+              disabled={!selectedKey || selectedIndex < 0 || selectedIndex >= profiles.length - 1}
+              onClick={() => onMoveProfile(selectedKey, "down")}
+            >
+              下移
+            </button>
+            <button
+              type="button"
+              disabled={!selectedKey || selectedLocked}
+              title={selectedLocked ? "内置默认引擎不可删除" : "删除当前高亮引擎配置"}
+              onClick={() => onDeleteProfile(selectedKey)}
+            >
+              删除
+            </button>
+          </div>
         </div>
         <div className="engine-profile-table-wrap">
           <table className="engine-profile-table">
@@ -71,11 +113,12 @@ export function EngineConfigPanel({
                 profiles.map((item) => {
                   const key = engineProfileKey(item);
                   const selected = profile ? engineProfileKey(profile) === key : false;
+                  const locked = isProtectedEngineProfile(item);
                   return (
                     <tr className={selected ? "active" : ""} key={key} onClick={() => onSelectProfile(key)}>
                       <td>{item.name}</td>
                       <td>{item.source ?? "用户配置"}</td>
-                      <td>{item.exists ? "可用" : "待测试"}</td>
+                      <td>{locked ? "内置保底" : item.exists ? "可用" : "待测试"}</td>
                       <td>{fileName(item.modelPath)}</td>
                     </tr>
                   );
@@ -141,7 +184,7 @@ export function EngineConfigPanel({
       </div>
       <details className="engine-diagnostics" open>
         <summary>诊断</summary>
-        <pre>{diagnostics}</pre>
+        <pre ref={diagnosticsRef}>{diagnostics}</pre>
       </details>
     </div>
   );
@@ -153,4 +196,9 @@ function engineProfileKey(profile: EngineProfile): string {
 
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? "";
+}
+
+function isProtectedEngineProfile(profile: EngineProfile): boolean {
+  const source = (profile.source ?? "").toLowerCase();
+  return source.includes("bundled") || source.includes("内置") || source.includes("known windows") || source.includes("已知");
 }

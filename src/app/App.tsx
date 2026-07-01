@@ -218,6 +218,7 @@ export function App() {
   const autoAnalysisFinishRef = useRef(false);
   const autoAnalysisReportRangeRef = useRef<{ startMove: number; endMove: number } | null>(null);
   const autoAnalysisSummaryRef = useRef<AutoAnalysisSummary>(createEmptyAutoAnalysisSummary());
+  const engineProgressTimerRef = useRef<number | null>(null);
   const processedAnalysisTriggerRef = useRef(-1);
   const [currentMoveNumber, setCurrentMoveNumber] = useState(totalMoves);
   const isAnalysisEnabledRef = useRef(isAnalysisEnabled);
@@ -292,6 +293,24 @@ export function App() {
     )
   );
   const toolbarScale = toolbarScaleForBoardSize(boardPixelSize);
+  const startEngineProgressLog = (title: string, lines: string[]) => {
+    if (engineProgressTimerRef.current !== null) {
+      window.clearInterval(engineProgressTimerRef.current);
+      engineProgressTimerRef.current = null;
+    }
+    const startedAt = Date.now();
+    setEngineDiagnostics([`${new Date().toLocaleTimeString()} ${title}`, ...lines].join("\n"));
+    engineProgressTimerRef.current = window.setInterval(() => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      setEngineDiagnostics((previous) => `${previous}\n${new Date().toLocaleTimeString()} still working... ${elapsed}s`);
+    }, 1500);
+  };
+  const stopEngineProgressLog = () => {
+    if (engineProgressTimerRef.current !== null) {
+      window.clearInterval(engineProgressTimerRef.current);
+      engineProgressTimerRef.current = null;
+    }
+  };
   useEffect(() => {
     isAnalysisEnabledRef.current = isAnalysisEnabled;
     if (isAnalysisEnabled) {
@@ -327,8 +346,13 @@ export function App() {
       return;
     }
 
+    startEngineProgressLog("正在自动发现 KataGo 引擎...", [
+      "扫描内置资源、已知 Windows 整合包、常见安装目录和 PATH。",
+      "如果是第一次 OpenCL 调优，后续测试可能需要几分钟。"
+    ]);
     void discoverEngineProfile(loadEngineProfile())
       .then(async (profile) => {
+        stopEngineProgressLog();
         const nextProfiles = mergeEngineProfiles(loadEngineProfiles(), profile.candidates);
         setEngineProfiles(nextProfiles);
         saveEngineProfiles(nextProfiles);
@@ -339,9 +363,11 @@ export function App() {
         setEngineDiagnostics(profile.diagnostics);
       })
       .catch((error) => {
+        stopEngineProgressLog();
         setEngineDiagnostics(String(error));
         setEngineStatus(`引擎发现失败: ${String(error)}`);
       });
+    return () => stopEngineProgressLog();
   }, []);
   const invalidatePendingAnalysis = () => {
     analysisRequestRef.current += 1;
@@ -606,6 +632,50 @@ export function App() {
     updateEngineProfile(selected);
     setEngineStatus(`已选择引擎：${selected.name}`);
   };
+  const deleteEngineProfile = (profileKey: string) => {
+    const selected = engineProfiles.find((profile) => engineProfileKey(profile) === profileKey);
+    if (!selected) {
+      return;
+    }
+    if (isProtectedEngineProfile(selected)) {
+      setEngineStatus("内置默认引擎不可删除");
+      return;
+    }
+    if (!window.confirm(`删除引擎配置“${selected.name}”？`)) {
+      return;
+    }
+    const nextProfiles = engineProfiles.filter((profile) => engineProfileKey(profile) !== profileKey);
+    setEngineProfiles(nextProfiles);
+    saveEngineProfiles(nextProfiles);
+    const activeKey = window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY);
+    const currentKey = engineProfile ? engineProfileKey(engineProfile) : "";
+    if (activeKey === profileKey) {
+      window.localStorage.removeItem(ACTIVE_ENGINE_PROFILE_KEY);
+    }
+    if (currentKey === profileKey) {
+      const fallback = nextProfiles.find(isProtectedEngineProfile) ?? nextProfiles[0] ?? DEFAULT_ENGINE_PROFILE;
+      updateEngineProfile(fallback);
+      setEngineStatus(`已删除引擎：${selected.name}，当前切换到 ${fallback.name}`);
+      return;
+    }
+    setEngineStatus(`已删除引擎：${selected.name}`);
+  };
+  const moveEngineProfile = (profileKey: string, direction: "up" | "down") => {
+    const index = engineProfiles.findIndex((profile) => engineProfileKey(profile) === profileKey);
+    if (index < 0) {
+      return;
+    }
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= engineProfiles.length) {
+      return;
+    }
+    const nextProfiles = [...engineProfiles];
+    const [selected] = nextProfiles.splice(index, 1);
+    nextProfiles.splice(targetIndex, 0, selected);
+    setEngineProfiles(nextProfiles);
+    saveEngineProfiles(nextProfiles);
+    setEngineStatus(`已调整引擎顺序：${selected.name}`);
+  };
   const setCurrentEngineAsDefault = () => {
     if (!engineProfile) {
       setEngineStatus("没有可设为默认的引擎配置");
@@ -624,8 +694,13 @@ export function App() {
       return;
     }
     setEngineStatus("正在自动检测 KataGo...");
+    startEngineProgressLog("正在自动检测 KataGo...", [
+      "扫描内置引擎、已知 Windows 引擎、用户路径附近的模型和 cfg。",
+      "检测完成后会自动更新下面的引擎列表。"
+    ]);
     try {
       const result = await discoverEngineProfile(engineProfile);
+      stopEngineProgressLog();
       updateEngineProfile(result.selected);
       const nextProfiles = mergeEngineProfiles(engineProfiles, result.candidates);
       setEngineProfiles(nextProfiles);
@@ -633,6 +708,7 @@ export function App() {
       setEngineDiagnostics(result.diagnostics);
       setEngineStatus(result.selected.exists ? `已发现 ${result.selected.name}（${result.selected.source ?? "auto"}）` : "未发现完整 KataGo 配置");
     } catch (error) {
+      stopEngineProgressLog();
       setEngineDiagnostics(String(error));
       setEngineStatus(`自动检测失败: ${String(error)}`);
     }
@@ -661,7 +737,12 @@ export function App() {
       };
       try {
         setEngineStatus("正在根据 katago.exe 自动查找模型和配置...");
+        startEngineProgressLog("正在根据 katago.exe 自动查找模型和配置...", [
+          result.path,
+          "会在引擎目录、上级目录、weights/Weights、configs、katago_configs 中查找。"
+        ]);
         const discovery = await discoverEngineProfile(baseProfile);
+        stopEngineProgressLog();
         updateEngineProfile(discovery.selected);
         setEngineDiagnostics(discovery.diagnostics);
         setEngineStatus(
@@ -670,6 +751,7 @@ export function App() {
             : "已选择 katago.exe，但还需要模型或配置文件"
         );
       } catch (error) {
+        stopEngineProgressLog();
         updateEngineProfile(baseProfile);
         setEngineDiagnostics(String(error));
         setEngineStatus(`已选择 katago.exe，自动补全失败: ${String(error)}`);
@@ -686,7 +768,12 @@ export function App() {
       };
       try {
         setEngineStatus("正在根据权重文件自动查找 GTP 配置...");
+        startEngineProgressLog("正在根据权重文件自动查找 GTP 配置...", [
+          result.path,
+          "会在权重目录、引擎目录和常见配置目录里查找 default_gtp.cfg。"
+        ]);
         const discovery = await discoverEngineProfile(baseProfile);
+        stopEngineProgressLog();
         updateEngineProfile(discovery.selected);
         setEngineDiagnostics(discovery.diagnostics);
         setEngineStatus(
@@ -695,6 +782,7 @@ export function App() {
             : "已选择权重文件，但还需要 katago.exe 或配置文件"
         );
       } catch (error) {
+        stopEngineProgressLog();
         updateEngineProfile(baseProfile);
         setEngineDiagnostics(String(error));
         setEngineStatus(`已选择权重文件，自动补全失败: ${String(error)}`);
@@ -1128,12 +1216,19 @@ export function App() {
       return;
     }
     setEngineStatus("正在测试 KataGo...");
-    setEngineDiagnostics("正在运行 katago version 和最小 GTP 分析探针...");
+    startEngineProgressLog("正在测试 KataGo...", [
+      "step 1: katago version",
+      "step 2: gtp 启动",
+      "step 3: 最小分析探针",
+      "首次 OpenCL autotune 可能会持续几分钟，请等待日志更新。"
+    ]);
     try {
       const probe = await probeEngine(engineProfile);
+      stopEngineProgressLog();
       setEngineDiagnostics(probe.diagnostics);
       setEngineStatus(probe.ok ? probe.summary : summarizeEngineFailure("probe-failed", probe.diagnostics));
     } catch (error) {
+      stopEngineProgressLog();
       setEngineDiagnostics(String(error));
       setEngineStatus(`测试失败: ${String(error)}`);
     }
@@ -1873,6 +1968,8 @@ export function App() {
         onLanguageChange={updateLanguage}
         onAutoDetect={autoDetectEngine}
         onChoosePath={chooseEngineConfigPath}
+        onDeleteProfile={deleteEngineProfile}
+        onMoveProfile={moveEngineProfile}
         onProbe={probeCurrentEngine}
         onProfileChange={updateEngineProfile}
         onResetProfile={resetEngineProfile}
@@ -2765,6 +2862,11 @@ function mergeEngineProfiles(existing: EngineProfile[], incoming: EngineProfile[
 
 function engineProfileKey(profile: EngineProfile): string {
   return [profile.executablePath, profile.modelPath, profile.configPath].join("|");
+}
+
+function isProtectedEngineProfile(profile: EngineProfile): boolean {
+  const source = (profile.source ?? "").toLowerCase();
+  return source.includes("bundled") || source.includes("内置") || source.includes("known windows") || source.includes("已知");
 }
 
 function normalizeCandidateDisplayLimit(value: unknown): number {

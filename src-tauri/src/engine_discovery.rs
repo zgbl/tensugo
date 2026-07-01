@@ -69,8 +69,8 @@ pub fn discover_engine(
         candidates.push(candidate_from_profile(profile, "用户配置"));
     }
 
-    candidates.extend(known_platform_candidates());
     candidates.extend(bundled_candidates(app));
+    candidates.extend(known_platform_candidates());
     candidates.extend(common_install_candidates());
     candidates.extend(path_candidates());
     candidates.extend(dev_candidates());
@@ -150,13 +150,14 @@ fn bundled_candidates(app: &AppHandle) -> Vec<EngineProfileCandidate> {
     let mut result = Vec::new();
     if let Some(resource_dir) = platform::resource_dir(app) {
         let root = resource_dir.join("katago");
-        let executable = root.join(platform::executable_name());
+        let executable =
+            find_first_executable(&root).unwrap_or_else(|| root.join(platform::executable_name()));
         result.push(candidate_from_parts(
-            "Bundled KataGo",
+            "TensuGo OpenCL KataGo",
             executable,
             find_first_model(&root).unwrap_or_else(|| root.join("models").join("model.bin.gz")),
             root.join("configs").join("default_gtp.cfg"),
-            "Bundled Engine",
+            "内置 OpenCL 引擎",
         ));
     }
     result
@@ -193,6 +194,9 @@ fn find_first_executable(root: &Path) -> Option<PathBuf> {
     [
         root.join(platform::executable_name()),
         root.join("bin").join(platform::executable_name()),
+        root.join("engines")
+            .join("katago-v1.16.5-opencl-windows-x64")
+            .join(platform::executable_name()),
     ]
     .into_iter()
     .find(|path| path.exists())

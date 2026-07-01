@@ -781,12 +781,24 @@ button:hover {
   align-items: center;
   background: #edf4f5;
   display: flex;
+  gap: 8px;
   justify-content: space-between;
   padding: 6px 8px;
 }
 
 .engine-profile-list-header strong {
   font-size: 13px;
+}
+
+.engine-profile-list-tools {
+  display: flex;
+  gap: 5px;
+}
+
+.engine-profile-list-tools button {
+  font-size: 12px;
+  min-height: 24px;
+  padding: 2px 10px;
 }
 
 .engine-profile-table-wrap {
@@ -833,6 +845,11 @@ button:hover {
 .engine-profile-table td[colspan] {
   color: #65747a;
   white-space: normal;
+}
+
+.engine-profile-list-tools button:disabled {
+  color: #8d9a9f;
+  cursor: not-allowed;
 }
 
 .path-input-row {
