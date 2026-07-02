@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>天书阁（TensuGo）用户指南</title>
+    <meta
+      name="description"
+      content="天书阁（TensuGo）用户指南：Windows 与 macOS 安装、KataGo 引擎配置、Auto Detect、Test Engine 和常见问题。"
+    />
+    <link rel="icon" href="../favicon.svg" />
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <header class="site-header" aria-label="天书阁（TensuGo）用户指南">
+      <a class="brand" href="../cn/" aria-label="返回中文主页">
+        <span class="brand-mark" aria-hidden="true">天</span>
+        <span>天书阁（TensuGo）</span>
+      </a>
+      <nav class="nav" aria-label="文档导航">
+        <a href="../cn/">中文主页</a>
+        <a href="../">English</a>
+        <a href="#install">安装</a>
+        <a href="#engine">引擎</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+    </header>
+
+    <main class="doc-shell">
+      <aside class="doc-toc" aria-label="目录">
+        <span class="doc-toc-title">User Guide</span>
+        <a href="#install">安装 TensuGo</a>
+        <a href="#engine">KataGo 引擎配置</a>
+        <a href="#mac-katago">Mac KataGo 安装</a>
+        <a href="#windows-katago">Windows KataGo 安装</a>
+        <a href="#manual-command">手工命令配置</a>
+        <a href="#faq">常见问题</a>
+      </aside>
+
+      <article class="doc-content">
+        <header class="doc-hero">
+          <p class="eyebrow">User Guide</p>
+          <h1>天书阁（TensuGo）用户指南</h1>
+          <p>
+            天书阁（TensuGo）是一个围棋棋谱复盘和 KataGo 辅助分析工具。
+            当前发布重点支持 Windows 64 位和 Mac Apple Silicon（M1/M2/M3/M4）。
+          </p>
+          <div class="hero-actions" aria-label="下载">
+            <a
+              class="button primary"
+              href="https://github.com/zgbl/tensugo/releases/download/V0.5.70/TensuGo_0.5.70_x64_en-US.msi"
+            >
+              下载 Windows MSI
+            </a>
+            <a
+              class="button secondary"
+              href="https://github.com/zgbl/tensugo/releases/download/V0.5.70/TensuGo_0.5.70_aarch64.dmg"
+            >
+              下载 macOS DMG
+            </a>
+          </div>
+          <p class="hero-note">暂不提供 Windows 32 位和 Intel Mac 安装包。</p>
+        </header>
+
+        <section class="doc-section" id="install">
+          <h2>安装 TensuGo</h2>
+
+          <div class="doc-card">
+            <h3>Windows 64 位</h3>
+            <ol>
+              <li>下载 Windows x64 安装包。</li>
+              <li>运行安装程序。</li>
+              <li>第一次打开后进入 <code>设置 &gt; 引擎</code>。</li>
+              <li>确认 KataGo 引擎状态。</li>
+            </ol>
+            <p>
+              Windows x64 版本内置 KataGo OpenCL 引擎（2026.5 版本），
+              是当前推荐给多数用户的安装方式。
+            </p>
+          </div>
+
+          <div class="doc-card">
+            <h3>Mac Apple Silicon</h3>
+            <ol>
+              <li>下载 Mac Apple Silicon 安装包。</li>
+              <li>安装并打开 TensuGo。</li>
+              <li>通过 Homebrew 安装 KataGo。</li>
+              <li>打开 <code>设置 &gt; 引擎</code>，点击 <code>Auto Detect</code>。</li>
+              <li>选择检测到的 Homebrew KataGo 配置。</li>
+              <li>点击 <code>Test Engine</code> 验证引擎可以启动。</li>
+              <li>点击 <code>设为默认</code>。</li>
+            </ol>
+            <pre><code>brew install katago</code></pre>
+            <p>
+              Mac 版当前不把 KataGo 引擎和模型打进安装包。用户需要自己通过 Homebrew 安装 KataGo，
+              TensuGo 负责自动检测和配置。
+            </p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="engine">
+          <h2>KataGo 引擎配置</h2>
+          <p>进入 <code>设置 &gt; 引擎</code> 后，可以看到引擎列表和当前选中配置。</p>
+          <dl class="action-list">
+            <div><dt>Auto Detect</dt><dd>手动扫描系统里的 KataGo、模型和配置文件。</dd></div>
+            <div><dt>Test Engine</dt><dd>测试当前配置是否能启动。</dd></div>
+            <div><dt>选择</dt><dd>手动选择 Engine 或 Model。</dd></div>
+            <div><dt>Choose Config</dt><dd>手动选择 KataGo GTP 配置文件。</dd></div>
+            <div><dt>保存到列表</dt><dd>把当前填写的配置保存为一个引擎配置。</dd></div>
+            <div><dt>设为默认</dt><dd>把当前配置设为默认分析引擎。</dd></div>
+            <div><dt>删除</dt><dd>删除当前高亮的配置行。</dd></div>
+            <div><dt>Reset to Default</dt><dd>清空当前默认配置，不会自动扫描系统路径。</dd></div>
+          </dl>
+          <p class="doc-note">TensuGo 启动时不会自动扫描系统路径。只有点击 <code>Auto Detect</code> 才会扫描。</p>
+        </section>
+
+        <section class="doc-section" id="mac-katago">
+          <h2>Mac KataGo 安装说明</h2>
+          <p>推荐方式是 Homebrew：</p>
+          <pre><code>brew install katago</code></pre>
+          <p>安装完成后，常见路径类似：</p>
+          <ul>
+            <li>Engine: <code>/opt/homebrew/bin/katago</code></li>
+            <li>Model: <code>/opt/homebrew/share/katago/...bin.gz</code></li>
+            <li>Config: <code>/opt/homebrew/share/katago/configs/gtp_example.cfg</code></li>
+          </ul>
+          <p>
+            如果 <code>Auto Detect</code> 找到了多个配置，优先选择 Homebrew 路径下可用的一项，
+            然后点击 <code>Test Engine</code>。
+          </p>
+        </section>
+
+        <section class="doc-section" id="windows-katago">
+          <h2>Windows KataGo 安装说明</h2>
+          <p>
+            Windows 版只支持 64 位安装包。当前发布流程以 Windows x64 为目标，不提供 Windows 32 位版本。
+            安装后进入 <code>设置 &gt; 引擎</code>：
+          </p>
+          <ol>
+            <li>点击 <code>Auto Detect</code>。</li>
+            <li>如果发现可用引擎，选中后点击 <code>Test Engine</code>。</li>
+            <li>测试通过后点击 <code>设为默认</code>。</li>
+            <li>如果自动检测失败，可以手动选择 Engine、Model、Config。</li>
+          </ol>
+        </section>
+
+        <section class="doc-section" id="manual-command">
+          <h2>高级：手工命令配置</h2>
+          <p>
+            如果 KataGo 启动方式有特殊参数，或者你想完全控制启动命令，可以使用 <code>手工命令</code>。
+          </p>
+          <pre><code>/opt/homebrew/bin/katago gtp -model /path/to/model.bin.gz -config /path/to/gtp.cfg</code></pre>
+          <p>
+            填写后点击 <code>添加手工配置</code>。这个手工命令不会被 <code>Auto Detect</code> 自动填充，
+            也不会和普通 Engine Path / Model Path / Config 输入混用。
+          </p>
+        </section>
+
+        <section class="doc-section" id="faq">
+          <h2>常见问题</h2>
+
+          <div class="doc-card">
+            <h3>Mac 上 Auto Detect 找不到 KataGo</h3>
+            <p>先确认 Homebrew 安装成功：</p>
+            <pre><code>katago version</code></pre>
+            <p>如果命令不存在，重新安装：</p>
+            <pre><code>brew install katago</code></pre>
+            <p>然后回到 TensuGo，点击 <code>Auto Detect</code>。</p>
+          </div>
+
+          <div class="doc-card">
+            <h3>引擎测试失败</h3>
+            <ul>
+              <li>Engine Path 指向 <code>katago</code></li>
+              <li>Model Path 指向 <code>.bin.gz</code> 或 KataGo 支持的模型文件</li>
+              <li>Config 指向 GTP 配置文件</li>
+            </ul>
+            <p>Mac Homebrew 安装时，优先使用 <code>gtp_example.cfg</code> 或可用的 GTP 配置。</p>
+          </div>
+
+          <div class="doc-card">
+            <h3>删除配置后又出现</h3>
+            <p>
+              TensuGo 启动时不会自动扫描。只有你点击 <code>Auto Detect</code> 后，
+              系统里的候选引擎才可能重新出现在列表中。
+            </p>
+          </div>
+        </section>
+      </article>
+    </main>
+  </body>
+</html>
