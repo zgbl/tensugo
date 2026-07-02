@@ -476,7 +476,7 @@ code {
 
 .doc-hero h1 {
   max-width: 900px;
-  font-size: clamp(42px, 6vw, 76px);
+  font-size: clamp(26px, 4vw, 44px);
 }
 
 .doc-hero p,
@@ -495,7 +495,7 @@ code {
 
 .doc-section h2 {
   margin-bottom: 24px;
-  font-size: clamp(30px, 3.6vw, 46px);
+  font-size: clamp(22px, 3vw, 32px);
 }
 
 .doc-card {
