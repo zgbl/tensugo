@@ -127,15 +127,32 @@
       <section class="section download" id="download" aria-labelledby="download-title">
         <div>
           <p class="section-kicker">下载</p>
-          <h2 id="download-title">先从 macOS 开始。</h2>
+          <h2 id="download-title">Windows 和 macOS 都可以开始复盘。</h2>
           <p>
-            TensuGo 正在开发中，当前主要测试平台是 macOS。Windows 构建结构已经准备，
-            仍需要在真实 Windows 环境中验证。
+            大多数用户会在 Windows 上使用 TensuGo，所以 Windows x64 版本已经发布，
+            并内置 KataGo OpenCL 引擎。macOS Apple Silicon 版本保持轻量，需要用户自行安装 KataGo。
           </p>
         </div>
-        <div class="download-panel">
+        <div class="download-panel" aria-label="下载选项">
+          <article class="download-option primary-option">
+            <span class="platform">Windows x64 (64-bit)</span>
+            <p>Includes built-in KataGo OpenCL engine, 2026.5 version.</p>
+          </article>
+
+          <article class="download-option">
+            <span class="platform">macOS Apple Silicon (M-series)</span>
+            <p>
+              Does not include a built-in engine. Install KataGo with Homebrew:
+              <code>brew install katago</code>
+            </p>
+            <p>
+              After installing TensuGo, open <strong>设置</strong> &gt; <strong>引擎</strong>,
+              then use <strong>Auto Detect</strong>. TensuGo will detect and configure the engine automatically.
+              You can also download and configure the engine manually from the same panel.
+            </p>
+          </article>
+
           <a class="button primary" href="https://github.com/zgbl/tensugo/releases">打开 Releases</a>
-          <p>本地 AI 分析需要自行准备 KataGo 可执行文件、模型和 GTP 配置。</p>
         </div>
       </section>
     </main>
