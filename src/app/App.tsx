@@ -1439,11 +1439,12 @@ export function App() {
       }
 
       const actualPoint = moveToGtpPoint(actualMove, boardSize);
-      const actualCandidateIndex = result.candidates.findIndex((candidate) => candidate.moveName === actualPoint);
+      const statisticsCandidates = result.candidates.slice(0, DEFAULT_CANDIDATE_DISPLAY_LIMIT);
+      const actualCandidateIndex = statisticsCandidates.findIndex((candidate) => candidate.moveName === actualPoint);
       if (countSummary) {
         setResearchDocument((document) => withCandidateMovesBlock(document, positionMoveNumber, result.candidates));
         const actualCandidate = actualCandidateIndex >= 0 ? result.candidates[actualCandidateIndex] : null;
-        const bestVisits = Math.max(1, ...result.candidates.map((candidate) => candidate.visits));
+        const bestVisits = Math.max(1, ...statisticsCandidates.map((candidate) => candidate.visits));
         const matchScore = actualCandidate ? actualCandidate.visits / bestVisits : 0;
         const isTopMove = actualCandidateIndex === 0;
         const isCandidate = actualCandidateIndex >= 0;
@@ -2655,7 +2656,7 @@ function TianshuReportDialog({
         <div className="tianshu-report-footer">
           <span>{t("black")}：{t("matchRate")} {formatPercent(blackStats.matchRate)} {t("matchDegree")} {formatFixed(blackStats.matchDegree * 100, 1)}</span>
           <span>{t("white")}：{t("matchRate")} {formatPercent(whiteStats.matchRate)} {t("matchDegree")} {formatFixed(whiteStats.matchDegree * 100, 1)}</span>
-          <span>统计条件：前 {MATCH_SETTINGS.bestNums} 候选；visits 占比阈值 {MATCH_SETTINGS.percentVisits}%；全局统计；目数损失仅在实战手命中候选时统计。</span>
+          <span>统计条件：候选命中率按前 {DEFAULT_CANDIDATE_DISPLAY_LIMIT} 候选；吻合率按前 {MATCH_SETTINGS.bestNums} 候选且 visits 占比阈值 {MATCH_SETTINGS.percentVisits}%；全局统计；目数损失仅在实战手命中候选时统计。</span>
         </div>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>{t("close")}</button>
