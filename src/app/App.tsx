@@ -14,6 +14,7 @@ import {
   chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
   discoverEngineProfile,
+  getDefaultEngineProfile,
   isTauriRuntime,
   probeEngine,
   stopContinuousAnalysis
@@ -346,19 +347,42 @@ export function App() {
       setEngineStatus("浏览器预览：分析需要在 Mac App 中运行");
       return;
     }
-    const savedProfiles = filterHiddenEngineProfiles(loadEngineProfiles());
-    const activeKey = window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY);
-    const activeProfile =
-      savedProfiles.find((item) => engineProfileKey(item) === activeKey) ??
-      savedProfiles.find(isCompleteEngineProfile) ??
-      savedProfiles[0] ??
-      filterHiddenEngineProfiles([loadEngineProfile()])[0] ??
-      DEFAULT_ENGINE_PROFILE;
-    setEngineProfiles(savedProfiles);
-    setSelectedEngineProfileIndex(Math.max(0, savedProfiles.findIndex((item) => engineProfileKey(item) === engineProfileKey(activeProfile))));
-    setEngineProfile(activeProfile);
-    setEngineStatus(isCompleteEngineProfile(activeProfile) ? `已加载引擎配置：${activeProfile.name}` : "引擎未配置，请手动选择或点击 Auto Detect");
-    setEngineDiagnostics("启动时不自动检测 KataGo。点击 Auto Detect 才会扫描系统路径。");
+    let cancelled = false;
+    void getDefaultEngineProfile()
+      .then((builtinProfile) => {
+        if (cancelled) {
+          return;
+        }
+        const savedProfiles = filterHiddenEngineProfiles(loadEngineProfiles());
+        const nextProfiles = mergeEngineProfiles(savedProfiles, isCompleteEngineProfile(builtinProfile) ? [builtinProfile] : []);
+        const activeKey = window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY);
+        const activeProfile =
+          nextProfiles.find((item) => engineProfileKey(item) === activeKey) ??
+          nextProfiles.find((item) => engineProfileKey(item) === engineProfileKey(builtinProfile)) ??
+          nextProfiles.find(isCompleteEngineProfile) ??
+          nextProfiles[0] ??
+          filterHiddenEngineProfiles([loadEngineProfile()])[0] ??
+          DEFAULT_ENGINE_PROFILE;
+        setEngineProfiles(nextProfiles);
+        setSelectedEngineProfileIndex(Math.max(0, nextProfiles.findIndex((item) => engineProfileKey(item) === engineProfileKey(activeProfile))));
+        setEngineProfile(activeProfile);
+        setEngineStatus(isCompleteEngineProfile(activeProfile) ? `已加载引擎配置：${activeProfile.name}` : "引擎未配置，请手动选择或点击 Auto Detect");
+        setEngineDiagnostics("启动时只加载内置/已保存引擎，不扫描系统路径。点击 Auto Detect 才会扫描。");
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        const savedProfiles = filterHiddenEngineProfiles(loadEngineProfiles());
+        const activeProfile = savedProfiles.find(isCompleteEngineProfile) ?? savedProfiles[0] ?? DEFAULT_ENGINE_PROFILE;
+        setEngineProfiles(savedProfiles);
+        setEngineProfile(activeProfile);
+        setEngineDiagnostics(`内置引擎加载失败：${String(error)}\n启动时不自动扫描系统路径。点击 Auto Detect 才会扫描。`);
+        setEngineStatus(isCompleteEngineProfile(activeProfile) ? `已加载引擎配置：${activeProfile.name}` : "引擎未配置，请手动选择或点击 Auto Detect");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const invalidatePendingAnalysis = () => {
     analysisRequestRef.current += 1;
@@ -734,8 +758,8 @@ export function App() {
     try {
       const result = await discoverEngineProfile(engineProfile);
       stopEngineProgressLog();
-      const visibleCandidates = filterHiddenEngineProfiles(result.candidates);
-      const nextProfiles = mergeEngineProfiles(engineProfiles, visibleCandidates);
+      const visibleSelected = filterHiddenEngineProfiles([result.selected]).filter(isCompleteEngineProfile);
+      const nextProfiles = mergeEngineProfiles(filterHiddenEngineProfiles(engineProfiles), visibleSelected);
       const selectedKey = engineProfileKey(result.selected);
       const selectedProfile =
         nextProfiles.find((profile) => engineProfileKey(profile) === selectedKey) ??
@@ -2925,14 +2949,11 @@ function saveHiddenEngineProfileKey(profileKey: string) {
 
 function filterHiddenEngineProfiles(profiles: EngineProfile[]): EngineProfile[] {
   const hiddenKeys = loadHiddenEngineProfileKeys();
-  if (hiddenKeys.size === 0) {
-    return profiles;
-  }
-  return profiles.filter((profile) => !hiddenKeys.has(engineProfileKey(profile)));
+  return profiles.filter((profile) => !hiddenKeys.has(engineProfileKey(profile)) && !isObsoleteWindowsEngineProfile(profile) && !isTransientAutoDetectedProfile(profile));
 }
 
 function engineProfileKey(profile: EngineProfile): string {
-  if (profile.commandLine.trim()) {
+  if (profile.commandLine.trim() && !profile.executablePath.trim()) {
     return `manual:${profile.commandLine.trim().toLowerCase()}`;
   }
   const parts = [normalizeEnginePath(profile.executablePath), normalizeEnginePath(profile.modelPath), normalizeEnginePath(profile.configPath)];
@@ -2945,7 +2966,18 @@ function normalizeEnginePath(path: string): string {
 
 function isProtectedEngineProfile(profile: EngineProfile): boolean {
   const source = (profile.source ?? "").toLowerCase();
-  return source.includes("known windows") || source.includes("windows 已知") || source.includes("windows known");
+  return source.includes("内置") || source.includes("bundled") || source.includes("known windows") || source.includes("windows 已知") || source.includes("windows known");
+}
+
+function isObsoleteWindowsEngineProfile(profile: EngineProfile): boolean {
+  const source = (profile.source ?? "").toLowerCase();
+  const text = `${profile.name}\n${profile.executablePath}\n${profile.modelPath}\n${profile.configPath}`.toLowerCase();
+  return source.includes("windows 已知") || text.includes("katago202306") || text.includes("lizzie") || text.includes("katago_tensorrt");
+}
+
+function isTransientAutoDetectedProfile(profile: EngineProfile): boolean {
+  const source = (profile.source ?? "").toLowerCase();
+  return source.includes("常见安装目录") || source === "path" || source.includes("dev 环境");
 }
 
 function normalizeCandidateDisplayLimit(value: unknown): number {

@@ -111,7 +111,7 @@ pub fn discover_engine(
 }
 
 fn profile_has_paths(profile: &EngineProfile) -> bool {
-    if !profile.command_line.trim().is_empty() {
+    if !profile.command_line.trim().is_empty() && profile.executable_path.trim().is_empty() {
         return true;
     }
     !profile.executable_path.trim().is_empty()
@@ -120,7 +120,7 @@ fn profile_has_paths(profile: &EngineProfile) -> bool {
 }
 
 fn candidate_from_profile(profile: EngineProfile, source: &str) -> EngineProfileCandidate {
-    if !profile.command_line.trim().is_empty() {
+    if !profile.command_line.trim().is_empty() && profile.executable_path.trim().is_empty() {
         return EngineProfileCandidate {
             name: if profile.name.trim().is_empty() {
                 "手工 KataGo 命令".to_string()
@@ -170,18 +170,97 @@ fn candidate_from_profile(profile: EngineProfile, source: &str) -> EngineProfile
 fn bundled_candidates(app: &AppHandle) -> Vec<EngineProfileCandidate> {
     let mut result = Vec::new();
     if let Some(resource_dir) = platform::resource_dir(app) {
-        let root = resource_dir.join("katago");
-        let executable =
-            find_first_executable(&root).unwrap_or_else(|| root.join(platform::executable_name()));
+        let Some(root) = bundled_resource_roots(&resource_dir)
+            .into_iter()
+            .find(|path| find_first_executable(path).is_some())
+        else {
+            return result;
+        };
+        let runtime_root = platform::engine_runtime_dir(app)
+            .ok()
+            .and_then(|runtime_dir| prepare_bundled_runtime(&root, &runtime_dir).ok())
+            .unwrap_or_else(|| root.clone());
+        let executable = find_first_executable(&runtime_root)
+            .or_else(|| find_first_executable(&root))
+            .unwrap_or_else(|| runtime_root.join(platform::executable_name()));
         result.push(candidate_from_parts(
             "TensuGo OpenCL KataGo",
             executable,
-            find_first_model(&root).unwrap_or_else(|| root.join("models").join("model.bin.gz")),
-            root.join("configs").join("default_gtp.cfg"),
+            find_first_model(&runtime_root)
+                .or_else(|| find_first_model(&root))
+                .unwrap_or_else(|| runtime_root.join("models").join("model.bin.gz")),
+            find_first_config(&runtime_root)
+                .or_else(|| find_first_config(&root))
+                .unwrap_or_else(|| runtime_root.join("configs").join("default_gtp.cfg")),
             "内置 OpenCL 引擎",
         ));
     }
     result
+}
+
+fn bundled_resource_roots(resource_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        resource_dir.join("katago"),
+        resource_dir.join("resources").join("katago"),
+        resource_dir.to_path_buf(),
+    ]
+}
+
+fn prepare_bundled_runtime(resource_root: &Path, runtime_dir: &Path) -> Result<PathBuf, String> {
+    let runtime_root = runtime_dir.join("bundled-opencl");
+    let engine_source = find_first_executable(resource_root)
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .ok_or_else(|| "bundled katago.exe not found".to_string())?;
+    let engine_target = runtime_root
+        .join("engines")
+        .join(engine_source.file_name().unwrap_or_default());
+    copy_dir_files_if_needed(&engine_source, &engine_target)?;
+
+    if let Some(model) = find_first_model(resource_root) {
+        let target = runtime_root
+            .join("models")
+            .join(model.file_name().unwrap_or_default());
+        copy_file_if_needed(&model, &target)?;
+    }
+    if let Some(config) = find_first_config(resource_root) {
+        let target = runtime_root
+            .join("configs")
+            .join(config.file_name().unwrap_or_default());
+        copy_file_if_needed(&config, &target)?;
+    }
+
+    Ok(runtime_root)
+}
+
+fn copy_dir_files_if_needed(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    for entry in std::fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_files_if_needed(&source_path, &target_path)?;
+        } else if source_path.is_file() {
+            copy_file_if_needed(&source_path, &target_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_file_if_needed(source: &Path, target: &Path) -> Result<(), String> {
+    let source_meta = std::fs::metadata(source).map_err(|error| error.to_string())?;
+    let target_current = std::fs::metadata(target).ok();
+    if target_current
+        .as_ref()
+        .is_some_and(|metadata| metadata.len() == source_meta.len())
+    {
+        return Ok(());
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::copy(source, target).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn known_platform_candidates() -> Vec<EngineProfileCandidate> {
@@ -446,7 +525,7 @@ fn command_line(candidate: &EngineProfileCandidate) -> String {
         return String::new();
     }
     format!(
-        "{} gtp -model \"{}\" -config \"{}\"",
+        "\"{}\" gtp -model \"{}\" -config \"{}\"",
         candidate.executable_path, candidate.model_path, candidate.config_path
     )
 }

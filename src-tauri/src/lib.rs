@@ -225,7 +225,7 @@ fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
         Err(error) => diagnostics.push(format!("runtime dir unavailable: {}", error)),
     }
 
-    if !profile.command_line.trim().is_empty() {
+    if is_manual_command_profile(&profile) {
         diagnostics.push(format!("manual command: {}", profile.command_line));
         return run_engine_start_test(&app, &profile, diagnostics);
     }
@@ -1072,7 +1072,7 @@ fn drain_receiver(rx: &Receiver<String>) -> Vec<String> {
 }
 
 fn gtp_command(profile: &EngineProfile) -> Result<Command, String> {
-    if !profile.command_line.trim().is_empty() {
+    if is_manual_command_profile(profile) {
         let parts = split_command_line(&profile.command_line)?;
         let (program, args) = parts
             .split_first()
@@ -1093,6 +1093,10 @@ fn gtp_command(profile: &EngineProfile) -> Result<Command, String> {
     Ok(command)
 }
 
+fn is_manual_command_profile(profile: &EngineProfile) -> bool {
+    !profile.command_line.trim().is_empty() && profile.executable_path.trim().is_empty()
+}
+
 fn split_command_line(input: &str) -> Result<Vec<String>, String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -1101,11 +1105,7 @@ fn split_command_line(input: &str) -> Result<Vec<String>, String> {
 
     while let Some(ch) = chars.next() {
         match ch {
-            '\\' => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
-            }
+            '\\' => current.push(ch),
             '"' | '\'' => {
                 if quote == Some(ch) {
                     quote = None;

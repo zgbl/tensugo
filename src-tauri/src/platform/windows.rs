@@ -30,29 +30,20 @@ pub fn common_engine_roots() -> Vec<PathBuf> {
 }
 
 pub fn known_engine_profiles() -> Vec<KnownEngineProfile> {
-    let lizzie_root = PathBuf::from(
-        r"C:\Apps\KataGo202306\2023-06-15-windows64+katago\2023-06-15-windows64+katago",
-    );
-
-    vec![(
-        "Lizzie KataGo TensorRT".to_string(),
-        lizzie_root.join("katago_tensorRT").join("katago.exe"),
-        lizzie_root
-            .join("weights")
-            .join("b18c384nbt-optimisticv13-s5971M.bin.gz"),
-        lizzie_root.join("katago_configs").join("default_gtp.cfg"),
-        "Windows 已知整合包".to_string(),
-    )]
+    Vec::new()
 }
 
 pub fn choose_save_path(
     default_name: &str,
-    _default_dir: Option<&str>,
+    default_dir: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
-    Err(format!(
-        "当前平台暂未实现原生保存对话框，请提供文件路径后再保存: {}",
-        default_name
-    ))
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("保存 TensuGo 研究文档")
+        .set_file_name(default_name);
+    if let Some(default_dir) = default_dir.filter(|path| !path.trim().is_empty()) {
+        dialog = dialog.set_directory(default_dir);
+    }
+    Ok(dialog.save_file())
 }
 
 pub fn choose_file_path(kind: &str) -> Result<Option<PathBuf>, String> {
