@@ -8,9 +8,8 @@ import { GameInfoPanel } from "../components/GameInfoPanel";
 import { ResearchDocumentPanel } from "../components/ResearchDocumentPanel";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { TopToolbar } from "../components/TopToolbar";
-import type { EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
+import type { EngineAnalysisResult, EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
 import {
-  analyzePosition,
   analyzePositionContinuous,
   chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
@@ -105,6 +104,7 @@ const MATCH_SETTINGS = {
   bestNums: 3,
   percentVisits: 20
 } as const;
+const AUTO_ANALYSIS_CANDIDATE_TIMEOUT_MS = 15_000;
 
 type LossBucket = {
   count: number;
@@ -1388,14 +1388,9 @@ export function App() {
       setIsAutoAnalyzing(false);
       return;
     }
-    let profileForAnalysis = engineProfile;
-    if (!profileForAnalysis || !isCompleteEngineProfile(profileForAnalysis)) {
+    const profileForAnalysis = engineProfile;
+    if (!profileForAnalysis) {
       markAutoAnalysis("AI 引擎还没有配置完成。请在 设置 > 引擎 中手动配置，或手动点击 Auto Detect。");
-      setIsAutoAnalyzing(false);
-      return;
-    }
-    if (!profileForAnalysis || !isCompleteEngineProfile(profileForAnalysis)) {
-      markAutoAnalysis("AI 引擎还没有配置完成，不能自动分析。");
       setIsAutoAnalyzing(false);
       return;
     }
@@ -1412,10 +1407,7 @@ export function App() {
     const requestedEndMove = Math.max(settings.startMove, settings.endMove);
     const startMove = Math.max(1, Math.min(analysisMoves.length, requestedStartMove));
     const endMove = Math.max(startMove, Math.min(analysisMoves.length, requestedEndMove));
-    const maxVisits = settings.visitsPerMove > 0
-      ? settings.visitsPerMove
-      : Math.max(20, Math.round(settings.secondsPerMove * 120));
-    const autoChunkVisits = settings.visitsPerMove > 0 ? maxVisits : 80;
+    const targetVisits = settings.visitsPerMove > 0 ? settings.visitsPerMove : 0;
     if (!isResume || !autoAnalysisReportRangeRef.current) {
       autoAnalysisReportRangeRef.current = { startMove, endMove };
     }
@@ -1425,7 +1417,7 @@ export function App() {
     const applyAutoAnalysisResult = (
       moveNumber: number,
       actualMove: ReviewMove,
-      result: Awaited<ReturnType<typeof analyzePosition>>,
+      result: EngineAnalysisResult,
       countSummary: boolean
     ) => {
       const positionMoveNumber = moveNumber - 1;
@@ -1501,7 +1493,11 @@ export function App() {
       );
     };
 
-    markAutoAnalysis(`自动分析开始：第 ${startMove} 到 ${endMove} 手，maxVisits=${maxVisits}，chunk=${autoChunkVisits}。`);
+    markAutoAnalysis(
+      targetVisits > 0
+        ? `自动分析开始：第 ${startMove} 到 ${endMove} 手，目标 PO=${targetVisits}。`
+        : `自动分析开始：第 ${startMove} 到 ${endMove} 手，每手 ${settings.secondsPerMove} 秒。`
+    );
 
     try {
       for (let moveNumber = startMove; moveNumber <= endMove; moveNumber += 1) {
@@ -1528,35 +1524,49 @@ export function App() {
         setEngineStatus(`自动分析第 ${moveNumber} / ${endMove} 手...`);
         markAutoAnalysis(`正在调用引擎：第 ${moveNumber} 手之前，实战为${actualMove.color === "black" ? "黑棋" : "白棋"}。`);
 
-        let result = await analyzePosition({
+        let result = await analyzePositionContinuous({
           boardSize,
           komi,
-          maxVisits: autoChunkVisits,
           moves: analysisMoves.slice(0, positionMoveNumber),
           nextColor: actualMove.color,
           profile: profileForAnalysis
         });
         let best = result.candidates[0];
-        while (!autoAnalysisStopRef.current && best && settings.visitsPerMove === 0 && Date.now() - moveStartedAt < settings.secondsPerMove * 1000) {
-          applyAutoAnalysisResult(moveNumber, actualMove, result, false);
+        if (!best && result.status !== "waiting-for-candidates") {
+          markAutoAnalysis(`第 ${moveNumber} 手持续分析未启动：${summarizeEngineFailure(result.status, result.diagnostics)}`);
+        }
+        while (!autoAnalysisStopRef.current && shouldContinueAutoAnalysisMove(moveStartedAt, settings.secondsPerMove, targetVisits, best)) {
+          if (best) {
+            applyAutoAnalysisResult(moveNumber, actualMove, result, false);
+          }
+          if (!best && result.status !== "waiting-for-candidates") {
+            break;
+          }
           await yieldToUi();
-          if (autoAnalysisStopRef.current || Date.now() - moveStartedAt >= settings.secondsPerMove * 1000) {
+          if (autoAnalysisStopRef.current || !shouldContinueAutoAnalysisMove(moveStartedAt, settings.secondsPerMove, targetVisits, best)) {
             break;
           }
           setEngineStatus(
-            `自动分析第 ${moveNumber} 手：继续计算 ${Math.ceil(
-              (settings.secondsPerMove * 1000 - (Date.now() - moveStartedAt)) / 1000
-            )} 秒`
+            !best
+              ? `自动分析第 ${moveNumber} 手：等待首批候选点...`
+              : targetVisits > 0
+              ? `自动分析第 ${moveNumber} 手：累计 ${formatVisits(best?.visits ?? 0)} / ${formatVisits(targetVisits)}`
+              : `自动分析第 ${moveNumber} 手：继续计算 ${Math.ceil(
+                  (settings.secondsPerMove * 1000 - (Date.now() - moveStartedAt)) / 1000
+                )} 秒`
           );
-          result = await analyzePosition({
+          await waitForAutoAnalysisPoll(autoAnalysisStopRef);
+          result = await analyzePositionContinuous({
             boardSize,
             komi,
-            maxVisits: autoChunkVisits,
             moves: analysisMoves.slice(0, positionMoveNumber),
             nextColor: actualMove.color,
             profile: profileForAnalysis
           });
           best = result.candidates[0];
+          if (!best && result.status !== "waiting-for-candidates") {
+            markAutoAnalysis(`第 ${moveNumber} 手持续分析中断：${summarizeEngineFailure(result.status, result.diagnostics)}`);
+          }
         }
 
         if (autoAnalysisStopRef.current) {
@@ -1565,10 +1575,9 @@ export function App() {
 
         const failureSummary = summarizeEngineFailure(result.status, result.diagnostics);
         if (!best) {
-          stopReason = `第 ${moveNumber} 手没有返回候选点：${failureSummary}`;
-          setLastAction(stopReason);
-          autoAnalysisStopRef.current = true;
-          break;
+          markAutoAnalysis(`第 ${moveNumber} 手暂时没有候选点，跳过并继续下一手：${failureSummary}`);
+          nextResumeMove = moveNumber + 1;
+          continue;
         }
         applyAutoAnalysisResult(moveNumber, actualMove, result, true);
         nextResumeMove = moveNumber + 1;
@@ -1619,6 +1628,11 @@ export function App() {
       setEngineStatus("自动分析失败");
       markAutoAnalysis(`自动分析失败: ${String(error)}`);
     } finally {
+      try {
+        await stopContinuousAnalysis();
+      } catch {
+        // The analysis session may already be gone after an engine failure.
+      }
       setIsAutoAnalyzing(false);
       autoAnalysisStopRef.current = false;
       autoAnalysisFinishRef.current = false;
@@ -3011,6 +3025,31 @@ async function waitForRemainingMoveTime(
   let waitedMs = 0;
   while (!stopRef.current && waitedMs < remainingMs) {
     const nextWait = Math.min(stopCheckMs, remainingMs - waitedMs);
+    await new Promise((resolve) => window.setTimeout(resolve, nextWait));
+    waitedMs += nextWait;
+  }
+}
+
+function shouldContinueAutoAnalysisMove(
+  moveStartedAt: number,
+  secondsPerMove: number,
+  targetVisits: number,
+  bestCandidate: EngineCandidateMove | undefined
+): boolean {
+  if (!bestCandidate) {
+    return Date.now() - moveStartedAt < AUTO_ANALYSIS_CANDIDATE_TIMEOUT_MS;
+  }
+  if (targetVisits > 0) {
+    return bestCandidate.visits < targetVisits;
+  }
+  return Date.now() - moveStartedAt < secondsPerMove * 1000;
+}
+
+async function waitForAutoAnalysisPoll(stopRef: { current: boolean }): Promise<void> {
+  const pollMs = 250;
+  let waitedMs = 0;
+  while (!stopRef.current && waitedMs < pollMs) {
+    const nextWait = Math.min(50, pollMs - waitedMs);
     await new Promise((resolve) => window.setTimeout(resolve, nextWait));
     waitedMs += nextWait;
   }
