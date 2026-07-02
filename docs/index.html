@@ -1,47 +1,49 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TensuGo - 本地 KataGo 围棋复盘桌面应用</title>
+    <title>TensuGo - Local KataGo Review for Go Players</title>
     <meta
       name="description"
-      content="TensuGo 是一款面向围棋复盘、研究和变化图整理的桌面应用，连接本地 KataGo，把 AI 分析、棋谱树和研究文档放在同一张工作台上。"
+      content="TensuGo is a desktop Go review app that brings local KataGo analysis, SGF variation trees, candidate moves, and research notes into one focused workspace."
     />
     <meta property="og:title" content="TensuGo" />
     <meta
       property="og:description"
-      content="本地 KataGo 围棋复盘桌面应用。导入 SGF、研究变化、查看候选点，并整理成复盘文档。"
+      content="A local-first KataGo review workspace for Go players. Import SGF, inspect AI candidates, study variations, and write review notes."
     />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="assets/tensugo-main-ui.png" />
+    <meta property="og:url" content="https://zgbl.github.io/tensugo/" />
+    <meta property="og:image" content="https://zgbl.github.io/tensugo/assets/tensugo-main-ui.png" />
     <link rel="icon" href="favicon.svg" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header class="site-header" aria-label="TensuGo">
       <a class="brand" href="#top" aria-label="TensuGo home">
-        <span class="brand-mark" aria-hidden="true">天</span>
+        <span class="brand-mark" aria-hidden="true">T</span>
         <span>TensuGo</span>
       </a>
-      <nav class="nav" aria-label="主页导航">
-        <a href="#features">功能</a>
-        <a href="#workflow">工作流</a>
-        <a href="#download">下载</a>
-        <a href="User-Guide.html">文档</a>
+      <nav class="nav" aria-label="Site navigation">
+        <a href="#features">Features</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#download">Download</a>
+        <a href="project-docs/User-Guide.md">Docs</a>
       </nav>
     </header>
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow">本地 AI 围棋复盘工作台</p>
-          <h1 id="hero-title">把 KataGo 的判断，放回你的棋盘和变化图里。</h1>
+          <p class="eyebrow">Local AI review workspace for Go</p>
+          <h1 id="hero-title">Study every move with KataGo on your own machine.</h1>
           <p class="hero-text">
-            TensuGo 是一款桌面围棋研究应用。它导入 SGF，连接本地 KataGo，
-            展示候选点、胜率、目差和 PV，并把分支研究整理成可阅读的复盘资料。
+            TensuGo is a desktop review app for Go players. It imports SGF files,
+            runs local KataGo analysis, shows candidate moves, win rate, score lead,
+            visits, and principal variations, then helps you turn variations into study notes.
           </p>
-          <div class="hero-actions" aria-label="主要操作">
+          <div class="hero-actions" aria-label="Primary actions">
             <a
               class="button primary"
               href="https://github.com/zgbl/tensugo/releases/download/V0.5.70/TensuGo_0.5.70_x64_en-US.msi"
@@ -62,90 +64,92 @@
         <figure class="product-shot">
           <img
             src="assets/tensugo-main-ui.png"
-            alt="TensuGo 桌面应用界面，左侧为围棋棋盘，右侧为变化图和 KataGo 候选点分析。"
+            alt="TensuGo desktop app showing a Go board, game tree, and KataGo candidate move analysis."
           />
-          <figcaption>棋盘、变化图、候选点和研究文档在同一个桌面工作区。</figcaption>
+          <figcaption>Board, variations, candidate moves, and research notes in one desktop workspace.</figcaption>
         </figure>
       </section>
 
-      <section class="section intro" aria-label="产品定位">
+      <section class="section intro" aria-label="Product positioning">
         <div>
-          <p class="section-kicker">为什么做它</p>
-          <h2>不是直播评估器，而是复盘时真正会用的案头工具。</h2>
+          <p class="section-kicker">Why It Exists</p>
+          <h2>Not a live score widget. A real study desk for reviewing games.</h2>
         </div>
         <p>
-          棋局研究经常在棋盘、AI 终端、SGF 编辑器和笔记之间来回切换。
-          TensuGo 把这些动作收束到一个安静的桌面界面里：你可以沿着棋谱树研究，
-          预览候选变化，保留分支，并把关键图形和文字说明沉淀下来。
+          Serious review often means switching between a board, an AI engine,
+          an SGF editor, and scattered notes. TensuGo brings those pieces into
+          a quiet desktop interface where you can follow the game tree, inspect
+          candidate lines, keep meaningful branches, and preserve the reasoning behind them.
         </p>
       </section>
 
       <section class="section feature-grid" id="features" aria-labelledby="features-title">
         <div class="section-heading">
-          <p class="section-kicker">功能</p>
-          <h2 id="features-title">围绕复盘，而不是围绕参数。</h2>
+          <p class="section-kicker">Features</p>
+          <h2 id="features-title">Built around review, not around engine knobs.</h2>
         </div>
 
         <article class="feature">
-          <span class="feature-symbol" aria-hidden="true">棋</span>
-          <h3>SGF 与变化图</h3>
-          <p>导入棋谱后保留分支结构，主分支、变化、删除和回到分歧点都按研究习惯组织。</p>
+          <span class="feature-symbol" aria-hidden="true">SGF</span>
+          <h3>SGF and variation trees</h3>
+          <p>Import games while preserving branch structure, then promote, remove, and return to variations without flattening your study.</p>
         </article>
 
         <article class="feature">
           <span class="feature-symbol" aria-hidden="true">AI</span>
-          <h3>KataGo 本地分析</h3>
-          <p>连接本机 KataGo，可查看候选点、胜率、目差、访问量和 PV，不需要把棋谱上传到云端。</p>
+          <h3>Local KataGo analysis</h3>
+          <p>Run KataGo locally and inspect candidate moves, win rate, score lead, visits, and PV without uploading your games.</p>
         </article>
 
         <article class="feature">
-          <span class="feature-symbol" aria-hidden="true">图</span>
-          <h3>候选点与趋势</h3>
-          <p>候选气泡、列表和胜率走势同步显示，适合快速定位胜负手、缓手和方向选择。</p>
+          <span class="feature-symbol" aria-hidden="true">PV</span>
+          <h3>Candidates and trends</h3>
+          <p>Candidate bubbles, move tables, and win-rate trends stay in sync so you can spot turning points and direction mistakes quickly.</p>
         </article>
 
         <article class="feature">
-          <span class="feature-symbol" aria-hidden="true">文</span>
-          <h3>研究文档</h3>
-          <p>把局面图、候选变化和文字解说放进研究文档，便于赛后总结、教学和资料归档。</p>
+          <span class="feature-symbol" aria-hidden="true">Doc</span>
+          <h3>Research notes</h3>
+          <p>Collect board diagrams, candidate lines, and written commentary into review material for study, teaching, and archiving.</p>
         </article>
       </section>
 
       <section class="section workflow" id="workflow" aria-labelledby="workflow-title">
         <div class="section-heading">
-          <p class="section-kicker">工作流</p>
-          <h2 id="workflow-title">从一盘棋到一份复盘。</h2>
+          <p class="section-kicker">Workflow</p>
+          <h2 id="workflow-title">From one game to a readable review.</h2>
         </div>
         <ol class="steps">
           <li>
-            <span>导入</span>
-            <p>打开 SGF，沿主分支或任意变化进入局面。</p>
+            <span>Import</span>
+            <p>Open an SGF and jump into any main-line or variation position.</p>
           </li>
           <li>
-            <span>分析</span>
-            <p>启动本地 KataGo，查看候选点和 AI 推荐变化。</p>
+            <span>Analyze</span>
+            <p>Start local KataGo and compare candidate moves with AI principal variations.</p>
           </li>
           <li>
-            <span>研究</span>
-            <p>保留有价值的分支，比较不同下法的目差和走势。</p>
+            <span>Study</span>
+            <p>Keep useful branches and compare score lead, win rate, and direction.</p>
           </li>
           <li>
-            <span>整理</span>
-            <p>生成带局面图和说明的复盘资料。</p>
+            <span>Write</span>
+            <p>Turn key positions and commentary into structured review notes.</p>
           </li>
         </ol>
       </section>
 
       <section class="section download" id="download" aria-labelledby="download-title">
         <div>
-          <p class="section-kicker">下载</p>
-          <h2 id="download-title">Windows 和 macOS 都可以开始复盘。</h2>
+          <p class="section-kicker">Download</p>
+          <h2 id="download-title">Start with Windows or macOS.</h2>
           <p>
-            大多数用户会在 Windows 上使用 TensuGo，所以 Windows x64 版本已经发布，
-            并内置 KataGo OpenCL 引擎。macOS Apple Silicon 版本保持轻量，需要用户自行安装 KataGo。
+            Windows x64 is the recommended path for most users and includes a
+            built-in KataGo OpenCL engine. The macOS Apple Silicon build stays
+            lightweight and expects KataGo to be installed separately.
           </p>
         </div>
-        <div class="download-panel" aria-label="下载选项">
+        <div class="download-panel" aria-label="Download options">
           <article class="download-option primary-option">
             <span class="platform">Windows x64 (64-bit)</span>
             <p>Includes built-in KataGo OpenCL engine, 2026.5 version.</p>
@@ -164,7 +168,7 @@
               <code>brew install katago</code>
             </p>
             <p>
-              After installing TensuGo, open <strong>设置</strong> &gt; <strong>引擎</strong>,
+              After installing TensuGo, open <strong>Settings</strong> &gt; <strong>Engine</strong>,
               then use <strong>Auto Detect</strong>. TensuGo will detect and configure the engine automatically.
               You can also download and configure the engine manually from the same panel.
             </p>

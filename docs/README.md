@@ -2,6 +2,8 @@
 
 This directory contains the static product homepage for `tensugo.com`.
 
+Project documentation has been moved to `project-docs/` so the Pages root stays focused on website files.
+
 GitHub Pages setup:
 
 1. Open the repository settings on GitHub.

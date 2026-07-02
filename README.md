@@ -180,9 +180,9 @@ For engine work, also use `设置 -> 引擎 -> Test Engine` with a real KataGo e
 
 ## More Documentation
 
-- [Code Structure](Docs/Code-Structure.md)
-- [KataGo Analysis Numbers](Docs/KataGo-Analysis-Numbers.md)
-- [KataGo Engine Configuration Guide](Docs/KataGo-Engine-Configuration-Guide.md)
-- [KataGo Troubleshooting](Docs/KataGo-Troubleshooting.md)
-- [Release v0.1 Scope](Docs/Release-v0.1.md)
-- [BRG Design](Docs/BRG-Design-1.0.md)
+- [Code Structure](docs/project-docs/Code-Structure.md)
+- [KataGo Analysis Numbers](docs/project-docs/KataGo-Analysis-Numbers.md)
+- [KataGo Engine Configuration Guide](docs/project-docs/KataGo-Engine-Configuration-Guide.md)
+- [KataGo Troubleshooting](docs/project-docs/KataGo-Troubleshooting.md)
+- [Release v0.1 Scope](docs/project-docs/Release-v0.1.md)
+- [Research Document Design](docs/project-docs/Research-Doc-Design-V1.md)
