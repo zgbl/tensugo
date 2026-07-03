@@ -29,8 +29,8 @@ TensuGo 的研究文档系统不是 SGF 查看器，也不是另一个 Lizzie / 
 
 当前 MVP 的 TypeScript 类型和 JSON Schema 草案在：
 
-- [src/research/types.ts](/Users/tuxy/Codes/KataGo/TensuGo/src/research/types.ts)
-- [src/research/document.ts](/Users/tuxy/Codes/KataGo/TensuGo/src/research/document.ts)
+- [src/research/types.ts](../../src/research/types.ts)
+- [src/research/document.ts](../../src/research/document.ts)
 
 顶层字段：
 

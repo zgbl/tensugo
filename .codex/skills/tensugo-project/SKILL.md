@@ -5,7 +5,7 @@ description: Use when working inside the TensuGo desktop Go/KataGo review app. K
 
 # TensuGo Project Skill
 
-Use for any work in `/Users/tuxy/Codes/KataGo/TensuGo`.
+Use for any work in `/Users/tuxy/Codes/tensugo/desktop`.
 
 Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinates, PV rendering, legal move logic, or Go-specific UI correctness.
 

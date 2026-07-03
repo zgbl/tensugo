@@ -103,7 +103,7 @@ Possible causes:
 
 Changing the working directory did not fix it:
 
-- `/Users/tuxy/Codes/KataGo/TensuGo`
+- `/Users/tuxy/Codes/tensugo/desktop`
 - `/Users/tuxy/App/KataGo/202306Mac64/Macosx(amd64)`
 - `/Users/tuxy/App/KataGo/Config/winConfigs`
 

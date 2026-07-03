@@ -17,7 +17,7 @@ For domain-specific work, also load:
 
 ## Source Repositories
 
-- Active workspace: `/Users/tuxy/Codes/KataGo/TensuGo`
+- Active workspace: `/Users/tuxy/Codes/tensugo/desktop`
 - Legacy reference repo: configure locally outside this project; do not hard-code the old project path in TensuGo files.
 - MVP source document: `Docs/MVP-0.1.md`
 - Tech stack decision: `references/tech-stack.md`

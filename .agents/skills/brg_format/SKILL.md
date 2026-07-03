@@ -15,7 +15,7 @@ BRG 1.0 is a JSON-based document structure for Go game reviews and research arti
 - `gameInfo`: Basic game configurations.
 - `blocks`: A linear array of interactive narrative blocks (heading, paragraph, board, ai, variation).
 
-For detailed JSON schemas and Typescript typings, see [BRG-Design-1.0.md](file:///Users/tuxy/Codes/KataGo/TensuGo/Docs/BRG-Design-1.0.md).
+For detailed JSON schemas and Typescript typings, see [TSG-Design-1.0.md](file:///Users/tuxy/Codes/tensugo/desktop/docs/project-docs/TSG-Design-1.0.md).
 
 ## Key Processing Rules
 
