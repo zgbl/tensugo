@@ -3598,7 +3598,7 @@ dependencies = [
 
 [[package]]
 name = "tensugo"
-version = "0.5.82"
+version = "0.5.83"
 dependencies = [
  "rfd",
  "serde",

@@ -146,6 +146,18 @@ function OgsGameTable({ games, emptyText, onOpenGame }: { games: OgsBrowserGame[
       key
     }));
   };
+  const onSortHeaderKeyDown = (event: React.KeyboardEvent<HTMLTableCellElement>, key: "black" | "white") => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleRankSort(key);
+    }
+  };
+  const rankSortIndicator = (key: "black" | "white") => {
+    if (sort.key !== key) {
+      return "↕";
+    }
+    return sort.direction === "desc" ? "↓" : "↑";
+  };
 
   if (games.length === 0) {
     return <div className="ogs-browser-empty"><p>{emptyText}</p></div>;
@@ -155,8 +167,28 @@ function OgsGameTable({ games, emptyText, onOpenGame }: { games: OgsBrowserGame[
       <table className="ogs-browser-table">
         <thead>
           <tr>
-            <th><button type="button" className="ogs-table-sort" onClick={() => toggleRankSort("black")}>Black {sort.key === "black" ? (sort.direction === "desc" ? "↓" : "↑") : ""}</button></th>
-            <th><button type="button" className="ogs-table-sort" onClick={() => toggleRankSort("white")}>White {sort.key === "white" ? (sort.direction === "desc" ? "↓" : "↑") : ""}</button></th>
+            <th
+              aria-sort={sort.key === "black" ? (sort.direction === "desc" ? "descending" : "ascending") : "none"}
+              className={`ogs-sortable-header ${sort.key === "black" ? "active" : ""}`}
+              onClick={() => toggleRankSort("black")}
+              onKeyDown={(event) => onSortHeaderKeyDown(event, "black")}
+              tabIndex={0}
+              title="按黑方段位排序"
+            >
+              <span>Black</span>
+              <span className="ogs-sort-indicator">{rankSortIndicator("black")}</span>
+            </th>
+            <th
+              aria-sort={sort.key === "white" ? (sort.direction === "desc" ? "descending" : "ascending") : "none"}
+              className={`ogs-sortable-header ${sort.key === "white" ? "active" : ""}`}
+              onClick={() => toggleRankSort("white")}
+              onKeyDown={(event) => onSortHeaderKeyDown(event, "white")}
+              tabIndex={0}
+              title="按白方段位排序"
+            >
+              <span>White</span>
+              <span className="ogs-sort-indicator">{rankSortIndicator("white")}</span>
+            </th>
             <th>Size</th>
             <th>Moves</th>
             <th>Speed</th>

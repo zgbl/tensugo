@@ -1164,18 +1164,28 @@ button:hover {
   z-index: 1;
 }
 
-.ogs-table-sort {
-  background: transparent;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  font-weight: 700;
-  min-height: 0;
-  padding: 0;
+.ogs-browser-table th.ogs-sortable-header {
+  cursor: pointer;
+  user-select: none;
 }
 
-.ogs-table-sort:hover {
+.ogs-browser-table th.ogs-sortable-header:hover,
+.ogs-browser-table th.ogs-sortable-header:focus-visible {
+  background: #dceced;
   color: var(--accent-strong);
+  outline: none;
+}
+
+.ogs-browser-table th.ogs-sortable-header.active {
+  color: var(--accent-strong);
+}
+
+.ogs-sort-indicator {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  margin-left: 5px;
+  min-width: 10px;
 }
 
 .ogs-browser-table tbody tr {
