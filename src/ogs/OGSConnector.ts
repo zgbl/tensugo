@@ -65,7 +65,8 @@ export class OGSConnector {
 
   connectGame(gameId: number) {
     if (this.socket && this.gameId === gameId && this.socket.readyState <= WebSocket.OPEN) {
-      this.emitStatus("connected", `Already connected to OGS Game #${gameId}`, this.gameSourceLabel(gameId));
+      this.emitStatus("syncing", `Refreshing OGS Game #${gameId}`, this.gameSourceLabel(gameId));
+      void this.loadPublicGame(gameId, "Synced", true);
       return;
     }
 
@@ -81,7 +82,8 @@ export class OGSConnector {
 
   connectReview(reviewId: number) {
     if (this.socket && this.reviewId === reviewId && this.socket.readyState <= WebSocket.OPEN) {
-      this.emitStatus("connected", `Already connected to OGS Review #${reviewId}`, this.sourceLabel(reviewId));
+      this.emitStatus("syncing", `Refreshing OGS Review #${reviewId}`, this.sourceLabel(reviewId));
+      void this.loadStaticReview(reviewId, true);
       return;
     }
 
@@ -127,6 +129,20 @@ export class OGSConnector {
 
   onConnectionStatusChanged(callback: (update: OgsStatusUpdate) => void) {
     this.statusCallback = callback;
+  }
+
+  refreshCurrent() {
+    if (this.gameId) {
+      this.emitStatus("syncing", `Refreshing OGS Game #${this.gameId}`, this.gameSourceLabel(this.gameId));
+      void this.loadPublicGame(this.gameId, "Synced", true);
+      return;
+    }
+    if (this.reviewId) {
+      this.emitStatus("syncing", `Refreshing OGS Review #${this.reviewId}`, this.sourceLabel(this.reviewId));
+      void this.loadStaticReview(this.reviewId, true);
+      return;
+    }
+    this.emitStatus("error", "No OGS source connected");
   }
 
   private openSocket() {
@@ -313,7 +329,9 @@ export class OGSConnector {
 
   private async loadPublicGame(gameId: number, verb: "Loaded" | "Synced", forcePublish: boolean) {
     try {
-      const response = await fetch(`https://online-go.com/api/v1/games/${gameId}`);
+      const response = await fetch(`https://online-go.com/api/v1/games/${gameId}?_=${Date.now()}`, {
+        cache: "no-store"
+      });
       if (!response.ok) {
         throw new Error(`OGS game request failed: ${response.status}`);
       }
@@ -331,7 +349,7 @@ export class OGSConnector {
       if (this.reviewId !== reviewId || this.reviewMoves.length > 0) {
         return;
       }
-      void this.loadStaticReview(reviewId);
+      void this.loadStaticReview(reviewId, false);
     }, REVIEW_STATIC_FALLBACK_DELAY_MS);
   }
 
@@ -342,15 +360,22 @@ export class OGSConnector {
     }
   }
 
-  private async loadStaticReview(reviewId: number) {
+  private async loadStaticReview(reviewId: number, forcePublish: boolean) {
     try {
       this.emitStatus("syncing", `Loading static OGS Review #${reviewId}`, this.sourceLabel(reviewId));
-      const response = await fetch(`https://online-go.com/api/v1/reviews/${reviewId}/sgf?without-comments=1`);
+      const response = await fetch(`https://online-go.com/api/v1/reviews/${reviewId}/sgf?without-comments=1&_=${Date.now()}`, {
+        cache: "no-store"
+      });
       if (!response.ok) {
         throw new Error(`OGS review SGF request failed: ${response.status}`);
       }
       const sgf = await response.text();
       const parsed = parseGameRecord(sgf, this.sourceLabel(reviewId));
+      const signature = makeMoveSignature(parsed.moves);
+      if (!forcePublish && signature === makeMoveSignature(this.reviewMoves)) {
+        this.emitStatus("connected", `No new review moves (${parsed.moves.length})`, this.sourceLabel(reviewId));
+        return;
+      }
       this.reviewMoves = parsed.moves;
       this.reviewWarnings = parsed.warnings;
       this.moveCallback?.({

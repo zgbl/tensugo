@@ -22,6 +22,7 @@ type TopToolbarProps = {
   onOpenOgsBrowser: () => void;
   onOpenOgsUrl: () => void;
   onOgsDisconnect: () => void;
+  onOgsRefresh: () => void;
   onNewGame: () => void;
   onOpenSettings: () => void;
   onOpenTianshuReport: () => void;
@@ -65,6 +66,7 @@ export function TopToolbar({
   onOpenOgsBrowser,
   onOpenOgsUrl,
   onOgsDisconnect,
+  onOgsRefresh,
   onNewGame,
   onOpenSettings,
   onOpenTianshuReport,
@@ -206,6 +208,7 @@ export function TopToolbar({
             <div className={`ogs-toolbar-status ogs-toolbar-status-${ogsStatus}`} title={ogsDetail ?? ogsStatus}>
               <strong>{ogsSourceLabel}</strong>
               <span>{ogsStatus}</span>
+              <button type="button" onClick={onOgsRefresh} aria-label="Refresh OGS">↻</button>
               <button type="button" onClick={onOgsDisconnect} aria-label="Disconnect OGS">×</button>
             </div>
           ) : null}

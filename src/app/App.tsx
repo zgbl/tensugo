@@ -1437,6 +1437,9 @@ export function App() {
     ogsConnectorRef.current?.connectReview(target.reviewId);
     setIsOgsDialogOpen(false);
   };
+  const refreshOgs = () => {
+    ogsConnectorRef.current?.refreshCurrent();
+  };
   const disconnectOgs = (message?: string) => {
     ogsConnectorRef.current?.disconnect();
     setOgsStatus("disconnected");
@@ -1947,6 +1950,7 @@ export function App() {
         onOpenOgsBrowser={() => setIsOgsBrowserOpen(true)}
         onOpenOgsUrl={() => setIsOgsDialogOpen(true)}
         onOgsDisconnect={() => disconnectOgs("已断开 OGS。")}
+        onOgsRefresh={refreshOgs}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenTianshuReport={openTianshuReport}
         onNewGame={newGame}
