@@ -1,0 +1,92 @@
+为 TensuGo 增加 OGS Live / Review 只读对接功能。
+
+目标：
+用户在 TensuGo 里输入 OGS 链接，例如：
+https://online-go.com/review/1730972
+https://online-go.com/game/xxxx
+TensuGo 可以只读连接 OGS，加载当前棋局，并持续跟随直播落子。本地 KataGo 分析仍使用 TensuGo 自己的引擎，不调用 OGS AI。
+
+重要原则：
+1. 只做公开棋局/公开 review 的只读查看。
+2. 不做登录，不做 OAuth，不发评论，不回写 OGS。
+3. 不调用 OGS AI，只同步棋步。
+4. 低频连接，避免重复重连。
+5. 所有 OGS 对接代码独立放在一个 connector 模块，不污染现有棋盘/分析逻辑。
+
+已知抓包信息：
+OGS 使用 WebSocket：
+wss://wsp.online-go.com
+
+公开 review 页面会发送类似消息：
+["review/connect", {"review_id": 1730972}]
+["chat/join", {"channel": "review-1730972"}]
+
+服务器会推类似：
+["review/1730972/r", {
+  "ts": 1783193803795,
+  "f": 0,
+  "m": "qdddpqdqndpoqoqn...",
+  "t": "",
+  "k": {}
+}]
+
+其中 m 是 OGS 编码后的棋步序列，需要在 OGS 前端源码中查找解码逻辑。关键词：
+review/connect
+review_id
+review/*/r
+decode moves
+goban
+moves
+MoveTree
+
+实现要求：
+1. 新增 OGSConnector：
+   - parseOgsUrl(url): 识别 review_id / game_id
+   - connectReview(reviewId)
+   - disconnect()
+   - onMovesUpdated(callback)
+   - onConnectionStatusChanged(callback)
+
+2. 先优先实现 review：
+   - 输入 review URL
+   - 解析 review_id
+   - 连接 wss://wsp.online-go.com
+   - 发送 review/connect
+   - 接收 review/<id>/r
+   - 解码 m 字符串为 TensuGo 内部 moves
+   - 更新棋盘
+
+3. game/live 可以先预留接口：
+   - parse game_id
+   - 暂时显示 “OGS game live support coming soon”
+   - 不要阻塞 review MVP
+
+4. UI：
+   - 在菜单或工具栏增加 “Open OGS URL”
+   - 弹窗输入 URL
+   - 显示连接状态：
+     Connecting / Connected / Syncing / Disconnected / Error
+   - 显示来源：
+     OGS Review #1730972
+   - 同步到棋盘后，用户可以像普通棋谱一样本地 KataGo 分析、写棋评、保存 TSG。
+
+5. 数据转换：
+   - OGS 坐标转换为 TensuGo 当前棋步格式。
+   - 支持 19x19，预留 9x9/13x13。
+   - 如果遇到 pass/resign/未知编码，不要崩溃，记录 warning。
+   - 解码失败时，UI 显示 “OGS move decode failed”，并在日志输出原始消息。
+
+6. 稳定性：
+   - WebSocket 自动重连最多 3 次。
+   - 关闭 OGS 页面/切换棋谱时要 disconnect。
+   - 不允许重复创建多个 socket。
+   - 所有异常要写日志，不要影响本地 SGF 打开和 KataGo 分析。
+
+7. README：
+   - 写清楚如何使用 OGS URL
+   - 写清楚目前只支持 public review
+   - 写清楚不需要 OGS 登录
+   - 写清楚不使用 OGS AI
+
+请先完成最小可用版本：
+Open OGS review URL -> 连接 -> 收到 review data -> 解码棋步 -> 显示棋盘。

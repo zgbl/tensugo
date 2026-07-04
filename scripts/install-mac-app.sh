@@ -15,15 +15,11 @@ npm run version:bump
 echo "==> Building frontend"
 npm run build
 
+echo "==> Clearing stale Tauri release build cache"
+npm run tauri:clean-cache
+
 echo "==> Building Tauri app bundle"
-if ! npm run tauri -- build; then
-  if [[ -d "$APP_SRC" ]]; then
-    echo "!! Tauri returned non-zero, but .app bundle exists. Continuing with app install."
-  else
-    echo "!! Tauri build failed and no .app bundle was found at: $APP_SRC" >&2
-    exit 1
-  fi
-fi
+npm run tauri -- build
 
 if [[ ! -d "$APP_SRC" ]]; then
   echo "!! Missing app bundle: $APP_SRC" >&2

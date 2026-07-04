@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { Translator } from "../i18n";
+import type { OgsConnectionStatus } from "../ogs/types";
 
 type TopToolbarProps = {
   boardPixelSize: number;
@@ -7,6 +8,9 @@ type TopToolbarProps = {
   title: string;
   isResearchMode: boolean;
   komi: number;
+  ogsDetail?: string;
+  ogsSourceLabel?: string;
+  ogsStatus: OgsConnectionStatus;
   showSavedAnalysis: boolean;
   showVariationNumbers: boolean;
   onAddVariation: () => void;
@@ -15,6 +19,8 @@ type TopToolbarProps = {
   onOpenAutoAnalysis: () => void;
   onOpenAbout: () => void;
   onOpenFile: (file: File) => void;
+  onOpenOgsUrl: () => void;
+  onOgsDisconnect: () => void;
   onNewGame: () => void;
   onOpenSettings: () => void;
   onOpenTianshuReport: () => void;
@@ -44,6 +50,9 @@ export function TopToolbar({
   title,
   isResearchMode,
   komi,
+  ogsDetail,
+  ogsSourceLabel,
+  ogsStatus,
   showSavedAnalysis,
   showVariationNumbers,
   onAddVariation,
@@ -52,6 +61,8 @@ export function TopToolbar({
   onOpenAutoAnalysis,
   onOpenAbout,
   onOpenFile,
+  onOpenOgsUrl,
+  onOgsDisconnect,
   onNewGame,
   onOpenSettings,
   onOpenTianshuReport,
@@ -77,6 +88,7 @@ export function TopToolbar({
         <Menu label={t("menuFile")} items={[
           { label: t("newBoard"), action: onNewGame },
           { label: t("openDocument"), action: () => fileInputRef.current?.click() },
+          { label: "Open OGS URL", action: onOpenOgsUrl },
           { label: t("saveBrg"), action: onSaveResearch },
           { label: "导出PDF", action: onExportPdf }
         ]} />
@@ -179,6 +191,13 @@ export function TopToolbar({
               onChange={onToggleSavedAnalysis}
             /> TSG分析
           </label>
+          {ogsSourceLabel ? (
+            <div className={`ogs-toolbar-status ogs-toolbar-status-${ogsStatus}`} title={ogsDetail ?? ogsStatus}>
+              <strong>{ogsSourceLabel}</strong>
+              <span>{ogsStatus}</span>
+              <button type="button" onClick={onOgsDisconnect} aria-label="Disconnect OGS">×</button>
+            </div>
+          ) : null}
         </div>
       </div>
     </header>

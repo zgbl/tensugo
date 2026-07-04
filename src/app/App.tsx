@@ -6,6 +6,7 @@ import { BottomToolbar } from "../components/BottomToolbar";
 import { CandidatePanel, ReviewGraph } from "../components/CandidatePanel";
 import { GameInfoPanel } from "../components/GameInfoPanel";
 import { ResearchDocumentPanel } from "../components/ResearchDocumentPanel";
+import { OgsDialog } from "../components/OgsDialog";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { TopToolbar } from "../components/TopToolbar";
 import type { EngineAnalysisResult, EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
@@ -23,6 +24,7 @@ import { buildBoardPosition, canPlayMove, getNextColor } from "../game/boardRule
 import {
   appendMoveToGameTree,
   createEmptyGameTree,
+  createGameTreeFromMoves,
   deleteSubtreeFromGameTree,
   findChildNodeIdByMove,
   findMainLineEndNodeId,
@@ -33,7 +35,8 @@ import {
   nodeIdAtMoveNumber,
   pathMovesToNode,
   pathMovesWithMainContinuation,
-  promoteNodeToMainLine
+  promoteNodeToMainLine,
+  type GameTree
 } from "../game/gameTree";
 import type { ReviewMove, ReviewStone } from "../game/sampleGame";
 import { parseGameRecord } from "../sgf/parseSgf";
@@ -65,6 +68,9 @@ import {
   type AppLanguage,
   type Translator
 } from "../i18n";
+import { OGSConnector } from "../ogs/OGSConnector";
+import { parseOgsUrl } from "../ogs/ogsUrl";
+import type { OgsConnectionStatus, OgsMoveUpdate } from "../ogs/types";
 import type { ResearchBlock, ResearchDocument } from "../research/types";
 import { useGameStore } from "../stores/gameStore";
 import { APP_VERSION, appDisplayVersion } from "../version";
@@ -151,6 +157,10 @@ export function App() {
   const [candidateDisplayLimit, setCandidateDisplayLimit] = useState(() => loadCandidateDisplayLimit());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [isOgsDialogOpen, setIsOgsDialogOpen] = useState(false);
+  const [ogsStatus, setOgsStatus] = useState<OgsConnectionStatus>("idle");
+  const [ogsStatusDetail, setOgsStatusDetail] = useState<string | undefined>(undefined);
+  const [ogsSourceLabel, setOgsSourceLabel] = useState<string | undefined>(undefined);
   const [isAutoAnalysisOpen, setIsAutoAnalysisOpen] = useState(false);
   const [isGameProgressPanelOpen, setIsGameProgressPanelOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
@@ -221,6 +231,8 @@ export function App() {
   const autoAnalysisReportRangeRef = useRef<{ startMove: number; endMove: number } | null>(null);
   const autoAnalysisSummaryRef = useRef<AutoAnalysisSummary>(createEmptyAutoAnalysisSummary());
   const engineProgressTimerRef = useRef<number | null>(null);
+  const ogsConnectorRef = useRef<OGSConnector | null>(null);
+  const applyOgsMoveUpdateRef = useRef<(update: OgsMoveUpdate) => void>(() => undefined);
   const processedAnalysisTriggerRef = useRef(-1);
   const [currentMoveNumber, setCurrentMoveNumber] = useState(totalMoves);
   const isAnalysisEnabledRef = useRef(isAnalysisEnabled);
@@ -341,6 +353,30 @@ export function App() {
     window.addEventListener("resize", handleResize);
     handleResize();
     return () => window.removeEventListener("resize", handleResize);
+  }, []);
+  useEffect(() => {
+    const connector = new OGSConnector();
+    ogsConnectorRef.current = connector;
+    connector.onConnectionStatusChanged((update) => {
+      setOgsStatus(update.status);
+      setOgsStatusDetail(update.detail);
+      if (update.sourceLabel) {
+        setOgsSourceLabel(update.sourceLabel);
+      }
+      if (update.detail) {
+        setLastAction(update.detail);
+      }
+      if (update.status === "error") {
+        setLastAction(update.detail ?? "OGS connection error");
+      }
+    });
+    connector.onMovesUpdated((update) => {
+      applyOgsMoveUpdateRef.current(update);
+    });
+    return () => {
+      connector.disconnect();
+      ogsConnectorRef.current = null;
+    };
   }, []);
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -1158,6 +1194,7 @@ export function App() {
     queueAnalysisIfEnabled();
   };
   const openGameFile = async (file: File) => {
+    disconnectOgs("已断开 OGS，同步本地棋谱。");
     if (/\.(tsg|brg|brg\.json|json)$/i.test(file.name)) {
       await loadResearchDocument(file);
       return;
@@ -1215,6 +1252,7 @@ export function App() {
     queueAnalysisIfEnabled();
   };
   const newGame = () => {
+    disconnectOgs("已断开 OGS，新建空棋盘。");
     invalidatePendingAnalysis();
     setAutoAnalysisResume(null);
     setBoardSize(19);
@@ -1258,6 +1296,106 @@ export function App() {
     setHasAnalysisAttempted(false);
     setLastAction("已新建空棋盘。点击交点开始摆棋。");
     queueAnalysisIfEnabled();
+  };
+  const applyOgsMoveUpdate = (update: OgsMoveUpdate) => {
+    const previousSourceMoves = sourceMainLineMoves.length > 0 ? sourceMainLineMoves : moves;
+    const wasOnSourceLine = moves.length === previousSourceMoves.length && movesMatchPrefix(moves, previousSourceMoves, previousSourceMoves.length);
+    const wasAtSourceEnd = wasOnSourceLine && currentMoveNumber === previousSourceMoves.length;
+    if (wasAtSourceEnd) {
+      invalidatePendingAnalysis();
+      setAutoAnalysisResume(null);
+    }
+    const nextTree = extendMainLinePreservingBranches(gameTree, previousSourceMoves, update.moves, update.boardSize, komi);
+    const nextMainLineEndNodeId = findMainLineEndNodeId(nextTree);
+    const selectedNodeId = wasAtSourceEnd
+      ? nextMainLineEndNodeId
+      : wasOnSourceLine
+        ? nodeIdAtMoveNumber(nextTree, nextMainLineEndNodeId, currentMoveNumber) ?? "root"
+        : selectedGameNodeId;
+    const nextPathNodeIds = wasOnSourceLine || wasAtSourceEnd ? moveNodeIdsToNode(nextTree, nextMainLineEndNodeId) : currentPathNodeIds;
+    setBoardSize(update.boardSize);
+    setSourceFileName(update.sourceLabel);
+    setSgfWarnings(update.warnings);
+    setSourceMainLineMoves(update.moves);
+    setSourceMainLineMoveCount(update.moves.length);
+    setGameTree(nextTree);
+    setSelectedGameNodeId(selectedNodeId);
+    setCurrentPathNodeIds(nextPathNodeIds);
+
+    if (wasAtSourceEnd) {
+      setMoves(update.moves);
+      setCurrentMoveNumber(update.moves.length);
+      setResearchBaseMoveNumber(null);
+      setEngineCandidates([]);
+      setAnalysisPoints([]);
+      setHasAnalysisAttempted(false);
+      const nextResearchDocument = createResearchDocument({
+        blackName,
+        boardSize: update.boardSize,
+        currentMoveNumber: update.moves.length,
+        gameDate,
+        result: gameResult,
+        komi,
+        moves: update.moves,
+        rules,
+        sourceFileName: update.sourceLabel,
+        stones: buildBoardPosition(update.moves, update.boardSize, update.moves.length).stones,
+        totalMoves: update.moves.length,
+        whiteName
+      });
+      setResearchDocument(nextResearchDocument);
+      setSelectedResearchBlockId(null);
+      setActiveCommentaryBlockId(nextResearchDocument.sections[0]?.blocks.find((block) => block.type === "paragraph")?.id ?? null);
+      setCommentaryDraft("");
+      setLastAction(
+        `已同步 ${update.sourceLabel}：${update.moves.length} 手。${update.isFinished ? "棋局已结束，已停止轮询。" : ""}${
+          update.warnings.length > 0 ? `警告 ${update.warnings.length} 条。` : ""
+        }`
+      );
+      queueAnalysisIfEnabled();
+      return;
+    }
+
+    if (wasOnSourceLine) {
+      setMoves(update.moves);
+      setLastAction(
+        `已缓存 ${update.sourceLabel} 更新到第 ${update.moves.length} 手；当前停在第 ${currentMoveNumber} 手，点下一手继续。${
+          update.isFinished ? "棋局已结束，已停止轮询。" : ""
+        }`
+      );
+      return;
+    }
+
+    setLastAction(
+      `已缓存 ${update.sourceLabel} 更新到第 ${update.moves.length} 手；当前正在研究本地变化，未打断棋盘。${
+        update.isFinished ? "棋局已结束，已停止轮询。" : ""
+      }`
+    );
+  };
+  applyOgsMoveUpdateRef.current = applyOgsMoveUpdate;
+  const connectOgsUrl = (url: string) => {
+    const target = parseOgsUrl(url);
+    if (!target) {
+      setOgsStatus("error");
+      setOgsStatusDetail("无法识别 OGS URL");
+      setLastAction("无法识别 OGS URL。请使用 https://online-go.com/demo/1730972 或 /review/1730972");
+      return;
+    }
+    if (target.kind === "game") {
+      ogsConnectorRef.current?.connectGame(target.gameId);
+      setIsOgsDialogOpen(false);
+      return;
+    }
+    ogsConnectorRef.current?.connectReview(target.reviewId);
+    setIsOgsDialogOpen(false);
+  };
+  const disconnectOgs = (message?: string) => {
+    ogsConnectorRef.current?.disconnect();
+    setOgsStatus("disconnected");
+    setOgsStatusDetail("OGS disconnected");
+    if (message) {
+      setLastAction(message);
+    }
   };
   const nextColor = getNextColor(currentMoveNumber);
   const probeCurrentEngine = async () => {
@@ -1751,10 +1889,15 @@ export function App() {
         title="TensuGo"
         isResearchMode={isResearchMode}
         komi={komi}
+        ogsDetail={ogsStatusDetail}
+        ogsSourceLabel={ogsSourceLabel}
+        ogsStatus={ogsStatus}
         showSavedAnalysis={showSavedAnalysis}
         showVariationNumbers={showVariationNumbers}
         onKomiChange={updateKomi}
         onOpenFile={openGameFile}
+        onOpenOgsUrl={() => setIsOgsDialogOpen(true)}
+        onOgsDisconnect={() => disconnectOgs("已断开 OGS。")}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenTianshuReport={openTianshuReport}
         onNewGame={newGame}
@@ -2042,6 +2185,15 @@ export function App() {
         onSelectProfile={selectEngineProfile}
         onSetDefaultProfile={setCurrentEngineAsDefault}
         t={t}
+      />
+      <OgsDialog
+        detail={ogsStatusDetail}
+        isOpen={isOgsDialogOpen}
+        sourceLabel={ogsSourceLabel}
+        status={ogsStatus}
+        onClose={() => setIsOgsDialogOpen(false)}
+        onConnect={connectOgsUrl}
+        onDisconnect={() => disconnectOgs("已断开 OGS。")}
       />
       <AboutDialog open={isAboutOpen} onClose={() => setIsAboutOpen(false)} />
       <GameProgressPanel
@@ -3207,6 +3359,55 @@ function inferVariationBaseMoveNumber(moves: ReviewMove[], sourceMainLineMoves: 
     return null;
   }
   return null;
+}
+
+function movesMatchPrefix(moves: ReviewMove[], prefix: ReviewMove[], prefixLength: number): boolean {
+  if (moves.length < prefixLength || prefix.length < prefixLength) {
+    return false;
+  }
+  for (let index = 0; index < prefixLength; index += 1) {
+    if (!sameMove(moves[index], prefix[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function extendMainLinePreservingBranches(
+  tree: GameTree,
+  previousMainLine: ReviewMove[],
+  nextMainLine: ReviewMove[],
+  boardSize: number,
+  komi: number
+): GameTree {
+  if (tree.boardSize !== boardSize || !movesMatchPrefix(nextMainLine, previousMainLine, previousMainLine.length)) {
+    return createGameTreeFromMoves(nextMainLine, boardSize, komi);
+  }
+
+  const existingMainLine = mainLineMovesFromTree(tree);
+  if (nextMainLine.length < existingMainLine.length) {
+    return createGameTreeFromMoves(nextMainLine, boardSize, komi);
+  }
+  if (!movesMatchPrefix(existingMainLine, previousMainLine, previousMainLine.length)) {
+    return createGameTreeFromMoves(nextMainLine, boardSize, komi);
+  }
+
+  let nextTree = tree;
+  let parentNodeId = findMainLineEndNodeId(nextTree);
+  for (const move of nextMainLine.slice(existingMainLine.length)) {
+    const result = appendMoveToGameTree(nextTree, parentNodeId, {
+      color: move.color,
+      point: { col: move.x, row: move.y }
+    });
+    nextTree = result.tree;
+    parentNodeId = result.nodeId;
+  }
+
+  return {
+    ...nextTree,
+    boardSize,
+    komi
+  };
 }
 
 function sameMove(left: ReviewMove, right: ReviewMove): boolean {
