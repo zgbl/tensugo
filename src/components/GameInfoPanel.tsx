@@ -13,6 +13,7 @@ type GameInfoPanelProps = {
   result?: string;
   rules: string;
   sourceFileName: string;
+  timeControl?: string;
   totalMoves: number;
   whiteName: string;
 };
@@ -32,6 +33,7 @@ export function GameInfoPanel({
   result,
   rules,
   sourceFileName,
+  timeControl,
   totalMoves,
   whiteName
 }: GameInfoPanelProps) {
@@ -106,6 +108,10 @@ export function GameInfoPanel({
         <div className="game-info-row">
           <dt>结果</dt>
           <dd>{result || "未填写"}</dd>
+        </div>
+        <div className="game-info-row">
+          <dt>用时</dt>
+          <dd>{timeControl || "未填写"}</dd>
         </div>
         <div className="game-info-row">
           <dt>提子</dt>

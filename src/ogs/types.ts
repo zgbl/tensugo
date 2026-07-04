@@ -23,6 +23,15 @@ export type OgsDecodedMoves = {
 export type OgsMoveUpdate = OgsDecodedMoves & {
   gameId?: number;
   isFinished?: boolean;
+  metadata?: {
+    blackName?: string;
+    gameName?: string;
+    komi?: number;
+    result?: string;
+    rules?: string;
+    timeControl?: string;
+    whiteName?: string;
+  };
   reviewId?: number;
   sourceLabel: string;
 };

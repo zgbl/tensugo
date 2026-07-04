@@ -6,6 +6,7 @@ import { BottomToolbar } from "../components/BottomToolbar";
 import { CandidatePanel, ReviewGraph } from "../components/CandidatePanel";
 import { GameInfoPanel } from "../components/GameInfoPanel";
 import { ResearchDocumentPanel } from "../components/ResearchDocumentPanel";
+import { OgsBrowserDialog } from "../components/OgsBrowserDialog";
 import { OgsDialog } from "../components/OgsDialog";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { TopToolbar } from "../components/TopToolbar";
@@ -146,6 +147,7 @@ export function App() {
   const [sourceFileName, setSourceFileName] = useState("新棋谱");
   const [gameDate, setGameDate] = useState<string | undefined>(undefined);
   const [gameResult, setGameResult] = useState<string | undefined>(undefined);
+  const [gameTimeControl, setGameTimeControl] = useState<string | undefined>(undefined);
   const [lastAction, setLastAction] = useState("空棋盘已就绪。点“开”选择 SGF，或点棋盘空交点开始摆棋。");
   const [sgfWarnings, setSgfWarnings] = useState<string[]>([]);
   const [engineProfile, setEngineProfile] = useState<EngineProfile | null>(() => loadEngineProfile());
@@ -157,6 +159,7 @@ export function App() {
   const [candidateDisplayLimit, setCandidateDisplayLimit] = useState(() => loadCandidateDisplayLimit());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [isOgsBrowserOpen, setIsOgsBrowserOpen] = useState(false);
   const [isOgsDialogOpen, setIsOgsDialogOpen] = useState(false);
   const [ogsStatus, setOgsStatus] = useState<OgsConnectionStatus>("idle");
   const [ogsStatusDetail, setOgsStatusDetail] = useState<string | undefined>(undefined);
@@ -198,6 +201,7 @@ export function App() {
   const [selectedGameNodeId, setSelectedGameNodeId] = useState(() => INITIAL_SELECTED_NODE_ID);
   const [currentPathNodeIds, setCurrentPathNodeIds] = useState<string[]>(() => INITIAL_PATH_NODE_IDS);
   const totalMoves = moves.length;
+  const navigationTotalMoves = Math.max(totalMoves, sourceMainLineMoveCount || sourceMainLineMoves.length);
   const initialSnapshot = useMemo(
     () =>
       makeSnapshot({
@@ -563,6 +567,7 @@ export function App() {
         setWhiteName(parsed.sourceGame.players.white || gameRecord?.whiteName || "白棋");
         setGameDate(parsed.sourceGame.gameDate || gameRecord?.gameDate);
         setGameResult(parsed.sourceGame.result || gameRecord?.result);
+        setGameTimeControl(undefined);
         setSourceFileName(parsed.sourceGame.fileName);
         setSgfWarnings(gameRecord?.warnings ?? []);
         setMoves(mainMoves);
@@ -1025,14 +1030,31 @@ export function App() {
   };
   const jumpToMove = (moveNumber: number) => {
     invalidatePendingAnalysis();
-    const nextMoveNumber = Math.max(0, Math.min(totalMoves, moveNumber));
+    const nextMoveNumber = Math.max(0, Math.min(navigationTotalMoves, moveNumber));
+    if (nextMoveNumber > totalMoves && sourceMainLineMoves.length >= nextMoveNumber) {
+      const mainLineEndNodeId = findMainLineEndNodeId(gameTree);
+      const nextSelectedNodeId = nodeIdAtMoveNumber(gameTree, mainLineEndNodeId, nextMoveNumber);
+      setMoves(sourceMainLineMoves);
+      setCurrentPathNodeIds(moveNodeIdsToNode(gameTree, mainLineEndNodeId));
+      setCurrentMoveNumber(nextMoveNumber);
+      setSelectedGameNodeId(nextSelectedNodeId);
+      setResearchBaseMoveNumber(null);
+      setEngineCandidates([]);
+      setHasAnalysisAttempted(false);
+      setLastAction(`已切回直播主线第 ${nextMoveNumber} / ${sourceMainLineMoves.length} 手。`);
+      if (isAnalysisEnabled) {
+        setLastAction(`已切回直播主线第 ${nextMoveNumber} / ${sourceMainLineMoves.length} 手，正在排队分析。`);
+        queueAnalysisIfEnabled();
+      }
+      return;
+    }
     setCurrentMoveNumber(nextMoveNumber);
     setSelectedGameNodeId(nextMoveNumber > 0 ? currentPathNodeIds[nextMoveNumber - 1] ?? selectedGameNodeId : "root");
     setEngineCandidates([]);
     setHasAnalysisAttempted(false);
-    setLastAction(`跳到第 ${nextMoveNumber} / ${totalMoves} 手。`);
+    setLastAction(`跳到第 ${nextMoveNumber} / ${navigationTotalMoves} 手。`);
     if (isAnalysisEnabled) {
-      setLastAction(`跳到第 ${nextMoveNumber} / ${totalMoves} 手，正在排队分析。`);
+      setLastAction(`跳到第 ${nextMoveNumber} / ${navigationTotalMoves} 手，正在排队分析。`);
       queueAnalysisIfEnabled();
     }
   };
@@ -1213,6 +1235,7 @@ export function App() {
     setWhiteName(parsed.whiteName);
     setGameDate(parsed.gameDate);
     setGameResult(parsed.result);
+    setGameTimeControl(undefined);
     setSourceFileName(file.name);
     setSgfWarnings(parsed.warnings);
     setMoves(parsed.moves);
@@ -1262,6 +1285,7 @@ export function App() {
     setWhiteName("白棋");
     setGameDate(undefined);
     setGameResult(undefined);
+    setGameTimeControl(undefined);
     setSourceFileName("新棋谱");
     setSgfWarnings([]);
     setMoves([]);
@@ -1298,14 +1322,20 @@ export function App() {
     queueAnalysisIfEnabled();
   };
   const applyOgsMoveUpdate = (update: OgsMoveUpdate) => {
+    const isNewOgsSource = sourceFileName !== update.sourceLabel;
     const previousSourceMoves = sourceMainLineMoves.length > 0 ? sourceMainLineMoves : moves;
     const wasOnSourceLine = moves.length === previousSourceMoves.length && movesMatchPrefix(moves, previousSourceMoves, previousSourceMoves.length);
-    const wasAtSourceEnd = wasOnSourceLine && currentMoveNumber === previousSourceMoves.length;
+    const wasAtSourceEnd = isNewOgsSource || (wasOnSourceLine && currentMoveNumber === previousSourceMoves.length);
     if (wasAtSourceEnd) {
       invalidatePendingAnalysis();
       setAutoAnalysisResume(null);
     }
-    const nextTree = extendMainLinePreservingBranches(gameTree, previousSourceMoves, update.moves, update.boardSize, komi);
+    const nextKomi = update.metadata?.komi ?? komi;
+    const nextRules = update.metadata?.rules ?? rules;
+    const nextBlackName = update.metadata?.blackName ?? blackName;
+    const nextWhiteName = update.metadata?.whiteName ?? whiteName;
+    const nextResult = update.metadata?.result ?? gameResult;
+    const nextTree = extendMainLinePreservingBranches(gameTree, previousSourceMoves, update.moves, update.boardSize, nextKomi);
     const nextMainLineEndNodeId = findMainLineEndNodeId(nextTree);
     const selectedNodeId = wasAtSourceEnd
       ? nextMainLineEndNodeId
@@ -1316,6 +1346,24 @@ export function App() {
     setBoardSize(update.boardSize);
     setSourceFileName(update.sourceLabel);
     setSgfWarnings(update.warnings);
+    if (update.metadata?.blackName) {
+      setBlackName(update.metadata.blackName);
+    }
+    if (update.metadata?.whiteName) {
+      setWhiteName(update.metadata.whiteName);
+    }
+    if (typeof update.metadata?.komi === "number") {
+      setKomi(update.metadata.komi);
+    }
+    if (update.metadata?.rules) {
+      setRules(update.metadata.rules);
+    }
+    if (update.metadata?.result) {
+      setGameResult(update.metadata.result);
+    }
+    if (update.metadata?.timeControl) {
+      setGameTimeControl(update.metadata.timeControl);
+    }
     setSourceMainLineMoves(update.moves);
     setSourceMainLineMoveCount(update.moves.length);
     setGameTree(nextTree);
@@ -1330,18 +1378,18 @@ export function App() {
       setAnalysisPoints([]);
       setHasAnalysisAttempted(false);
       const nextResearchDocument = createResearchDocument({
-        blackName,
+        blackName: nextBlackName,
         boardSize: update.boardSize,
         currentMoveNumber: update.moves.length,
         gameDate,
-        result: gameResult,
-        komi,
+        result: nextResult,
+        komi: nextKomi,
         moves: update.moves,
-        rules,
+        rules: nextRules,
         sourceFileName: update.sourceLabel,
         stones: buildBoardPosition(update.moves, update.boardSize, update.moves.length).stones,
         totalMoves: update.moves.length,
-        whiteName
+        whiteName: nextWhiteName
       });
       setResearchDocument(nextResearchDocument);
       setSelectedResearchBlockId(null);
@@ -1896,6 +1944,7 @@ export function App() {
         showVariationNumbers={showVariationNumbers}
         onKomiChange={updateKomi}
         onOpenFile={openGameFile}
+        onOpenOgsBrowser={() => setIsOgsBrowserOpen(true)}
         onOpenOgsUrl={() => setIsOgsDialogOpen(true)}
         onOgsDisconnect={() => disconnectOgs("已断开 OGS。")}
         onOpenSettings={() => setIsSettingsOpen(true)}
@@ -1946,6 +1995,7 @@ export function App() {
               result={gameResult}
               rules={rules}
               sourceFileName={sourceFileName}
+              timeControl={gameTimeControl}
               totalMoves={totalMoves}
               whiteName={whiteName}
             />
@@ -2116,7 +2166,7 @@ export function App() {
         isAnalysisEnabled={isAnalysisEnabled}
         isAnalyzing={isAnalyzing || isAutoAnalyzing}
         moveNumberDisplay={moveNumberDisplay}
-        totalMoves={totalMoves}
+        totalMoves={navigationTotalMoves}
         statusText={lastAction}
         onAnalysisToggle={toggleAnalysis}
         onAutoAnalyze={() => {
@@ -2194,6 +2244,19 @@ export function App() {
         onClose={() => setIsOgsDialogOpen(false)}
         onConnect={connectOgsUrl}
         onDisconnect={() => disconnectOgs("已断开 OGS。")}
+      />
+      <OgsBrowserDialog
+        isOpen={isOgsBrowserOpen}
+        onClose={() => setIsOgsBrowserOpen(false)}
+        onOpenGame={(gameId) => {
+          ogsConnectorRef.current?.connectGame(gameId);
+          setIsOgsBrowserOpen(false);
+        }}
+        onOpenUrl={() => setIsOgsDialogOpen(true)}
+        onOpenReview={(reviewId) => {
+          ogsConnectorRef.current?.connectReview(reviewId);
+          setIsOgsBrowserOpen(false);
+        }}
       />
       <AboutDialog open={isAboutOpen} onClose={() => setIsAboutOpen(false)} />
       <GameProgressPanel

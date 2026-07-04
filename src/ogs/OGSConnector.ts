@@ -25,6 +25,14 @@ type OgsGameData = {
     white?: { username?: string };
   };
   rules?: string;
+  time_control?: {
+    main_time?: number;
+    period_time?: number;
+    periods?: number;
+    speed?: string;
+    system?: string;
+    time_control?: string;
+  };
   white?: { username?: string };
   white_player_id?: number;
   width?: number;
@@ -348,6 +356,13 @@ export class OGSConnector {
       this.moveCallback?.({
         boardSize: parsed.boardSize,
         isFinished: Boolean(parsed.result),
+        metadata: {
+          blackName: parsed.blackName,
+          komi: parsed.komi,
+          result: parsed.result,
+          rules: parsed.rules,
+          whiteName: parsed.whiteName
+        },
         moves: parsed.moves,
         rawMoveString: "",
         reviewId,
@@ -381,6 +396,7 @@ export class OGSConnector {
     this.lastGameMoveSignature = signature;
     this.moveCallback?.({
       boardSize,
+      metadata: buildGameMetadata(gamedata),
       moves: decoded.moves,
       rawMoveString: "",
       gameId,
@@ -419,6 +435,46 @@ function withApiGameEndState(gamedata: OgsGameData | undefined, payload: OgsGame
 
 function isOgsGameFinished(gamedata: OgsGameData): boolean {
   return gamedata.phase === "finished" || Boolean(gamedata.outcome);
+}
+
+function buildGameMetadata(gamedata: OgsGameData): NonNullable<OgsMoveUpdate["metadata"]> {
+  const komi = typeof gamedata.komi === "number" ? gamedata.komi : Number(gamedata.komi);
+  return {
+    blackName: gamedata.players?.black?.username ?? gamedata.black?.username,
+    komi: Number.isFinite(komi) ? komi : undefined,
+    result: gamedata.outcome,
+    rules: gamedata.rules,
+    timeControl: formatTimeControl(gamedata.time_control),
+    whiteName: gamedata.players?.white?.username ?? gamedata.white?.username
+  };
+}
+
+function formatTimeControl(timeControl: OgsGameData["time_control"]): string | undefined {
+  if (!timeControl) {
+    return undefined;
+  }
+  const system = timeControl.system ?? timeControl.time_control ?? "time";
+  const speed = timeControl.speed ? ` / ${timeControl.speed}` : "";
+  if (system === "byoyomi") {
+    const main = formatSeconds(timeControl.main_time);
+    const period = formatSeconds(timeControl.period_time);
+    const periods = typeof timeControl.periods === "number" ? timeControl.periods : undefined;
+    return `${system} ${main}${period ? ` + ${periods ?? "?"}x${period}` : ""}${speed}`;
+  }
+  if (system === "fischer") {
+    return `${system} ${formatSeconds(timeControl.main_time)}${speed}`;
+  }
+  return `${system}${speed}`;
+}
+
+function formatSeconds(seconds: number | undefined): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) {
+    return "?";
+  }
+  if (seconds >= 60 && seconds % 60 === 0) {
+    return `${seconds / 60}m`;
+  }
+  return `${seconds}s`;
 }
 
 function decodeOgsGameMoves(moveList: unknown, boardSize: number): { moves: ReviewMove[]; warnings: string[] } {

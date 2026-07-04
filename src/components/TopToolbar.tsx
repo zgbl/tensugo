@@ -19,6 +19,7 @@ type TopToolbarProps = {
   onOpenAutoAnalysis: () => void;
   onOpenAbout: () => void;
   onOpenFile: (file: File) => void;
+  onOpenOgsBrowser: () => void;
   onOpenOgsUrl: () => void;
   onOgsDisconnect: () => void;
   onNewGame: () => void;
@@ -61,6 +62,7 @@ export function TopToolbar({
   onOpenAutoAnalysis,
   onOpenAbout,
   onOpenFile,
+  onOpenOgsBrowser,
   onOpenOgsUrl,
   onOgsDisconnect,
   onNewGame,
@@ -88,9 +90,18 @@ export function TopToolbar({
         <Menu label={t("menuFile")} items={[
           { label: t("newBoard"), action: onNewGame },
           { label: t("openDocument"), action: () => fileInputRef.current?.click() },
-          { label: "Open OGS URL", action: onOpenOgsUrl },
           { label: t("saveBrg"), action: onSaveResearch },
           { label: "导出PDF", action: onExportPdf }
+        ]} />
+        <Menu label="观战" items={[
+          { label: "OGS...", action: onOpenOgsBrowser },
+          { separator: true },
+          { label: "Open OGS URL...", action: onOpenOgsUrl },
+          { label: "Recent OGS", action: () => undefined },
+          { separator: true },
+          { label: "Fox（未来）", action: () => undefined },
+          { label: "弈客（未来）", action: () => undefined },
+          { label: "KGS（未来）", action: () => undefined }
         ]} />
         <Menu label={t("menuView")} items={[
           { label: showVariationNumbers ? t("hideVariationNumbers") : t("showVariationNumbers"), action: () => onShowVariationNumbersChange(!showVariationNumbers) },
@@ -231,16 +242,22 @@ function SaveIcon() {
   );
 }
 
-function Menu({ label, items }: { label: string; items: Array<{ label: string; action: () => void }> }) {
+type MenuItem = { label: string; action: () => void } | { separator: true };
+
+function Menu({ label, items }: { label: string; items: MenuItem[] }) {
   return (
     <div className="menu-root">
       <button type="button" className="menu-button">{label}</button>
       <div className="menu-popover">
-        {items.map((item) => (
-          <button type="button" key={item.label} onClick={item.action}>
-            {item.label}
-          </button>
-        ))}
+        {items.map((item, index) =>
+          "separator" in item ? (
+            <div className="menu-separator" key={`separator-${index}`} />
+          ) : (
+            <button type="button" key={item.label} onClick={item.action}>
+              {item.label}
+            </button>
+          )
+        )}
       </div>
     </div>
   );
