@@ -82,6 +82,7 @@ type AutoAnalysisSummary = {
   matches: number;
   details: AutoAnalysisMoveDetail[];
   knownScoreLosses: number;
+  knownWinrateLosses: number;
   topMatches: number;
   totalScoreLoss: number;
   totalWinrateLoss: number;
@@ -105,7 +106,7 @@ type AutoAnalysisMoveDetail = {
   rank: number | null;
   scoreLoss: number | null;
   winrate: number;
-  winrateLoss: number;
+  winrateLoss: number | null;
 };
 
 const MATCH_SETTINGS = {
@@ -588,6 +589,7 @@ export function App() {
           candidateMatches: parsed.analysis.candidateMatches,
           details: parsed.analysis.details,
           knownScoreLosses: parsed.analysis.knownScoreLosses,
+          knownWinrateLosses: parsed.analysis.knownWinrateLosses ?? parsed.analysis.details.filter((detail) => detail.winrateLoss !== null).length,
           matches: parsed.analysis.matches ?? parsed.analysis.details.filter((detail) => detail.isMatch).length,
           topMatches: parsed.analysis.topMatches,
           totalMatchScore: parsed.analysis.totalMatchScore,
@@ -1665,13 +1667,16 @@ export function App() {
           isCandidate &&
           actualCandidateIndex < MATCH_SETTINGS.bestNums &&
           matchScore * 100 >= MATCH_SETTINGS.percentVisits;
-        const winrateLoss = actualCandidate ? Math.max(0, best.winrate - actualCandidate.winrate) : 100 - best.winrate;
+        const winrateLoss = actualCandidate ? Math.max(0, best.winrate - actualCandidate.winrate) : null;
         const scoreLoss = actualCandidate ? calculateScoreLoss(actualMove.color, best, actualCandidate) : null;
         summary.analyzed += 1;
         summary.topMatches += isTopMove ? 1 : 0;
         summary.candidateMatches += isCandidate ? 1 : 0;
         summary.matches += isMatch ? 1 : 0;
-        summary.totalWinrateLoss += winrateLoss;
+        if (winrateLoss !== null) {
+          summary.totalWinrateLoss += winrateLoss;
+          summary.knownWinrateLosses += 1;
+        }
         summary.totalMatchScore += matchScore;
         if (scoreLoss !== null) {
           summary.totalScoreLoss += scoreLoss;
@@ -2835,7 +2840,7 @@ function TianshuReportDialog({
   const missed = Math.max(0, report.analyzed - report.candidateMatches);
   const matchRate = report.matches / analyzed;
   const candidateRate = report.candidateMatches / analyzed;
-  const averageWinrateLoss = report.totalWinrateLoss / analyzed;
+  const averageWinrateLoss = report.knownWinrateLosses > 0 ? report.totalWinrateLoss / report.knownWinrateLosses : null;
   const averageScoreLoss = report.knownScoreLosses > 0 ? report.totalScoreLoss / report.knownScoreLosses : null;
   const matchDegree = report.totalMatchScore / analyzed;
   const winrateBuckets = buildLossBuckets(report.details, "winrateLoss", [0.5, 1.5, 3, 6, 12]);
@@ -2864,7 +2869,7 @@ function TianshuReportDialog({
             <ReportBar label={t("topMoveRate")} value={formatPercent(blackStats.topRate)} percent={blackStats.topRate} />
             <ReportBar label="候选命中率" value={formatPercent(blackStats.candidateRate)} percent={blackStats.candidateRate} />
             <ReportBar label={t("averageScoreLoss")} value={formatOptionalNumber(blackStats.averageScoreLoss, "目")} percent={scaleLossBar(blackStats.averageScoreLoss)} />
-            <ReportBar label={t("averageWinrateLoss")} value={`${formatFixed(blackStats.averageWinrateLoss, 1)}%`} percent={scaleLossBar(blackStats.averageWinrateLoss)} />
+            <ReportBar label={t("averageWinrateLoss")} value={formatOptionalNumber(blackStats.averageWinrateLoss, "%")} percent={scaleLossBar(blackStats.averageWinrateLoss)} />
           </div>
           <div className="tianshu-report-side-card white">
             <h3>{t("white")}</h3>
@@ -2873,7 +2878,7 @@ function TianshuReportDialog({
             <ReportBar label={t("topMoveRate")} value={formatPercent(whiteStats.topRate)} percent={whiteStats.topRate} />
             <ReportBar label="候选命中率" value={formatPercent(whiteStats.candidateRate)} percent={whiteStats.candidateRate} />
             <ReportBar label={t("averageScoreLoss")} value={formatOptionalNumber(whiteStats.averageScoreLoss, "目")} percent={scaleLossBar(whiteStats.averageScoreLoss)} />
-            <ReportBar label={t("averageWinrateLoss")} value={`${formatFixed(whiteStats.averageWinrateLoss, 1)}%`} percent={scaleLossBar(whiteStats.averageWinrateLoss)} />
+            <ReportBar label={t("averageWinrateLoss")} value={formatOptionalNumber(whiteStats.averageWinrateLoss, "%")} percent={scaleLossBar(whiteStats.averageWinrateLoss)} />
           </div>
           <div className="tianshu-report-loss-panel">
             <div className="tianshu-report-tabs">
@@ -2892,14 +2897,14 @@ function TianshuReportDialog({
           <ReportMetric label="候选命中率" value={formatPercent(candidateRate)} />
           <ReportMetric label={t("missedCandidates")} value={`${missed} ${t("moveCounterSuffix")}`} />
           <ReportMetric label={t("averageScoreLoss")} value={formatOptionalNumber(averageScoreLoss, "目")} />
-          <ReportMetric label={t("averageWinrateLoss")} value={`${averageWinrateLoss.toFixed(1)}%`} />
+          <ReportMetric label={t("averageWinrateLoss")} value={formatOptionalNumber(averageWinrateLoss, "%")} />
           <ReportMetric label={t("totalWinrateLoss")} value={`${report.totalWinrateLoss.toFixed(1)}%`} />
         </div>
         <TianshuTrendChart details={report.details} startMove={report.startMove} endMove={report.endMove} t={t} />
         <div className="tianshu-report-footer">
           <span>{t("black")}：{t("matchRate")} {formatPercent(blackStats.matchRate)} {t("matchDegree")} {formatFixed(blackStats.matchDegree * 100, 1)}</span>
           <span>{t("white")}：{t("matchRate")} {formatPercent(whiteStats.matchRate)} {t("matchDegree")} {formatFixed(whiteStats.matchDegree * 100, 1)}</span>
-          <span>统计条件：候选命中率按前 {DEFAULT_CANDIDATE_DISPLAY_LIMIT} 候选；吻合率按前 {MATCH_SETTINGS.bestNums} 候选且 visits 占比阈值 {MATCH_SETTINGS.percentVisits}%；全局统计；目数损失仅在实战手命中候选时统计。</span>
+          <span>统计条件：候选命中率按前 {DEFAULT_CANDIDATE_DISPLAY_LIMIT} 候选；吻合率按前 {MATCH_SETTINGS.bestNums} 候选且 visits 占比阈值 {MATCH_SETTINGS.percentVisits}%；全局统计；目数损失和胜率损失仅在实战手命中候选时统计。</span>
         </div>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>{t("close")}</button>
@@ -3242,6 +3247,7 @@ function buildResearchAnalysisSnapshot(
     endMove: range?.endMove ?? lastPoint?.moveNumber ?? lastDetail?.moveNumber ?? summary.analyzed,
     engineName: engineProfile?.name,
     knownScoreLosses: summary.knownScoreLosses,
+    knownWinrateLosses: summary.knownWinrateLosses,
     matches: summary.matches,
     modelName: engineProfile?.modelPath ? engineProfile.modelPath.split("/").pop() : undefined,
     points,
@@ -3316,6 +3322,7 @@ function createEmptyAutoAnalysisSummary(): AutoAnalysisSummary {
     candidateMatches: 0,
     details: [],
     knownScoreLosses: 0,
+    knownWinrateLosses: 0,
     matches: 0,
     topMatches: 0,
     totalScoreLoss: 0,
@@ -3339,11 +3346,14 @@ function summarizeReportSide(details: AutoAnalysisMoveDetail[], color: "black" |
   const sideDetails = details.filter((detail) => detail.color === color);
   const analyzed = Math.max(1, sideDetails.length);
   const scoreLosses = sideDetails.filter((detail) => detail.scoreLoss !== null);
+  const winrateLosses = sideDetails.filter((detail) => detail.winrateLoss !== null);
   return {
     averageScoreLoss: scoreLosses.length > 0
       ? scoreLosses.reduce((total, detail) => total + (detail.scoreLoss ?? 0), 0) / scoreLosses.length
       : null,
-    averageWinrateLoss: sideDetails.reduce((total, detail) => total + detail.winrateLoss, 0) / analyzed,
+    averageWinrateLoss: winrateLosses.length > 0
+      ? winrateLosses.reduce((total, detail) => total + (detail.winrateLoss ?? 0), 0) / winrateLosses.length
+      : null,
     candidateRate: sideDetails.filter((detail) => detail.rank !== null).length / analyzed,
     matchRate: sideDetails.filter((detail) => detail.isMatch).length / analyzed,
     matchDegree: sideDetails.reduce((total, detail) => total + detail.matchScore, 0) / analyzed,

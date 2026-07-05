@@ -397,14 +397,20 @@ function metaItem(label: string, value: string | undefined): string {
 
 function renderExecutiveSummary(analysis: ResearchAnalysisSnapshot | undefined, includeTitle = true): string {
   const analyzed = analysis ? Math.max(1, analysis.analyzed) : 1;
-  const averageWinrateLoss = analysis ? analysis.totalWinrateLoss / analyzed : null;
+  const knownWinrateLosses = analysis ? analysis.knownWinrateLosses ?? analysis.details.filter((detail) => detail.winrateLoss !== null).length : 0;
+  const averageWinrateLoss = analysis && knownWinrateLosses > 0 ? analysis.totalWinrateLoss / knownWinrateLosses : null;
   const averageScoreLoss = analysis && analysis.knownScoreLosses > 0 ? analysis.totalScoreLoss / analysis.knownScoreLosses : null;
   const matchRate = analysis ? (analysis.matches ?? analysis.details.filter((detail) => detail.isMatch).length) / analyzed : null;
   const candidateRate = analysis ? analysis.candidateMatches / analyzed : null;
   const topRate = analysis ? analysis.topMatches / analyzed : null;
   const matchDegree = analysis ? analysis.totalMatchScore / analyzed : null;
   const worst = analysis?.details.reduce<ResearchAnalysisSnapshot["details"][number] | null>(
-    (current, detail) => (!current || detail.winrateLoss > current.winrateLoss ? detail : current),
+    (current, detail) => {
+      if (detail.winrateLoss === null) {
+        return current;
+      }
+      return !current || current.winrateLoss === null || detail.winrateLoss > current.winrateLoss ? detail : current;
+    },
     null
   );
   return `<section class="executive-summary">
@@ -417,11 +423,11 @@ function renderExecutiveSummary(analysis: ResearchAnalysisSnapshot | undefined, 
       ${summaryMetric("候选命中率", percentText(candidateRate))}
       ${summaryMetric("平均胜率损失", averageWinrateLoss === null ? "—" : `${averageWinrateLoss.toFixed(1)}%`)}
       ${summaryMetric("平均目差损失", averageScoreLoss === null ? "—" : averageScoreLoss.toFixed(1))}
-      ${summaryMetric("最大失误", worst ? `第 ${worst.moveNumber} 手 / ${worst.winrateLoss.toFixed(1)}%` : "—")}
+      ${summaryMetric("最大失误", worst && worst.winrateLoss !== null ? `第 ${worst.moveNumber} 手 / ${worst.winrateLoss.toFixed(1)}%` : "—")}
       ${summaryMetric("AI Engine", escapeHtml(analysis?.engineName ?? "—"))}
       ${summaryMetric("KataGo Model", escapeHtml(analysis?.modelName ?? "—"))}
       ${summaryMetric("分析范围", analysis ? `第 ${analysis.startMove}-${analysis.endMove} 手` : "—")}
-      ${summaryMetric("统计条件", `前 3 候选；visits 占比 ≥20%；全局统计；目数损失仅在实战手命中候选时统计`)}
+      ${summaryMetric("统计条件", `前 3 候选；visits 占比 ≥20%；全局统计；目数损失和胜率损失仅在实战手命中候选时统计`)}
     </div>
   </section>`;
 }
@@ -460,7 +466,8 @@ function renderWinrateChart(analysis: ResearchAnalysisSnapshot | undefined): str
   const analyzed = analysis ? Math.max(1, analysis.analyzed) : 1;
   const matchRate = analysis ? (analysis.matches ?? analysis.details.filter((detail) => detail.isMatch).length) / analyzed : null;
   const matchDegree = analysis ? analysis.totalMatchScore / analyzed : null;
-  const averageWinrateLoss = analysis ? analysis.totalWinrateLoss / analyzed : null;
+  const knownWinrateLosses = analysis ? analysis.knownWinrateLosses ?? analysis.details.filter((detail) => detail.winrateLoss !== null).length : 0;
+  const averageWinrateLoss = analysis && knownWinrateLosses > 0 ? analysis.totalWinrateLoss / knownWinrateLosses : null;
   return `<section class="winrate-report">
     <h2>胜率变化图</h2>
     <div class="tianshu-report-chart-tabs">

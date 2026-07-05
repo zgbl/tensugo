@@ -189,14 +189,18 @@ type ReviewGraphProps = {
 export function ReviewGraph({ currentMoveNumber, points, totalMoves, onJump }: ReviewGraphProps) {
   const width = 300;
   const height = 104;
-  const paddingX = 8;
-  const paddingY = 10;
+  const paddingX = 12;
+  const paddingY = 12;
   const usableWidth = width - paddingX * 2;
   const usableHeight = height - paddingY * 2;
   const moveMax = Math.max(1, totalMoves);
-  const plotPoints = points
-    .filter((point) => point.moveNumber >= 0 && point.moveNumber <= moveMax)
-    .map((point) => ({
+  const dedupedPoints = Array.from(
+    points
+      .filter((point) => point.moveNumber >= 0 && point.moveNumber <= moveMax)
+      .reduce((byMove, point) => byMove.set(point.moveNumber, point), new Map<number, ReviewAnalysisPoint>())
+      .values()
+  ).sort((a, b) => a.moveNumber - b.moveNumber);
+  const plotPoints = dedupedPoints.map((point) => ({
       ...point,
       x: paddingX + (point.moveNumber / moveMax) * usableWidth,
       y: paddingY + ((100 - point.winrate) / 100) * usableHeight
@@ -205,7 +209,14 @@ export function ReviewGraph({ currentMoveNumber, points, totalMoves, onJump }: R
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
     .join(" ");
   const currentX = paddingX + (Math.max(0, Math.min(moveMax, currentMoveNumber)) / moveMax) * usableWidth;
-  const latestPoint = points.find((point) => point.moveNumber === currentMoveNumber) ?? points.at(-1);
+  const currentPoint = plotPoints.find((point) => point.moveNumber === currentMoveNumber);
+  const latestPoint = dedupedPoints.find((point) => point.moveNumber === currentMoveNumber) ?? dedupedPoints.at(-1);
+  const visibleDots = plotPoints.filter((point, index) => {
+    if (point.moveNumber === currentMoveNumber || index === 0 || index === plotPoints.length - 1) {
+      return true;
+    }
+    return plotPoints.length <= 90 || index % Math.ceil(plotPoints.length / 45) === 0;
+  });
 
   const handleClick = (event: MouseEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -216,20 +227,36 @@ export function ReviewGraph({ currentMoveNumber, points, totalMoves, onJump }: R
   return (
     <div className="review-graph">
       <svg viewBox={`0 0 ${width} ${height}`} role="button" tabIndex={0} onClick={handleClick}>
-        <line className="graph-grid graph-mid" x1={paddingX} y1={height / 2} x2={width - paddingX} y2={height / 2} />
-        <line className="graph-grid" x1={paddingX} y1={paddingY} x2={width - paddingX} y2={paddingY} />
-        <line className="graph-grid" x1={paddingX} y1={height - paddingY} x2={width - paddingX} y2={height - paddingY} />
+        <rect className="graph-plot-bg" x={paddingX} y={paddingY} width={usableWidth} height={usableHeight} rx="3" />
+        {[25, 50, 75].map((tick) => {
+          const y = paddingY + ((100 - tick) / 100) * usableHeight;
+          return (
+            <line
+              className={tick === 50 ? "graph-grid graph-mid" : "graph-grid"}
+              key={tick}
+              x1={paddingX}
+              y1={y}
+              x2={width - paddingX}
+              y2={y}
+            />
+          );
+        })}
+        {[0.25, 0.5, 0.75].map((ratio) => {
+          const x = paddingX + ratio * usableWidth;
+          return <line className="graph-grid graph-vertical" key={ratio} x1={x} y1={paddingY} x2={x} y2={height - paddingY} />;
+        })}
         {path ? <path className="graph-winrate-line" d={path} /> : null}
-        {plotPoints.map((point) => (
+        {visibleDots.map((point) => (
           <circle
             className={point.moveNumber === currentMoveNumber ? "graph-point current" : "graph-point"}
             cx={point.x}
             cy={point.y}
             key={point.moveNumber}
-            r={point.moveNumber === currentMoveNumber ? 3.5 : 2.5}
+            r={point.moveNumber === currentMoveNumber ? 3.8 : 2.1}
           />
         ))}
         <line className="graph-current-line" x1={currentX} y1={paddingY} x2={currentX} y2={height - paddingY} />
+        {currentPoint ? <circle className="graph-current-ring" cx={currentPoint.x} cy={currentPoint.y} r="5.2" /> : null}
       </svg>
       <div className="review-graph-meta">
         <span>第 {currentMoveNumber} / {totalMoves} 手</span>

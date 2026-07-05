@@ -13,7 +13,7 @@ export type ResearchAnalysisDetail = {
   rank: number | null;
   scoreLoss: number | null;
   winrate: number;
-  winrateLoss: number;
+  winrateLoss: number | null;
 };
 
 export type ResearchAnalysisPoint = {
@@ -30,6 +30,7 @@ export type ResearchAnalysisSnapshot = {
   details: ResearchAnalysisDetail[];
   endMove: number;
   engineName?: string;
+  knownWinrateLosses?: number;
   knownScoreLosses: number;
   matches?: number;
   modelName?: string;
