@@ -52,14 +52,14 @@ button:hover {
 .app-shell {
   height: 100vh;
   display: grid;
-  grid-template-rows: calc(49px * var(--toolbar-scale, 1)) minmax(0, 1fr) calc(44px * var(--toolbar-scale, 1));
+  grid-template-rows: calc(56px * var(--toolbar-scale, 1)) minmax(0, 1fr) calc(44px * var(--toolbar-scale, 1));
 }
 
 .top-region {
   background: #fbfdfc;
   border-bottom: 1px solid var(--panel-border);
   display: grid;
-  grid-template-rows: calc(22px * var(--toolbar-scale, 1)) calc(26px * var(--toolbar-scale, 1));
+  grid-template-rows: calc(24px * var(--toolbar-scale, 1)) calc(31px * var(--toolbar-scale, 1));
   min-width: 0;
   position: relative;
   z-index: 5;
@@ -143,6 +143,7 @@ button:hover {
 
 .top-toolbar {
   gap: calc(6px * var(--toolbar-scale, 1));
+  padding-top: calc(2px * var(--toolbar-scale, 1));
 }
 
 .tool-button-group {
