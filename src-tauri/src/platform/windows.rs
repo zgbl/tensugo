@@ -17,6 +17,9 @@ pub fn executable_name() -> &'static str {
 
 pub fn common_engine_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    roots.push(PathBuf::from(
+        r"C:\Apps\KataGo202306\2023-06-15-windows64+katago\2023-06-15-windows64+katago",
+    ));
     if let Ok(program_files) = env::var("ProgramFiles") {
         roots.push(PathBuf::from(program_files).join("KataGo"));
     }
@@ -30,7 +33,19 @@ pub fn common_engine_roots() -> Vec<PathBuf> {
 }
 
 pub fn known_engine_profiles() -> Vec<KnownEngineProfile> {
-    Vec::new()
+    let lizzie_root = PathBuf::from(
+        r"C:\Apps\KataGo202306\2023-06-15-windows64+katago\2023-06-15-windows64+katago",
+    );
+
+    vec![(
+        "KataGo CUDA 202605".to_string(),
+        lizzie_root.join("katago_cuda202605").join("katago.exe"),
+        lizzie_root
+            .join("weights")
+            .join("kata1-b28c512nbt-s12674021632-d5782420041.bin.gz"),
+        lizzie_root.join("katago_configs").join("default_gtp.cfg"),
+        "Windows 已知新版 CUDA 引擎".to_string(),
+    )]
 }
 
 pub fn choose_save_path(

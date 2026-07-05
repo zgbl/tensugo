@@ -291,7 +291,7 @@ fn common_install_candidates() -> Vec<EngineProfileCandidate> {
 }
 
 fn find_first_executable(root: &Path) -> Option<PathBuf> {
-    [
+    let direct = [
         root.join(platform::executable_name()),
         root.join("bin").join(platform::executable_name()),
         root.join("engines")
@@ -299,7 +299,52 @@ fn find_first_executable(root: &Path) -> Option<PathBuf> {
             .join(platform::executable_name()),
     ]
     .into_iter()
-    .find(|path| path.exists())
+    .find(|path| path.exists());
+    direct.or_else(|| find_first_executable_in_child_dirs(root))
+}
+
+fn find_first_executable_in_child_dirs(root: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut best: Option<PathBuf> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let executable = path.join(platform::executable_name());
+        if !executable.exists() {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current| engine_dir_rank(&path) > engine_dir_rank(current.parent().unwrap_or(root)))
+        {
+            best = Some(executable);
+        }
+    }
+    best
+}
+
+fn engine_dir_rank(path: &Path) -> usize {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut score: usize = 0;
+    if name.contains("cuda202605") {
+        score += 100;
+    }
+    if name.contains("cuda") {
+        score += 50;
+    }
+    if name.contains("opencl") {
+        score += 30;
+    }
+    if name.contains("tensorrt") {
+        score = score.saturating_sub(20);
+    }
+    score
 }
 
 fn path_candidates() -> Vec<EngineProfileCandidate> {

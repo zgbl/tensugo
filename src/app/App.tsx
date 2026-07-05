@@ -799,8 +799,8 @@ export function App() {
     try {
       const result = await discoverEngineProfile(engineProfile);
       stopEngineProgressLog();
-      const visibleSelected = filterHiddenEngineProfiles([result.selected]).filter(isCompleteEngineProfile);
-      const nextProfiles = mergeEngineProfiles(filterHiddenEngineProfiles(engineProfiles), visibleSelected);
+      const visibleCandidates = filterHiddenEngineProfiles(result.candidates).filter(isCompleteEngineProfile);
+      const nextProfiles = mergeEngineProfiles(filterHiddenEngineProfiles(engineProfiles), visibleCandidates);
       const selectedKey = engineProfileKey(result.selected);
       const selectedProfile =
         nextProfiles.find((profile) => engineProfileKey(profile) === selectedKey) ??
@@ -3189,14 +3189,13 @@ function isProtectedEngineProfile(profile: EngineProfile): boolean {
 }
 
 function isObsoleteWindowsEngineProfile(profile: EngineProfile): boolean {
-  const source = (profile.source ?? "").toLowerCase();
   const text = `${profile.name}\n${profile.executablePath}\n${profile.modelPath}\n${profile.configPath}`.toLowerCase();
-  return source.includes("windows 已知") || text.includes("katago202306") || text.includes("lizzie") || text.includes("katago_tensorrt");
+  return text.includes("lizzie kataGo tensorrt".toLowerCase()) || text.includes("katago_tensorrt");
 }
 
 function isTransientAutoDetectedProfile(profile: EngineProfile): boolean {
   const source = (profile.source ?? "").toLowerCase();
-  return source.includes("常见安装目录") || source === "path" || source.includes("dev 环境");
+  return (source.includes("常见安装目录") && !profile.exists) || source === "path" || source.includes("dev 环境");
 }
 
 function normalizeCandidateDisplayLimit(value: unknown): number {
