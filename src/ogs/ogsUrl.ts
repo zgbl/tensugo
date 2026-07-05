@@ -6,9 +6,9 @@ export function parseOgsUrl(rawUrl: string): OgsUrlTarget | null {
     return null;
   }
 
-  const directReview = trimmed.match(/^(?:review|demo)[:/#-]?(\d+)$/i);
-  if (directReview) {
-    return { kind: "review", reviewId: Number(directReview[1]) };
+  const directDemo = trimmed.match(/^(?:demo|review)[:/#-]?(\d+)$/i);
+  if (directDemo) {
+    return { kind: "demo", demoId: Number(directDemo[1]) };
   }
 
   const directGame = trimmed.match(/^game[:/#-]?(\d+)$/i);
@@ -29,11 +29,11 @@ export function parseOgsUrl(rawUrl: string): OgsUrlTarget | null {
   }
 
   const parts = url.pathname.split("/").filter(Boolean);
-  const reviewIndex = parts.findIndex((part) => part === "review" || part === "demo");
-  if (reviewIndex >= 0) {
-    const maybeViewOffset = parts[reviewIndex + 1] === "view" ? 2 : 1;
-    const reviewId = Number(parts[reviewIndex + maybeViewOffset]);
-    return Number.isInteger(reviewId) && reviewId > 0 ? { kind: "review", reviewId } : null;
+  const demoIndex = parts.findIndex((part) => part === "demo" || part === "review");
+  if (demoIndex >= 0) {
+    const maybeViewOffset = parts[demoIndex + 1] === "view" ? 2 : 1;
+    const demoId = Number(parts[demoIndex + maybeViewOffset]);
+    return Number.isInteger(demoId) && demoId > 0 ? { kind: "demo", demoId } : null;
   }
 
   const gameIndex = parts.findIndex((part) => part === "game");

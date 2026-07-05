@@ -6,7 +6,7 @@ type OgsBrowserDialogProps = {
   onClose: () => void;
   onOpenGame: (gameId: number) => void;
   onOpenUrl: () => void;
-  onOpenReview: (reviewId: number) => void;
+  onOpenDemo: (demoId: number) => void;
 };
 
 const DEFAULT_FILTERS: OgsBrowserFilters = {
@@ -21,11 +21,11 @@ const DEFAULT_FILTERS: OgsBrowserFilters = {
 
 const service = new OGSBrowserService();
 
-export function OgsBrowserDialog({ isOpen, onClose, onOpenGame, onOpenUrl, onOpenReview: _onOpenReview }: OgsBrowserDialogProps) {
-  const [activeTab, setActiveTab] = useState<"live" | "reviews">("live");
+export function OgsBrowserDialog({ isOpen, onClose, onOpenGame, onOpenUrl, onOpenDemo: _onOpenDemo }: OgsBrowserDialogProps) {
+  const [activeTab, setActiveTab] = useState<"live" | "demos">("live");
   const [filters, setFilters] = useState<OgsBrowserFilters>(DEFAULT_FILTERS);
   const [games, setGames] = useState<OgsBrowserGame[]>([]);
-  const [reviews, setReviews] = useState<OgsBrowserGame[]>([]);
+  const [demos, setDemos] = useState<OgsBrowserGame[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +36,7 @@ export function OgsBrowserDialog({ isOpen, onClose, onOpenGame, onOpenUrl, onOpe
       if (activeTab === "live") {
         setGames(await service.fetchLiveGames(filters));
       } else {
-        setReviews(await service.fetchReviews());
+        setDemos(await service.fetchDemos());
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -68,7 +68,7 @@ export function OgsBrowserDialog({ isOpen, onClose, onOpenGame, onOpenUrl, onOpe
 
         <div className="ogs-browser-tabs">
           <button type="button" className={activeTab === "live" ? "active" : ""} onClick={() => setActiveTab("live")}>Live Games</button>
-          <button type="button" className={activeTab === "reviews" ? "active" : ""} onClick={() => setActiveTab("reviews")}>Reviews</button>
+          <button type="button" className={activeTab === "demos" ? "active" : ""} onClick={() => setActiveTab("demos")}>Demos</button>
           <button type="button" onClick={refresh} disabled={isLoading}>{isLoading ? "Refreshing..." : "Refresh"}</button>
           <button type="button" onClick={() => {
             onClose();
@@ -117,13 +117,13 @@ export function OgsBrowserDialog({ isOpen, onClose, onOpenGame, onOpenUrl, onOpe
           </>
         ) : (
           <div className="ogs-browser-empty">
-            {reviews.length > 0 ? (
-              <OgsGameTable games={reviews} emptyText="No reviews found." onOpenGame={(gameId) => {
+            {demos.length > 0 ? (
+              <OgsGameTable games={demos} emptyText="No demos found." onOpenGame={(gameId) => {
                 onOpenGame(gameId);
                 onClose();
               }} />
             ) : (
-              <p>OGS 当前前端没有公开 Review 列表接口；已支持通过 Watch → Open OGS URL... 打开 review/demo 链接。</p>
+              <p>OGS 当前没有稳定公开 Demo 列表接口；已支持通过 观战 → Open OGS URL... 打开 demo 链接。</p>
             )}
           </div>
         )}

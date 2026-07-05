@@ -66,10 +66,10 @@ export class OGSBrowserService {
     return filteredGames.length > 0 ? filteredGames : games;
   }
 
-  async fetchReviews(): Promise<OgsBrowserGame[]> {
-    // OGS exposes individual public review metadata and SGF, but the current
-    // web client does not use a public review-list endpoint. Keep the service
-    // boundary here so a provider-specific list can be added without changing App.
+  async fetchDemos(): Promise<OgsBrowserGame[]> {
+    // OGS exposes individual public demo pages, but the current
+    // web client does not use a stable public demo-list endpoint. Keep this
+    // provider boundary so a list API can be added without changing App.
     return [];
   }
 }

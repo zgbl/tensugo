@@ -1434,7 +1434,7 @@ export function App() {
       setIsOgsDialogOpen(false);
       return;
     }
-    ogsConnectorRef.current?.connectReview(target.reviewId);
+    ogsConnectorRef.current?.connectDemo(target.demoId);
     setIsOgsDialogOpen(false);
   };
   const refreshOgs = () => {
@@ -2257,8 +2257,8 @@ export function App() {
           setIsOgsBrowserOpen(false);
         }}
         onOpenUrl={() => setIsOgsDialogOpen(true)}
-        onOpenReview={(reviewId) => {
-          ogsConnectorRef.current?.connectReview(reviewId);
+        onOpenDemo={(demoId) => {
+          ogsConnectorRef.current?.connectDemo(demoId);
           setIsOgsBrowserOpen(false);
         }}
       />

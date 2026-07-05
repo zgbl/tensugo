@@ -1,7 +1,7 @@
 import type { ReviewMove } from "../game/sampleGame";
 
 export type OgsUrlTarget =
-  | { kind: "review"; reviewId: number }
+  | { kind: "demo"; demoId: number }
   | { kind: "game"; gameId: number };
 
 export type OgsConnectionStatus =
@@ -32,7 +32,7 @@ export type OgsMoveUpdate = OgsDecodedMoves & {
     timeControl?: string;
     whiteName?: string;
   };
-  reviewId?: number;
+  demoId?: number;
   sourceLabel: string;
 };
 

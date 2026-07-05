@@ -61,7 +61,7 @@ export function OgsDialog({
             {detail ? <small>{detail}</small> : null}
           </div>
           <p className="dialog-note">
-            当前 MVP 支持 public review/demo。game/live URL 会先识别并提示 coming soon。
+            当前 MVP 支持 public demo。game/live URL 会先识别并提示 coming soon。
           </p>
         </div>
         <footer className="dialog-actions">

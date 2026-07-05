@@ -20,11 +20,11 @@ TensuGo is under active development. macOS is the primary tested platform today.
 - Research document mode with board snapshots, candidate blocks, and variation commentary.
 - PDF / HTML research export.
 - Engine settings for auto-detecting, choosing, testing, and resetting KataGo configuration.
-- OGS public review read-only sync via `Open OGS URL` without login or OGS AI.
+- OGS public demo read-only sync via `Open OGS URL` without login or OGS AI.
 
 ## OGS Live / Review Read-Only Sync
 
-Use `文件 -> Open OGS URL` and paste a public OGS review URL, for example:
+Use `观战 -> Open OGS URL` and paste a public OGS demo URL, for example:
 
 ```text
 https://online-go.com/demo/1730972
@@ -33,7 +33,7 @@ https://online-go.com/review/1730972
 
 Current MVP behavior:
 
-- Supports public OGS review/demo links only.
+- Supports public OGS demo links only.
 - Does not require OGS login.
 - Does not use OAuth.
 - Does not send comments, moves, or edits back to OGS.

@@ -8,7 +8,7 @@ const OGS_WEBSOCKET_URL = "wss://wsp.online-go.com";
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 1500;
 const GAME_POLL_INTERVAL_MS = 10_000;
-const REVIEW_STATIC_FALLBACK_DELAY_MS = 2500;
+const DEMO_STATIC_FALLBACK_DELAY_MS = 5000;
 
 type OgsSocketMessage = [string, unknown];
 type OgsGameData = {
@@ -51,10 +51,11 @@ export class OGSConnector {
   private lastGameMoveSignature: string | null = null;
   private moveCallback: ((update: OgsMoveUpdate) => void) | null = null;
   private reconnectAttempts = 0;
-  private reviewId: number | null = null;
-  private reviewStaticFallbackTimer: number | null = null;
-  private reviewMoves: ReviewMove[] = [];
-  private reviewWarnings: string[] = [];
+  private demoId: number | null = null;
+  private demoStaticFallbackTimer: number | null = null;
+  private demoUsedLiveSocket = false;
+  private demoMoves: ReviewMove[] = [];
+  private demoWarnings: string[] = [];
   private shouldReconnect = false;
   private socket: WebSocket | null = null;
   private statusCallback: ((update: OgsStatusUpdate) => void) | null = null;
@@ -80,33 +81,34 @@ export class OGSConnector {
     this.openSocket();
   }
 
-  connectReview(reviewId: number) {
-    if (this.socket && this.reviewId === reviewId && this.socket.readyState <= WebSocket.OPEN) {
-      this.emitStatus("syncing", `Refreshing OGS Review #${reviewId}`, this.sourceLabel(reviewId));
-      void this.loadStaticReview(reviewId, true);
+  connectDemo(demoId: number) {
+    if (this.socket && this.demoId === demoId && this.socket.readyState <= WebSocket.OPEN) {
+      this.emitStatus("syncing", `Refreshing OGS Demo #${demoId}`, this.sourceLabel(demoId));
+      this.refreshDemo(demoId);
       return;
     }
 
     this.disconnect();
     this.gameId = null;
     this.lastGameMoveSignature = null;
-    this.reviewId = reviewId;
-    this.reviewMoves = [];
-    this.reviewWarnings = [];
+    this.demoId = demoId;
+    this.demoUsedLiveSocket = false;
+    this.demoMoves = [];
+    this.demoWarnings = [];
     this.reconnectAttempts = 0;
     this.shouldReconnect = true;
     this.openSocket();
-    this.startReviewStaticFallback(reviewId);
+    this.startDemoStaticFallback(demoId);
   }
 
   disconnect() {
     this.shouldReconnect = false;
     this.stopGamePolling();
-    this.stopReviewStaticFallback();
+    this.stopDemoStaticFallback();
     if (this.socket) {
       try {
-        if (this.reviewId) {
-          this.socket.send(JSON.stringify(["review/disconnect", { review_id: this.reviewId }]));
+        if (this.demoId) {
+          this.socket.send(JSON.stringify(["review/disconnect", { review_id: this.demoId }]));
         } else if (this.gameId) {
           this.socket.send(JSON.stringify(["game/disconnect", { game_id: this.gameId }]));
         }
@@ -119,7 +121,7 @@ export class OGSConnector {
     this.emitStatus(
       "disconnected",
       "OGS disconnected",
-      this.reviewId ? this.sourceLabel(this.reviewId) : this.gameId ? this.gameSourceLabel(this.gameId) : undefined
+      this.demoId ? this.sourceLabel(this.demoId) : this.gameId ? this.gameSourceLabel(this.gameId) : undefined
     );
   }
 
@@ -137,25 +139,25 @@ export class OGSConnector {
       void this.loadPublicGame(this.gameId, "Synced", true);
       return;
     }
-    if (this.reviewId) {
-      this.emitStatus("syncing", `Refreshing OGS Review #${this.reviewId}`, this.sourceLabel(this.reviewId));
-      void this.loadStaticReview(this.reviewId, true);
+    if (this.demoId) {
+      this.emitStatus("syncing", `Refreshing OGS Demo #${this.demoId}`, this.sourceLabel(this.demoId));
+      this.refreshDemo(this.demoId);
       return;
     }
     this.emitStatus("error", "No OGS source connected");
   }
 
   private openSocket() {
-    const reviewId = this.reviewId;
+    const demoId = this.demoId;
     const gameId = this.gameId;
-    if (!reviewId && !gameId) {
+    if (!demoId && !gameId) {
       return;
     }
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) {
       return;
     }
 
-    const sourceLabel = reviewId ? this.sourceLabel(reviewId) : this.gameSourceLabel(gameId as number);
+    const sourceLabel = demoId ? this.sourceLabel(demoId) : this.gameSourceLabel(gameId as number);
     this.emitStatus("connecting", `Connecting to ${sourceLabel}`, sourceLabel);
     try {
       this.socket = new WebSocket(OGS_WEBSOCKET_URL);
@@ -166,21 +168,21 @@ export class OGSConnector {
     }
 
     this.socket.addEventListener("open", () => {
-      if (!this.socket || this.reviewId !== reviewId || this.gameId !== gameId) {
+      if (!this.socket || this.demoId !== demoId || this.gameId !== gameId) {
         return;
       }
       this.reconnectAttempts = 0;
       this.emitStatus("connected", `Connected to ${sourceLabel}`, sourceLabel);
-      if (reviewId) {
-        this.send(["review/connect", { review_id: reviewId }]);
-        this.send(["chat/join", { channel: `review-${reviewId}` }]);
+      if (demoId) {
+        this.send(["review/connect", { review_id: demoId }]);
+        this.send(["chat/join", { channel: `review-${demoId}` }]);
       } else if (gameId) {
         this.send(["game/connect", { chat: false, game_id: gameId }]);
       }
     });
 
     this.socket.addEventListener("message", (event) => {
-      this.handleMessage(event.data, reviewId, gameId);
+      this.handleMessage(event.data, demoId, gameId);
     });
 
     this.socket.addEventListener("error", (event) => {
@@ -189,7 +191,7 @@ export class OGSConnector {
     });
 
     this.socket.addEventListener("close", () => {
-      if (!this.shouldReconnect || this.reviewId !== reviewId || this.gameId !== gameId) {
+      if (!this.shouldReconnect || this.demoId !== demoId || this.gameId !== gameId) {
         this.emitStatus("disconnected", "OGS disconnected", sourceLabel);
         return;
       }
@@ -204,7 +206,7 @@ export class OGSConnector {
     });
   }
 
-  private handleMessage(data: unknown, reviewId: number | null, gameId: number | null) {
+  private handleMessage(data: unknown, demoId: number | null, gameId: number | null) {
     let message: OgsSocketMessage;
     try {
       message = JSON.parse(String(data)) as OgsSocketMessage;
@@ -229,60 +231,105 @@ export class OGSConnector {
         return;
       }
     }
-    if (!reviewId) {
+    if (!demoId) {
       return;
     }
-    if (eventName === `review/${reviewId}/r`) {
-      this.processReviewMessage(payload, reviewId);
+    if (eventName === `review/${demoId}/r`) {
+      this.demoUsedLiveSocket = true;
+      this.processDemoMessage(payload, demoId);
       return;
     }
-    if (eventName === `review/${reviewId}/full_state`) {
+    if (eventName === `review/${demoId}/full_state`) {
+      this.demoUsedLiveSocket = true;
       const entries = extractReviewEntries(payload);
       if (entries.length === 0) {
         console.warn("OGS review full_state had no review entries", payload);
-        this.emitStatus("connected", "OGS full_state contained no moves", this.sourceLabel(reviewId));
+        this.emitStatus("connected", "OGS full_state contained no moves", this.sourceLabel(demoId));
         return;
       }
-      this.reviewMoves = [];
-      this.reviewWarnings = [];
+      this.demoMoves = [];
+      this.demoWarnings = [];
+      let loadedMainLine = false;
       for (const item of entries) {
-        this.processReviewMessage(item, reviewId, true);
+        if (!loadedMainLine && isReviewMovePayload(item)) {
+          loadedMainLine = this.processDemoMessage(item, demoId, true, "replace-mainline");
+          continue;
+        }
+        this.processDemoMetadata(item, demoId);
       }
-      this.publishReviewMoves(reviewId, "Loaded");
+      this.publishDemoMoves(demoId, "Loaded");
       return;
     }
-    if (eventName === `review/${reviewId}/error`) {
-      console.error("OGS review error", payload);
-      this.emitStatus("error", typeof payload === "string" ? payload : "OGS review error", this.sourceLabel(reviewId));
+    if (eventName === `review/${demoId}/error`) {
+      console.error("OGS demo error", payload);
+      this.emitStatus("error", typeof payload === "string" ? payload : "OGS demo error", this.sourceLabel(demoId));
     }
   }
 
-  private processReviewMessage(payload: unknown, reviewId: number, deferPublish = false) {
+  private processDemoMessage(
+    payload: unknown,
+    demoId: number,
+    deferPublish = false,
+    mode: "append-if-mainline" | "replace-mainline" = "append-if-mainline"
+  ): boolean {
     if (!isReviewMovePayload(payload)) {
       if (isObject(payload) && ("gamedata" in payload || "chat" in payload || "owner" in payload || "controller" in payload)) {
-        return;
+        this.processDemoMetadata(payload, demoId);
+        return false;
       }
-      console.debug("OGS review payload without moves ignored", payload);
-      return;
+      console.debug("OGS demo payload without moves ignored", payload);
+      return false;
     }
     try {
-      this.emitStatus("syncing", `Syncing OGS Review #${reviewId}`, this.sourceLabel(reviewId));
+      this.emitStatus("syncing", `Syncing OGS Demo #${demoId}`, this.sourceLabel(demoId));
       const fromMove = typeof payload.f === "number" && payload.f > 0 ? payload.f : 0;
       const decoded = decodeOgsMoveString(payload.m, 19, fromMove);
-      this.reviewMoves = this.reviewMoves.slice(0, fromMove).concat(decoded.moves);
-      this.reviewWarnings = this.reviewWarnings.concat(decoded.warnings);
-      if (!deferPublish) {
-        this.publishReviewMoves(reviewId, "Synced");
+      if (mode === "replace-mainline") {
+        this.demoMoves = decoded.moves;
+      } else if (fromMove === this.demoMoves.length) {
+        this.demoMoves = this.demoMoves.concat(decoded.moves);
+      } else if (fromMove === 0 && decoded.moves.length >= this.demoMoves.length) {
+        this.demoMoves = decoded.moves;
+      } else {
+        console.debug("OGS demo branch update ignored for mainline", {
+          currentMoves: this.demoMoves.length,
+          fromMove,
+          incomingMoves: decoded.moves.length,
+          demoId
+        });
+        return false;
       }
+      this.demoWarnings = this.demoWarnings.concat(decoded.warnings);
+      if (!deferPublish) {
+        this.publishDemoMoves(demoId, "Synced");
+      }
+      return true;
     } catch (error) {
       console.error("OGS move decode failed", { error, payload });
-      this.emitStatus("error", "OGS move decode failed", this.sourceLabel(reviewId));
+      this.emitStatus("error", "OGS move decode failed", this.sourceLabel(demoId));
+      return false;
     }
   }
 
-  private publishReviewMoves(reviewId: number, verb: "Loaded" | "Synced") {
-    this.stopReviewStaticFallback();
-    const moves = this.reviewMoves.map((move, index) => ({
+  private processDemoMetadata(payload: unknown, demoId: number) {
+    if (!isObject(payload)) {
+      return;
+    }
+    if ("gamedata" in payload) {
+      this.processDemoGamedata(payload.gamedata, demoId);
+    }
+  }
+
+  private processDemoGamedata(payload: unknown, demoId: number) {
+    if (!isObject(payload)) {
+      return;
+    }
+    this.emitStatus("connected", `Loaded metadata for OGS Demo #${demoId}`, this.sourceLabel(demoId));
+  }
+
+  private publishDemoMoves(demoId: number, verb: "Loaded" | "Synced") {
+    this.stopDemoStaticFallback();
+    const moves = this.demoMoves.map((move, index) => ({
       ...move,
       moveNumber: index + 1
     }));
@@ -290,12 +337,12 @@ export class OGSConnector {
       boardSize: 19,
       moves,
       rawMoveString: "",
-      reviewId,
-      sourceLabel: this.sourceLabel(reviewId),
-      warnings: this.reviewWarnings
+      demoId,
+      sourceLabel: this.sourceLabel(demoId),
+      warnings: this.demoWarnings
     });
     const suffix = moves.length === 0 ? "no playable moves yet" : `${moves.length} moves`;
-    this.emitStatus("connected", `${verb} ${suffix}`, this.sourceLabel(reviewId));
+    this.emitStatus("connected", `${verb} ${suffix}`, this.sourceLabel(demoId));
   }
 
   private send(message: OgsSocketMessage) {
@@ -343,41 +390,54 @@ export class OGSConnector {
     }
   }
 
-  private startReviewStaticFallback(reviewId: number) {
-    this.stopReviewStaticFallback();
-    this.reviewStaticFallbackTimer = window.setTimeout(() => {
-      if (this.reviewId !== reviewId || this.reviewMoves.length > 0) {
+  private startDemoStaticFallback(demoId: number) {
+    this.stopDemoStaticFallback();
+    this.demoStaticFallbackTimer = window.setTimeout(() => {
+      if (this.demoId !== demoId || this.demoMoves.length > 0 || this.demoUsedLiveSocket) {
         return;
       }
-      void this.loadStaticReview(reviewId, false);
-    }, REVIEW_STATIC_FALLBACK_DELAY_MS);
+      this.emitStatus(
+        "syncing",
+        "OGS demo live data not received yet; loading static demo snapshot.",
+        this.sourceLabel(demoId)
+      );
+      void this.loadStaticDemo(demoId, false);
+    }, DEMO_STATIC_FALLBACK_DELAY_MS);
   }
 
-  private stopReviewStaticFallback() {
-    if (this.reviewStaticFallbackTimer !== null) {
-      window.clearTimeout(this.reviewStaticFallbackTimer);
-      this.reviewStaticFallbackTimer = null;
+  private stopDemoStaticFallback() {
+    if (this.demoStaticFallbackTimer !== null) {
+      window.clearTimeout(this.demoStaticFallbackTimer);
+      this.demoStaticFallbackTimer = null;
     }
   }
 
-  private async loadStaticReview(reviewId: number, forcePublish: boolean) {
+  private async loadStaticDemo(demoId: number, forcePublish: boolean) {
     try {
-      this.emitStatus("syncing", `Loading static OGS Review #${reviewId}`, this.sourceLabel(reviewId));
-      const response = await fetch(`https://online-go.com/api/v1/reviews/${reviewId}/sgf?without-comments=1&_=${Date.now()}`, {
+      this.emitStatus("syncing", `Loading static OGS Demo #${demoId}`, this.sourceLabel(demoId));
+      const response = await fetch(`https://online-go.com/api/v1/reviews/${demoId}/sgf?without-comments=1&_=${Date.now()}`, {
         cache: "no-store"
       });
       if (!response.ok) {
-        throw new Error(`OGS review SGF request failed: ${response.status}`);
+        throw new Error(`OGS demo SGF request failed: ${response.status}`);
       }
       const sgf = await response.text();
-      const parsed = parseGameRecord(sgf, this.sourceLabel(reviewId));
+      const parsed = parseGameRecord(sgf, this.sourceLabel(demoId));
       const signature = makeMoveSignature(parsed.moves);
-      if (!forcePublish && signature === makeMoveSignature(this.reviewMoves)) {
-        this.emitStatus("connected", `No new review moves (${parsed.moves.length})`, this.sourceLabel(reviewId));
+      if (!forcePublish && this.demoMoves.length > 0 && parsed.moves.length < this.demoMoves.length) {
+        this.emitStatus(
+          "connected",
+          `Ignored stale static demo snapshot (${parsed.moves.length} < ${this.demoMoves.length})`,
+          this.sourceLabel(demoId)
+        );
         return;
       }
-      this.reviewMoves = parsed.moves;
-      this.reviewWarnings = parsed.warnings;
+      if (!forcePublish && signature === makeMoveSignature(this.demoMoves)) {
+        this.emitStatus("connected", `No new demo moves (${parsed.moves.length})`, this.sourceLabel(demoId));
+        return;
+      }
+      this.demoMoves = parsed.moves;
+      this.demoWarnings = parsed.warnings;
       this.moveCallback?.({
         boardSize: parsed.boardSize,
         isFinished: Boolean(parsed.result),
@@ -390,15 +450,27 @@ export class OGSConnector {
         },
         moves: parsed.moves,
         rawMoveString: "",
-        reviewId,
-        sourceLabel: this.sourceLabel(reviewId),
+        demoId,
+        sourceLabel: this.sourceLabel(demoId),
         warnings: parsed.warnings
       });
-      this.emitStatus("connected", `Loaded static review ${parsed.moves.length} moves`, this.sourceLabel(reviewId));
+      this.emitStatus("connected", `Loaded static demo ${parsed.moves.length} moves`, this.sourceLabel(demoId));
     } catch (error) {
-      console.error("OGS static review load failed", error);
-      this.emitStatus("error", error instanceof Error ? error.message : "OGS static review load failed", this.sourceLabel(reviewId));
+      console.error("OGS static demo load failed", error);
+      this.emitStatus("error", error instanceof Error ? error.message : "OGS static demo load failed", this.sourceLabel(demoId));
     }
+  }
+
+  private refreshDemo(demoId: number) {
+    this.stopDemoStaticFallback();
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.send(["review/connect", { review_id: demoId }]);
+      this.send(["chat/join", { channel: `review-${demoId}` }]);
+      this.startDemoStaticFallback(demoId);
+      return;
+    }
+    this.openSocket();
+    this.startDemoStaticFallback(demoId);
   }
 
   private processGameData(payload: unknown, gameId: number, verb: "Loaded" | "Synced", forcePublish: boolean) {
@@ -433,8 +505,8 @@ export class OGSConnector {
     this.emitStatus("connected", `${verb} ${moveSummary}${isFinished ? "; game finished, polling stopped" : ""}`, sourceLabel);
   }
 
-  private sourceLabel(reviewId: number) {
-    return `OGS Review #${reviewId}`;
+  private sourceLabel(demoId: number) {
+    return `OGS Demo #${demoId}`;
   }
 
   private gameSourceLabel(gameId: number) {
