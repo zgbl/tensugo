@@ -18,6 +18,7 @@ const CONTINUOUS_ANALYSIS_INTERVAL_CS: usize = 30;
 const ANALYSIS_BOOT_WAIT_MS: u64 = 300_000;
 const ENGINE_TEST_BOOT_WAIT_MS: u64 = 180_000;
 const PDF_EXPORT_TIMEOUT_MS: u64 = 45_000;
+const ENGINE_MEMORY_SOFT_LIMIT_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 
 struct EngineState {
     session: Mutex<Option<EngineSession>>,
@@ -38,6 +39,12 @@ struct ContinuousAnalysisState {
     candidates: Vec<CandidateMove>,
     raw_output_tail: Vec<String>,
     diagnostics: String,
+}
+
+impl Drop for EngineSession {
+    fn drop(&mut self) {
+        terminate_engine_process(self);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -561,6 +568,11 @@ fn analyze_position(
             Err(result) => return result,
         };
     }
+    if let Some(result) =
+        restart_engine_if_memory_limit_exceeded(&app, &request.profile, &profile_key, &mut guard)
+    {
+        return result;
+    }
 
     let session = match guard.as_mut() {
         Some(session) => session,
@@ -577,9 +589,7 @@ fn analyze_position(
 
     let position_key = request_position_key(&request);
     if session.continuous_analysis.is_some() {
-        let _ = writeln!(session.stdin, "stop");
-        let _ = session.stdin.flush();
-        session.continuous_analysis = None;
+        stop_continuous_session(session);
     }
     drain_receiver(&session.stdout_rx);
     drain_receiver(&session.stderr_rx);
@@ -625,6 +635,11 @@ fn analyze_position_continuous(
             Err(result) => return result,
         };
     }
+    if let Some(result) =
+        restart_engine_if_memory_limit_exceeded(&app, &request.profile, &profile_key, &mut guard)
+    {
+        return result;
+    }
 
     let session = match guard.as_mut() {
         Some(session) => session,
@@ -646,10 +661,7 @@ fn analyze_position_continuous(
         .map(|analysis| analysis.position_key.as_str())
         != Some(position_key.as_str())
     {
-        let _ = writeln!(session.stdin, "stop");
-        let _ = session.stdin.flush();
-        drain_receiver(&session.stdout_rx);
-        drain_receiver(&session.stderr_rx);
+        stop_continuous_session(session);
         if let Err(error) = write_continuous_position_commands(session, &request) {
             *guard = None;
             return AnalysisResult {
@@ -680,14 +692,80 @@ fn stop_continuous_analysis(state: tauri::State<EngineState>) -> Result<(), Stri
         .map_err(|error| format!("engine state lock failed: {}", error))?;
     if let Some(session) = guard.as_mut() {
         if session.continuous_analysis.is_some() {
-            writeln!(session.stdin, "stop").map_err(|error| error.to_string())?;
-            session.stdin.flush().map_err(|error| error.to_string())?;
-            session.continuous_analysis = None;
-            drain_receiver(&session.stdout_rx);
-            drain_receiver(&session.stderr_rx);
+            stop_continuous_session(session);
         }
     }
     Ok(())
+}
+
+fn restart_engine_if_memory_limit_exceeded(
+    app: &AppHandle,
+    profile: &EngineProfile,
+    profile_key: &str,
+    guard: &mut Option<EngineSession>,
+) -> Option<AnalysisResult> {
+    let memory_bytes = guard
+        .as_ref()
+        .and_then(|session| engine_resident_memory_bytes(session.child.id()));
+    if !matches!(memory_bytes, Some(bytes) if bytes > ENGINE_MEMORY_SOFT_LIMIT_BYTES) {
+        return None;
+    }
+
+    let memory_bytes = memory_bytes.unwrap_or(0);
+    *guard = None;
+    match start_engine_session(app, profile, profile_key) {
+        Ok(session) => {
+            *guard = Some(session);
+            None
+        }
+        Err(mut result) => {
+            result.diagnostics = format!(
+                "KataGo memory guard restarted the engine after it reached {:.1} GB.\n{}",
+                memory_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                result.diagnostics
+            );
+            Some(result)
+        }
+    }
+}
+
+fn stop_continuous_session(session: &mut EngineSession) {
+    let _ = writeln!(session.stdin, "stop");
+    let _ = session.stdin.flush();
+    wait_after_stop(session);
+    session.continuous_analysis = None;
+    drain_receiver(&session.stdout_rx);
+    drain_receiver(&session.stderr_rx);
+}
+
+fn wait_after_stop(session: &mut EngineSession) {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < deadline {
+        drain_receiver(&session.stdout_rx);
+        drain_receiver(&session.stderr_rx);
+        if matches!(session.child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn terminate_engine_process(session: &mut EngineSession) {
+    let _ = writeln!(session.stdin, "stop");
+    let _ = writeln!(session.stdin, "quit");
+    let _ = session.stdin.flush();
+
+    let deadline = Instant::now() + Duration::from_millis(750);
+    while Instant::now() < deadline {
+        match session.child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(_) => break,
+        }
+    }
+
+    let _ = session.child.kill();
+    let _ = session.child.wait();
 }
 
 fn start_engine_session(
@@ -1069,6 +1147,19 @@ fn drain_receiver(rx: &Receiver<String>) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+fn engine_resident_memory_bytes(pid: u32) -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let rss_kb = stdout.trim().parse::<u64>().ok()?;
+    Some(rss_kb.saturating_mul(1024))
 }
 
 fn gtp_command(profile: &EngineProfile) -> Result<Command, String> {

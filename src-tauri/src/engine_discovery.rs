@@ -315,10 +315,9 @@ fn find_first_executable_in_child_dirs(root: &Path) -> Option<PathBuf> {
         if !executable.exists() {
             continue;
         }
-        if best
-            .as_ref()
-            .is_none_or(|current| engine_dir_rank(&path) > engine_dir_rank(current.parent().unwrap_or(root)))
-        {
+        if best.as_ref().is_none_or(|current| {
+            engine_dir_rank(&path) > engine_dir_rank(current.parent().unwrap_or(root))
+        }) {
             best = Some(executable);
         }
     }
