@@ -29,6 +29,23 @@ type ChoosePathResult = {
   error: string | null;
 };
 
+type ChooseFilesResult = {
+  selected: boolean;
+  paths: string[];
+  error: string | null;
+};
+
+type ReadTextFileResult = {
+  ok: boolean;
+  content: string | null;
+  error: string | null;
+};
+
+type WriteTextFileResult = {
+  ok: boolean;
+  error: string | null;
+};
+
 type TauriCandidateMove = {
   rank: number;
   move_name: string;
@@ -70,6 +87,31 @@ export async function discoverEngineProfile(profile?: EngineProfile | null): Pro
 
 export async function chooseEnginePath(kind: "engine" | "model" | "config"): Promise<ChoosePathResult> {
   return invoke<ChoosePathResult>("choose_engine_path", { request: { kind } });
+}
+
+export async function chooseGameRecordFiles(): Promise<ChooseFilesResult> {
+  return invoke<ChooseFilesResult>("choose_game_record_files");
+}
+
+export async function chooseOutputDirectory(): Promise<ChoosePathResult> {
+  return invoke<ChoosePathResult>("choose_output_directory");
+}
+
+export async function readTextFile(path: string): Promise<string> {
+  const result = await invoke<ReadTextFileResult>("read_text_file", { path });
+  if (!result.ok || result.content === null) {
+    throw new Error(result.error ?? "读取文件失败");
+  }
+  return result.content;
+}
+
+export async function writeTextFile(path: string, content: string): Promise<void> {
+  const result = await invoke<WriteTextFileResult>("write_text_file", {
+    request: { path, content }
+  });
+  if (!result.ok) {
+    throw new Error(result.error ?? "写入文件失败");
+  }
 }
 
 export async function probeEngine(profile: EngineProfile): Promise<EngineProbeResult> {

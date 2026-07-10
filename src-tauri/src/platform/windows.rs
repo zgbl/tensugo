@@ -78,3 +78,17 @@ pub fn choose_file_path(kind: &str) -> Result<Option<PathBuf>, String> {
 
     Ok(dialog.pick_file())
 }
+
+pub fn choose_game_record_paths() -> Result<Vec<PathBuf>, String> {
+    Ok(rfd::FileDialog::new()
+        .set_title("选择要批量分析的棋谱")
+        .add_filter("Game Records", &["sgf", "gib", "tsg", "json", "txt"])
+        .pick_files()
+        .unwrap_or_default())
+}
+
+pub fn choose_directory_path() -> Result<Option<PathBuf>, String> {
+    Ok(rfd::FileDialog::new()
+        .set_title("选择 TSG 输出目录")
+        .pick_folder())
+}

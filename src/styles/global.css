@@ -945,7 +945,8 @@ button:hover {
   font-size: 14px;
 }
 
-.auto-analysis-dialog input[type="number"] {
+.auto-analysis-dialog input[type="number"],
+.auto-analysis-dialog select {
   background: #ffffff;
   border: 1px solid #b7c4ca;
   color: #1f272b;
@@ -967,6 +968,75 @@ button:hover {
   justify-self: start;
 }
 
+.batch-analysis-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.batch-picker-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+
+.batch-picker-row button,
+.batch-picker-row input[type="button"] {
+  background: linear-gradient(#ffffff, #edf4f4);
+  border: 1px solid #b7c4ca;
+  border-radius: 4px;
+  color: #1f272b;
+  cursor: pointer;
+  font: inherit;
+  min-height: 30px;
+}
+
+.batch-picker-row input[type="button"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.batch-picker-row span {
+  color: #3b4657;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-picker-status {
+  color: #214f75;
+}
+
+.batch-job-console {
+  background: #101417;
+  border: 1px solid #2b3940;
+  color: #dce8de;
+  grid-column: 1 / -1;
+  min-height: 128px;
+  max-height: 220px;
+  overflow: hidden;
+}
+
+.batch-job-console-title {
+  background: #172027;
+  border-bottom: 1px solid #2b3940;
+  color: #9fc5a8;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 8px;
+}
+
+.batch-job-console pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 184px;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
 .dialog-hint {
   color: #637078;
   font-size: 12px;
@@ -980,6 +1050,22 @@ button:hover {
   grid-column: 1 / -1;
   justify-content: flex-end;
   margin-top: 6px;
+}
+
+.dialog-actions input[type="button"] {
+  background: linear-gradient(#ffffff, #edf4f4);
+  border: 1px solid #b7c4ca;
+  border-radius: 4px;
+  color: #1f272b;
+  cursor: pointer;
+  font: inherit;
+  min-height: 30px;
+  padding: 2px 10px;
+}
+
+.dialog-actions input[type="button"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .ogs-dialog {

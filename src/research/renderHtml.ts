@@ -135,6 +135,8 @@ type FlowItem =
 type VariationEntry = {
   variation: Extract<ResearchBlock, { type: "variation" }>;
   comment: ResearchBlock | null;
+  candidates: Extract<ResearchBlock, { type: "candidate_moves" }> | null;
+  figureNumber: number;
   stones: ReviewMove[];
 };
 
@@ -142,12 +144,15 @@ type PageBoardSize = { name: "large" | "medium" | "small"; mm: number };
 
 function buildFlowItems(blocks: ResearchBlock[], sourceMoves: ReviewMove[]): FlowItem[] {
   const items: FlowItem[] = [];
+  let figureNumber = 1;
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index];
     if (block.type === "variation") {
       const nextBlock = blocks[index + 1];
       const pairedComment = isVariationCommentBlock(nextBlock) ? nextBlock : null;
-      items.push({ type: "variation", entry: buildVariationEntry(block, pairedComment, sourceMoves) });
+      const pairedCandidates = findCandidateBlockForVariation(block, blocks);
+      items.push({ type: "variation", entry: buildVariationEntry(block, pairedComment, pairedCandidates, figureNumber, sourceMoves) });
+      figureNumber += 1;
       if (pairedComment) {
         index += 1;
       }
@@ -303,13 +308,15 @@ function normalizedTextLength(text: string): number {
 function buildVariationEntry(
   block: Extract<ResearchBlock, { type: "variation" }>,
   comment: ResearchBlock | null,
+  candidates: Extract<ResearchBlock, { type: "candidate_moves" }> | null,
+  figureNumber: number,
   sourceMoves: ReviewMove[]
 ): VariationEntry {
   const variationMoves = block.sequence
     .map((point, offset) => gtpPointToMove(point, block.boardSize, block.fromMoveNumber + offset + 1))
     .filter((move): move is ReviewMove => Boolean(move));
   const allMoves = [...sourceMoves.slice(0, block.fromMoveNumber), ...variationMoves];
-  return { variation: block, comment, stones: buildBoardPosition(allMoves, block.boardSize, allMoves.length).stones };
+  return { variation: block, comment, candidates, figureNumber, stones: buildBoardPosition(allMoves, block.boardSize, allMoves.length).stones };
 }
 
 function renderVariationEntry(
@@ -318,17 +325,64 @@ function renderVariationEntry(
   pageBoardSizeMm: number
 ): string {
   const comment = renderComment(entry.comment) || renderVariationDescription(entry.variation);
+  const summary = buildVariationSummary(entry);
   return `<section class="variation-block">
+    ${renderVariationTitle(entry, summary)}
     <div class="variation-board-wrap">
     <div class="board-column">
       ${renderBoardSvg(entry.variation.boardSize, entry.stones, entry.variation.sequence, exportSettings, pageBoardSizeMm)}
-      <p class="caption">${escapeHtml(entry.variation.caption || entry.variation.name)}</p>
     </div>
     <div class="comment-column">
+      ${renderVariationStats(summary)}
       ${comment || "<p>未填写评论。</p>"}
     </div>
     </div>
   </section>`;
+}
+
+function findCandidateBlockForVariation(
+  variation: Extract<ResearchBlock, { type: "variation" }>,
+  blocks: ResearchBlock[]
+): Extract<ResearchBlock, { type: "candidate_moves" }> | null {
+  return blocks.find(
+    (block): block is Extract<ResearchBlock, { type: "candidate_moves" }> =>
+      block.type === "candidate_moves" && block.moveNumber === variation.fromMoveNumber && block.candidates.length > 0
+  ) ?? null;
+}
+
+type VariationSummary = {
+  candidate: Extract<ResearchBlock, { type: "candidate_moves" }>["candidates"][number] | null;
+  firstMove: string | null;
+};
+
+function buildVariationSummary(entry: VariationEntry): VariationSummary {
+  const firstMove = entry.variation.sequence[0] ?? null;
+  const candidates = entry.candidates?.candidates ?? [];
+  const matched = firstMove ? candidates.find((candidate) => candidate.moveName === firstMove) ?? null : null;
+  return { candidate: matched ?? candidates[0] ?? null, firstMove };
+}
+
+function renderVariationTitle(entry: VariationEntry, summary: VariationSummary): string {
+  const moveNumber = entry.variation.fromMoveNumber + 1;
+  const moveColor = moveNumber % 2 === 1 ? "黑" : "白";
+  const firstMove = summary.firstMove ? summary.firstMove : "";
+  const base = `${moveColor}${moveNumber}${firstMove ? ` ${firstMove}` : ""}的变化`;
+  const winrate = summary.candidate ? `，黑棋胜率${summary.candidate.winrate.toFixed(1)}%` : "";
+  return `<div class="variation-title-bar">变化图${entry.figureNumber}：${escapeHtml(base)}${winrate}</div>`;
+}
+
+function renderVariationStats(summary: VariationSummary): string {
+  if (!summary.candidate) {
+    return "";
+  }
+  const pv = summary.candidate.pv.length > 0 ? summary.candidate.pv.slice(0, 12).join(" ") : summary.firstMove ?? "—";
+  return `<div class="variation-stats">
+    <span>推荐：${escapeHtml(summary.candidate.moveName)}</span>
+    <span>胜率 ${summary.candidate.winrate.toFixed(1)}%</span>
+    <span>目差 ${summary.candidate.scoreLead.toFixed(1)}</span>
+    <span>访问 ${formatVisits(summary.candidate.visits)}</span>
+    <strong>PV：${escapeHtml(pv)}</strong>
+  </div>`;
 }
 
 function renderGameProgressBlock(
@@ -532,6 +586,16 @@ function percentText(value: number | null): string {
   return value === null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`;
 }
 
+function formatVisits(visits: number): string {
+  if (visits >= 1000000) {
+    return `${(visits / 1000000).toFixed(1)}m`;
+  }
+  if (visits >= 1000) {
+    return `${(visits / 1000).toFixed(1)}k`;
+  }
+  return String(visits);
+}
+
 function renderStars(value: number | null): string {
   if (value === null || !Number.isFinite(value)) {
     return "—";
@@ -680,6 +744,7 @@ function articleCss(exportSettings: ResearchExportSettings): string {
      的 break-inside:avoid 支持长期不可靠（子元素放不下时整个容器会被推到下
      一页），改用 float 布局可以正确参与分页计算。 */
   .variation-block { break-inside: auto; margin: 0 0 ${exportSettings.rowGapMm}mm; page-break-inside: auto; }
+  .variation-title-bar { background: #1f1a1b; border-radius: 3mm; color: #fff; display: inline-block; font-size: ${Math.max(10, exportSettings.documentFontSizePt)}pt; font-weight: 800; line-height: 1.2; margin: 0 0 2mm; max-width: 100%; padding: 1.1mm 4mm 1.2mm; }
   .variation-board-wrap { break-inside: avoid; overflow: hidden; page-break-inside: avoid; }
   .board-column { box-sizing: border-box; float: left; width: 64%; }
   .comment-column { box-sizing: border-box; float: left; width: 36%; }
@@ -691,6 +756,9 @@ function articleCss(exportSettings: ResearchExportSettings): string {
   .caption { color: #5e6d70; font-size: 9px; line-height: 1.15; margin: .8mm 0 0; text-align: center; }
   .comment-column { border-left: 1px solid #d9e3e1; font-size: ${Math.max(10, exportSettings.documentFontSizePt - 1)}pt; line-height: 1.45; padding-left: ${exportSettings.columnGapMm}mm; }
   .comment-column p { margin: 0 0 2.5mm; }
+  .variation-stats { background: #f2f7f6; border-left: 3px solid #087f8c; color: #263236; display: grid; font-size: ${Math.max(8.5, exportSettings.documentFontSizePt - 3)}pt; gap: .6mm 2mm; grid-template-columns: repeat(2, minmax(0, 1fr)); line-height: 1.25; margin: 0 0 2.5mm; padding: 1.6mm 2mm; }
+  .variation-stats span { font-weight: 750; overflow-wrap: anywhere; }
+  .variation-stats strong { color: #405155; font-size: ${Math.max(8, exportSettings.documentFontSizePt - 3.5)}pt; font-weight: 700; grid-column: 1 / -1; overflow-wrap: anywhere; }
   .document-flow .text-block { font-size: ${exportSettings.documentFontSizePt}pt; line-height: 1.55; margin: 0 0 1mm; }
   .document-flow .text-block p { margin: 0 0 1.5mm; orphans: 2; widows: 2; }
   .empty-document { color: #7a898c; font-size: 12px; }

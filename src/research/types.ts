@@ -42,6 +42,60 @@ export type ResearchAnalysisSnapshot = {
   totalWinrateLoss: number;
 };
 
+export type ResearchAnalysisCompletion = {
+  version: 1;
+  complete: boolean;
+  completedAt: string;
+  startMove: number;
+  endMove: number;
+  totalMoves: number;
+  analyzedMoves: number;
+  engineName?: string;
+  modelName?: string;
+  sourceFileName?: string;
+};
+
+export type ProblemCandidateScore = {
+  moveName: string;
+  rank: number;
+  score: number;
+  visits: number;
+  winrate: number;
+  scoreLead: number;
+  pv: string[];
+};
+
+export type ProblemItem = {
+  id: string;
+  moveNumber: number;
+  color: "black" | "white";
+  actualMoveName?: string;
+  trigger: {
+    type: "winrateLoss";
+    threshold: number;
+    value: number;
+  };
+  prompt: string;
+  fullScoreMove: string;
+  candidateScores: ProblemCandidateScore[];
+  analysis: {
+    engineName?: string;
+    modelName?: string;
+    generatedAt: string;
+    candidates: EngineCandidateMove[];
+  };
+};
+
+export type ProblemSet = {
+  version: 1;
+  generatedAt: string;
+  settings: {
+    winrateLossThreshold: number;
+    candidateLimit: number;
+  };
+  items: ProblemItem[];
+};
+
 export type ResearchBlockType =
   | "heading"
   | "paragraph"
@@ -227,6 +281,8 @@ export type ResearchDocument = {
   mainSgf?: string;
   gameTree?: GameTree;
   analysis?: ResearchAnalysisSnapshot;
+  analysisCompletion?: ResearchAnalysisCompletion;
+  problemSet?: ProblemSet;
   assets: ResearchAsset[];
   sections: ResearchSection[];
 };

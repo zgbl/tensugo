@@ -17,6 +17,7 @@ type TopToolbarProps = {
   onExportPdf: () => void;
   onKomiChange: (value: number) => void;
   onOpenAutoAnalysis: () => void;
+  onOpenBatchAnalysis: () => void;
   onOpenAbout: () => void;
   onOpenFile: (file: File) => void;
   onOpenOgsBrowser: () => void;
@@ -61,6 +62,7 @@ export function TopToolbar({
   onExportPdf,
   onKomiChange,
   onOpenAutoAnalysis,
+  onOpenBatchAnalysis,
   onOpenAbout,
   onOpenFile,
   onOpenOgsBrowser,
@@ -112,6 +114,7 @@ export function TopToolbar({
         <Menu label={t("menuAnalysis")} items={[
           { label: t("aiAnalyzePause"), action: onToggleAnalysis },
           { label: t("autoAnalysis"), action: onOpenAutoAnalysis },
+          { label: "批量分析 / 出题", action: onOpenBatchAnalysis },
           { label: t("tianshuReport"), action: onOpenTianshuReport },
           { label: t("engineSettings"), action: onOpenSettings }
         ]} />

@@ -1,6 +1,6 @@
 [package]
 name = "tensugo"
-version = "0.5.87"
+version = "0.6.4"
 description = "TensuGo desktop application"
 authors = ["TensuGo contributors"]
 edition = "2021"
@@ -14,8 +14,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
 rfd = "0.15"

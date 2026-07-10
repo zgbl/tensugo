@@ -322,7 +322,9 @@ export function toTsgDocument(document: ResearchDocument, gameTree?: GameTree) {
     createdBy: TSG_CREATED_BY,
     tensugo: {
       gameTree: compactGameTree,
-      ...(document.analysis ? { analysis: document.analysis } : {})
+      ...(document.analysis ? { analysis: document.analysis } : {}),
+      ...(document.analysisCompletion ? { analysisCompletion: document.analysisCompletion } : {}),
+      ...(document.problemSet ? { problemSet: document.problemSet } : {})
     },
     meta: {
       title: document.title,
@@ -489,6 +491,8 @@ function fromBrgDocument(record: Record<string, unknown>): ResearchDocument {
     mainSgf: stringValue(source.content, ""),
     gameTree: parseGameTreeExtension(record),
     analysis: parseAnalysisExtension(record),
+    analysisCompletion: parseAnalysisCompletionExtension(record),
+    problemSet: parseProblemSetExtension(record),
     assets: [],
     sections: [{ id: createId("sec"), title: "正文", blocks: [] }]
   };
@@ -762,6 +766,24 @@ function parseAnalysisExtension(record: Record<string, unknown>): ResearchDocume
     return undefined;
   }
   return candidate as ResearchDocument["analysis"];
+}
+
+function parseAnalysisCompletionExtension(record: Record<string, unknown>): ResearchDocument["analysisCompletion"] {
+  const tensugo = asRecord(record.tensugo);
+  const candidate = tensugo.analysisCompletion ?? record.analysisCompletion;
+  if (!candidate || typeof candidate !== "object") {
+    return undefined;
+  }
+  return candidate as ResearchDocument["analysisCompletion"];
+}
+
+function parseProblemSetExtension(record: Record<string, unknown>): ResearchDocument["problemSet"] {
+  const tensugo = asRecord(record.tensugo);
+  const candidate = tensugo.problemSet ?? record.problemSet;
+  if (!candidate || typeof candidate !== "object") {
+    return undefined;
+  }
+  return candidate as ResearchDocument["problemSet"];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

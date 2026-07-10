@@ -38,3 +38,11 @@ pub fn choose_file_path(kind: &str) -> Result<Option<PathBuf>, String> {
         kind
     ))
 }
+
+pub fn choose_game_record_paths() -> Result<Vec<PathBuf>, String> {
+    Err("当前平台暂未实现批量棋谱选择器。".to_string())
+}
+
+pub fn choose_directory_path() -> Result<Option<PathBuf>, String> {
+    Err("当前平台暂未实现目录选择器。".to_string())
+}

@@ -123,6 +123,39 @@ struct SaveTextFileResult {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct WriteTextFileRequest {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChooseFilesResult {
+    selected: bool,
+    paths: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChooseDirectoryResult {
+    selected: bool,
+    path: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReadTextFileResult {
+    ok: bool,
+    content: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WriteTextFileResult {
+    ok: bool,
+    error: Option<String>,
+}
+
 #[tauri::command]
 fn app_name() -> &'static str {
     "TensuGo"
@@ -219,6 +252,76 @@ fn choose_engine_path(request: ChoosePathRequest) -> ChoosePathResult {
             selected: false,
             path: None,
             error: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+fn choose_game_record_files() -> ChooseFilesResult {
+    match platform::choose_game_record_paths() {
+        Ok(paths) => ChooseFilesResult {
+            selected: !paths.is_empty(),
+            paths: paths
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            error: None,
+        },
+        Err(error) => ChooseFilesResult {
+            selected: false,
+            paths: Vec::new(),
+            error: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+fn choose_output_directory() -> ChooseDirectoryResult {
+    match platform::choose_directory_path() {
+        Ok(Some(path)) => ChooseDirectoryResult {
+            selected: true,
+            path: Some(path.display().to_string()),
+            error: None,
+        },
+        Ok(None) => ChooseDirectoryResult {
+            selected: false,
+            path: None,
+            error: None,
+        },
+        Err(error) => ChooseDirectoryResult {
+            selected: false,
+            path: None,
+            error: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+fn read_text_file(path: String) -> ReadTextFileResult {
+    match std::fs::read_to_string(path) {
+        Ok(content) => ReadTextFileResult {
+            ok: true,
+            content: Some(content),
+            error: None,
+        },
+        Err(error) => ReadTextFileResult {
+            ok: false,
+            content: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+#[tauri::command]
+fn write_text_file(request: WriteTextFileRequest) -> WriteTextFileResult {
+    match std::fs::write(request.path, request.content) {
+        Ok(()) => WriteTextFileResult {
+            ok: true,
+            error: None,
+        },
+        Err(error) => WriteTextFileResult {
+            ok: false,
+            error: Some(error.to_string()),
         },
     }
 }
@@ -1031,7 +1134,10 @@ fn collect_continuous_analysis_snapshot(session: &mut EngineSession) -> Analysis
         if overflow > 0 {
             analysis.raw_output_tail.drain(0..overflow);
         }
-        let parsed = parse_analysis_output(&analysis.raw_output_tail.join("\n"));
+        let parsed = parse_analysis_output(
+            &analysis.raw_output_tail.join("\n"),
+            WinrateScale::LizzieCentipercent,
+        );
         if !parsed.is_empty() {
             analysis.candidates = parsed;
         }
@@ -1100,7 +1206,7 @@ fn collect_analysis(session: &mut EngineSession, max_visits: usize) -> AnalysisR
     }
     let stdout = stdout_lines.join("\n");
     let stderr = stderr_lines.join("\n");
-    let candidates = parse_analysis_output(&stdout);
+    let candidates = parse_analysis_output(&stdout, WinrateScale::KataAnalyzeProbability);
     AnalysisResult {
         ok: !candidates.is_empty(),
         status: if candidates.is_empty() {
@@ -1259,7 +1365,13 @@ fn to_gtp_point(x: usize, y: usize, board_size: usize) -> String {
     format!("{}{}", col, row)
 }
 
-fn parse_analysis_output(output: &str) -> Vec<CandidateMove> {
+#[derive(Clone, Copy, Debug)]
+enum WinrateScale {
+    KataAnalyzeProbability,
+    LizzieCentipercent,
+}
+
+fn parse_analysis_output(output: &str, winrate_scale: WinrateScale) -> Vec<CandidateMove> {
     let mut candidates: Vec<CandidateMove> = Vec::new();
     for line in output.lines().filter(|line| line.contains("info move")) {
         for segment in line.split(" info ") {
@@ -1270,7 +1382,9 @@ fn parse_analysis_output(output: &str) -> Vec<CandidateMove> {
             } else {
                 continue;
             };
-            if let Some(candidate) = parse_candidate_line(&normalized, candidates.len() + 1) {
+            if let Some(candidate) =
+                parse_candidate_line(&normalized, candidates.len() + 1, winrate_scale)
+            {
                 if let Some(existing) = candidates
                     .iter_mut()
                     .find(|item| item.move_name == candidate.move_name)
@@ -1293,14 +1407,18 @@ fn parse_analysis_output(output: &str) -> Vec<CandidateMove> {
     candidates
 }
 
-fn parse_candidate_line(line: &str, rank: usize) -> Option<CandidateMove> {
+fn parse_candidate_line(
+    line: &str,
+    rank: usize,
+    winrate_scale: WinrateScale,
+) -> Option<CandidateMove> {
     let move_name = token_after(line, "move")?;
     let visits = token_after(line, "visits")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
     let winrate = token_after(line, "winrate")
         .and_then(|value| value.parse::<f64>().ok())
-        .map(normalize_winrate)
+        .map(|value| normalize_winrate(value, winrate_scale))
         .unwrap_or(0.0);
     let score_lead = token_after(line, "scoreLead")
         .and_then(|value| value.parse::<f64>().ok())
@@ -1316,13 +1434,18 @@ fn parse_candidate_line(line: &str, rank: usize) -> Option<CandidateMove> {
     })
 }
 
-fn normalize_winrate(value: f64) -> f64 {
-    if value <= 1.0 {
-        value * 100.0
-    } else if value <= 100.0 {
-        value
-    } else {
-        value / 100.0
+fn normalize_winrate(value: f64, scale: WinrateScale) -> f64 {
+    match scale {
+        WinrateScale::KataAnalyzeProbability => {
+            if value <= 1.0 {
+                value * 100.0
+            } else if value <= 100.0 {
+                value
+            } else {
+                value / 100.0
+            }
+        }
+        WinrateScale::LizzieCentipercent => value / 100.0,
     }
     .clamp(0.0, 100.0)
 }
@@ -1451,9 +1574,49 @@ fn tokens_after_until_keyword(line: &str, key: &str) -> Vec<String> {
     values
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lz_analyze_winrate_uses_centipercent_scale_below_one_percent() {
+        let output = "info move G16 visits 53 winrate 53 scoreLead -120.5 pv G16 H16";
+
+        let candidates = parse_analysis_output(output, WinrateScale::LizzieCentipercent);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].move_name, "G16");
+        assert!((candidates[0].winrate - 0.53).abs() < 0.001);
+        assert_eq!(candidates[0].score_lead, -120.5);
+    }
+
+    #[test]
+    fn lz_analyze_winrate_uses_centipercent_scale_near_forced_win() {
+        let output = "info move L12 visits 262 winrate 9940 scoreLead 129.0 pv L12 K11";
+
+        let candidates = parse_analysis_output(output, WinrateScale::LizzieCentipercent);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].move_name, "L12");
+        assert!((candidates[0].winrate - 99.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn kata_analyze_probability_scale_keeps_existing_probability_behavior() {
+        let output = "info move K11 visits 658 winrate 0.53 scoreLead 129.0 pv K11 L12";
+
+        let candidates = parse_analysis_output(output, WinrateScale::KataAnalyzeProbability);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].move_name, "K11");
+        assert!((candidates[0].winrate - 53.0).abs() < 0.001);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(EngineState {
             session: Mutex::new(None),
         })
@@ -1462,6 +1625,10 @@ pub fn run() {
             platform_paths,
             save_text_file_with_dialog,
             save_pdf_with_dialog,
+            choose_game_record_files,
+            choose_output_directory,
+            read_text_file,
+            write_text_file,
             default_engine_profile,
             discover_engine_profile,
             choose_engine_path,

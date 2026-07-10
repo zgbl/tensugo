@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { BoardPlaceholder, type MoveNumberDisplayMode } from "../board/BoardPlaceholder";
 import { AutoAnalysisDialog, type AutoAnalysisSettings } from "../components/AutoAnalysisDialog";
+import { BatchAnalysisDialog, type BatchAnalysisSettings } from "../components/BatchAnalysisDialog";
 import { BottomToolbar } from "../components/BottomToolbar";
 import { CandidatePanel, ReviewGraph } from "../components/CandidatePanel";
 import { GameInfoPanel } from "../components/GameInfoPanel";
@@ -19,7 +21,9 @@ import {
   getDefaultEngineProfile,
   isTauriRuntime,
   probeEngine,
-  stopContinuousAnalysis
+  readTextFile,
+  stopContinuousAnalysis,
+  writeTextFile
 } from "../engine/tauriEngine";
 import { buildBoardPosition, canPlayMove, getNextColor } from "../game/boardRules";
 import {
@@ -72,7 +76,7 @@ import {
 import { OGSConnector } from "../ogs/OGSConnector";
 import { parseOgsUrl } from "../ogs/ogsUrl";
 import type { OgsConnectionStatus, OgsMoveUpdate } from "../ogs/types";
-import type { ResearchBlock, ResearchDocument } from "../research/types";
+import type { ProblemItem, ProblemSet, ResearchAnalysisCompletion, ResearchBlock, ResearchDocument } from "../research/types";
 import { useGameStore } from "../stores/gameStore";
 import { APP_VERSION, appDisplayVersion } from "../version";
 
@@ -166,6 +170,12 @@ export function App() {
   const [ogsStatusDetail, setOgsStatusDetail] = useState<string | undefined>(undefined);
   const [ogsSourceLabel, setOgsSourceLabel] = useState<string | undefined>(undefined);
   const [isAutoAnalysisOpen, setIsAutoAnalysisOpen] = useState(false);
+  const [isBatchAnalysisOpen, setIsBatchAnalysisOpen] = useState(false);
+  const [batchFilePaths, setBatchFilePaths] = useState<string[]>([]);
+  const [batchBrowserFiles, setBatchBrowserFiles] = useState<File[]>([]);
+  const [batchOutputDirectory, setBatchOutputDirectory] = useState<string | null>(() => window.localStorage.getItem("tensugo.batchOutputDir"));
+  const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
+  const [batchJobLogs, setBatchJobLogs] = useState<string[]>([]);
   const [isGameProgressPanelOpen, setIsGameProgressPanelOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
   const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
@@ -233,6 +243,7 @@ export function App() {
   const analysisTimerRef = useRef<number | null>(null);
   const autoAnalysisStopRef = useRef(false);
   const autoAnalysisFinishRef = useRef(false);
+  const batchAnalysisStopRef = useRef(false);
   const autoAnalysisReportRangeRef = useRef<{ startMove: number; endMove: number } | null>(null);
   const autoAnalysisSummaryRef = useRef<AutoAnalysisSummary>(createEmptyAutoAnalysisSummary());
   const engineProgressTimerRef = useRef<number | null>(null);
@@ -1885,6 +1896,235 @@ export function App() {
     setLastAction("自动分析已结束，已生成天书报告。");
     autoAnalysisFinishRef.current = false;
   };
+  const appendBatchJobLog = (message: string) => {
+    const line = `${new Date().toLocaleTimeString()} ${message}`;
+    setBatchJobLogs((logs) => [...logs, line].slice(-500));
+  };
+  const chooseBatchFiles = async () => {
+    if (!isTauriRuntime()) {
+      try {
+        appendBatchJobLog("Browser: 打开棋谱文件选择器");
+        setLastAction("Browser 预览：正在打开浏览器文件选择器...");
+        const files = await chooseBrowserGameRecordFiles();
+        if (files.length === 0) {
+          appendBatchJobLog("Browser: 已取消选择棋谱");
+          setLastAction("已取消选择棋谱。");
+          return;
+        }
+        const limitedFiles = files.slice(0, 20);
+        setBatchBrowserFiles(limitedFiles);
+        setBatchFilePaths(limitedFiles.map((file) => file.name));
+        appendBatchJobLog(`Browser: 已选择 ${limitedFiles.length} 个棋谱`);
+        setLastAction(`Browser 预览已选择 ${limitedFiles.length} 个棋谱；真正批量分析需要在 TensuGo 桌面 App 中运行。`);
+      } catch (error) {
+        console.error("浏览器选择棋谱失败", error);
+        appendBatchJobLog(`Browser: 选择棋谱失败 ${String(error)}`);
+        setLastAction(`浏览器选择棋谱失败：${String(error)}`);
+      }
+      return;
+    }
+    try {
+      appendBatchJobLog("Desktop: 打开棋谱文件选择器");
+      setLastAction("正在打开批量棋谱选择器...");
+      const selected = await open({
+        multiple: true,
+        directory: false,
+        filters: [
+          {
+            name: "棋谱文件",
+            extensions: ["sgf", "gib", "tsg", "json", "txt"]
+          }
+        ]
+      });
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      if (paths.length === 0) {
+        appendBatchJobLog("Desktop: 已取消选择棋谱");
+        setLastAction("已取消选择棋谱。");
+        return;
+      }
+      const limitedPaths = paths.slice(0, 20);
+      setBatchBrowserFiles([]);
+      setBatchFilePaths(limitedPaths);
+      appendBatchJobLog(`Desktop: 已选择 ${limitedPaths.length} 个棋谱`);
+      setLastAction(`已选择 ${limitedPaths.length} 个棋谱用于批量任务。`);
+    } catch (error) {
+      console.error("选择棋谱失败", error);
+      appendBatchJobLog(`Desktop: 选择棋谱失败 ${String(error)}`);
+      setLastAction(`选择棋谱失败：${String(error)}。请确认已重新启动新版 TensuGo 桌面端。`);
+    }
+  };
+  const chooseBatchOutputDirectory = async () => {
+    if (!isTauriRuntime()) {
+      try {
+        const picker = getBrowserDirectoryPicker();
+        if (!picker) {
+          appendBatchJobLog("Browser: 当前浏览器不支持选择输出目录");
+          setLastAction("Browser 预览不支持选择输出目录；请在 TensuGo 桌面 App 中运行批量分析。");
+          return;
+        }
+        appendBatchJobLog("Browser: 打开输出目录选择器");
+        setLastAction("Browser 预览：正在打开目录选择器...");
+        const directory = await picker();
+        const name = directory?.name ? `Browser:${directory.name}` : "Browser 输出目录";
+        setBatchOutputDirectory(name);
+        appendBatchJobLog(`Browser: 已选择输出目录 ${name}`);
+        setLastAction(`Browser 预览已选择输出目录 ${name}；真正写入 TSG 需要在 TensuGo 桌面 App 中运行。`);
+      } catch (error) {
+        if (isAbortError(error)) {
+          appendBatchJobLog("Browser: 已取消选择输出目录");
+          setLastAction("已取消选择输出目录。");
+          return;
+        }
+        console.error("浏览器选择输出目录失败", error);
+        appendBatchJobLog(`Browser: 选择输出目录失败 ${String(error)}`);
+        setLastAction(`浏览器选择输出目录失败：${String(error)}`);
+      }
+      return;
+    }
+    try {
+      appendBatchJobLog("Desktop: 打开输出目录选择器");
+      setLastAction("正在打开输出目录选择器...");
+      const selected = await open({
+        directory: true,
+        multiple: false
+      });
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (!path) {
+        appendBatchJobLog("Desktop: 已取消选择输出目录");
+        setLastAction("已取消选择输出目录。");
+        return;
+      }
+      setBatchOutputDirectory(path);
+      window.localStorage.setItem("tensugo.batchOutputDir", path);
+      appendBatchJobLog(`Desktop: 输出目录 ${path}`);
+      setLastAction(`批量输出目录：${path}`);
+    } catch (error) {
+      console.error("选择输出目录失败", error);
+      appendBatchJobLog(`Desktop: 选择输出目录失败 ${String(error)}`);
+      setLastAction(`选择输出目录失败：${String(error)}。请确认已重新启动新版 TensuGo 桌面端。`);
+    }
+  };
+  const runBatchAnalysis = async (settings: BatchAnalysisSettings) => {
+    setBatchJobLogs([]);
+    appendBatchJobLog(
+      `任务启动: mode=${settings.mode}, range=${settings.startMove}-${settings.endMove}, seconds=${settings.secondsPerMove}, visits=${settings.visitsPerMove || "time"}`
+    );
+    if (!isTauriRuntime()) {
+      if (batchBrowserFiles.length === 0) {
+        appendBatchJobLog("Browser: 启动失败，没有选择棋谱");
+        setLastAction("请先选择要批量分析的棋谱。");
+        return;
+      }
+      setIsBatchAnalyzing(true);
+      try {
+        let parsedCount = 0;
+        for (const [fileIndex, file] of batchBrowserFiles.entries()) {
+          appendBatchJobLog(`Browser: 读取 ${fileIndex + 1}/${batchBrowserFiles.length} ${file.name}`);
+          const content = await readGameRecordFile(file);
+          const parsed = parseGameRecord(content, file.name);
+          parsedCount += 1;
+          appendBatchJobLog(`Browser: 解析完成 ${file.name}, ${parsed.moves.length} 手`);
+        }
+        appendBatchJobLog("Browser: 预览完成。本地 KataGo 分析和 TSG 写入需要 Desktop App。");
+        setLastAction(
+          `Browser 预览已读取 ${parsedCount} 个棋谱；本地 KataGo 批量分析、出题和写入 TSG 需要在 TensuGo 桌面 App 中运行。`
+        );
+      } catch (error) {
+        appendBatchJobLog(`Browser: 读取/解析失败 ${String(error)}`);
+        setLastAction(`Browser 预览读取棋谱失败：${String(error)}`);
+      } finally {
+        setIsBatchAnalyzing(false);
+      }
+      return;
+    }
+    if (!engineProfile) {
+      appendBatchJobLog("Desktop: 启动失败，AI 引擎未配置");
+      setLastAction("AI 引擎还没有配置完成。请先在 设置 > 引擎 中配置 KataGo。");
+      return;
+    }
+    if (batchFilePaths.length === 0) {
+      appendBatchJobLog("Desktop: 启动失败，没有选择棋谱");
+      setLastAction("请先选择要批量分析的棋谱。");
+      return;
+    }
+    if (!batchOutputDirectory) {
+      appendBatchJobLog("Desktop: 启动失败，没有选择输出目录");
+      setLastAction("请先选择 TSG 输出目录。");
+      return;
+    }
+
+    batchAnalysisStopRef.current = false;
+    setIsBatchAnalyzing(true);
+    setIsAnalysisEnabled(false);
+    appendBatchJobLog(`Desktop: 批量任务开始，文件=${batchFilePaths.length}, 输出=${batchOutputDirectory}`);
+    setLastAction(`批量任务开始：${batchFilePaths.length} 个棋谱。`);
+
+    let completed = 0;
+    try {
+      for (const [fileIndex, path] of batchFilePaths.entries()) {
+        if (batchAnalysisStopRef.current) {
+          break;
+        }
+        const fileName = baseName(path);
+        const outputPath = joinPath(batchOutputDirectory, `${fileStem(fileName)}.tsg`);
+        appendBatchJobLog(`Desktop: 开始 ${fileIndex + 1}/${batchFilePaths.length} ${fileName}`);
+        setEngineStatus(`批量任务 ${fileIndex + 1} / ${batchFilePaths.length}: ${fileName}`);
+        setLastAction(`正在批量处理：${fileName}`);
+        const existingOutputCompletion = await readExistingTsgAnalysisCompletion(outputPath);
+        if (existingOutputCompletion?.complete) {
+          appendBatchJobLog(
+            `Desktop: 跳过 ${fileName}，输出 TSG 已完整自动分析 ${existingOutputCompletion.startMove}-${existingOutputCompletion.endMove}/${existingOutputCompletion.totalMoves}: ${outputPath}`
+          );
+          setLastAction(`已跳过：${fileName} 的输出 TSG 已有完整自动分析标记。`);
+          continue;
+        }
+        const content = await readTextFile(path);
+        const completion = readTsgAnalysisCompletion(content);
+        if (completion?.complete) {
+          appendBatchJobLog(
+            `Desktop: 跳过 ${fileName}，TSG 已完整自动分析 ${completion.startMove}-${completion.endMove}/${completion.totalMoves}，完成时间 ${completion.completedAt}`
+          );
+          setLastAction(`已跳过：${fileName} 已有完整自动分析标记。`);
+          continue;
+        }
+        const parsed = parseGameRecord(content, fileName);
+        appendBatchJobLog(`Desktop: 已读取 ${fileName}, ${parsed.moves.length} 手`);
+        const result = await analyzeGameForBatch({
+          parsed,
+          sourceContent: content,
+          sourceFileName: fileName,
+          settings,
+          profile: engineProfile,
+          shouldStop: batchAnalysisStopRef
+        });
+        await writeTextFile(outputPath, JSON.stringify(toBrgDocument(result.document, parsed.gameTree)));
+        completed += 1;
+        appendBatchJobLog(`Desktop: 已保存 ${outputPath} 分析=${result.analyzed} 题目=${result.problemCount}`);
+        setLastAction(`已保存：${outputPath}（分析 ${result.analyzed} 手，题目 ${result.problemCount} 题）`);
+      }
+      appendBatchJobLog(batchAnalysisStopRef.current ? `Desktop: 已停止，完成 ${completed}/${batchFilePaths.length}` : `Desktop: 完成 ${completed}/${batchFilePaths.length}`);
+      setEngineStatus(batchAnalysisStopRef.current ? `批量任务已停止：完成 ${completed} 个棋谱` : `批量任务完成：${completed} 个棋谱`);
+      setLastAction(batchAnalysisStopRef.current ? `批量任务已停止：完成 ${completed} 个棋谱。` : `批量任务完成：已保存 ${completed} 个 TSG。`);
+    } catch (error) {
+      appendBatchJobLog(`Desktop: 任务失败 ${String(error)}`);
+      setEngineStatus("批量任务失败");
+      setLastAction(`批量任务失败：${String(error)}`);
+    } finally {
+      try {
+        await stopContinuousAnalysis();
+      } catch {
+        // The engine session may already be stopped after an error.
+      }
+      setIsBatchAnalyzing(false);
+      batchAnalysisStopRef.current = false;
+      appendBatchJobLog("任务结束");
+    }
+  };
+  const stopBatchAnalysis = () => {
+    batchAnalysisStopRef.current = true;
+    appendBatchJobLog("收到终止请求，等待当前分析点结束");
+    setLastAction("正在终止批量任务，当前手分析结束后停止。");
+  };
   const toggleAnalysis = () => {
     if (isAnalysisEnabled) {
       pauseAnalysis();
@@ -1963,6 +2203,7 @@ export function App() {
         onExportPdf={exportResearchPdf}
         onToggleAnalysis={toggleAnalysis}
         onOpenAutoAnalysis={() => setIsAutoAnalysisOpen(true)}
+        onOpenBatchAnalysis={() => setIsBatchAnalysisOpen(true)}
         onOpenAbout={() => setIsAboutOpen(true)}
         onAddVariation={insertCurrentVariation}
         onToggleSavedAnalysis={() => {
@@ -2210,6 +2451,18 @@ export function App() {
         }}
         onStop={stopAutoAnalysis}
       />
+      <BatchAnalysisDialog
+        fileCount={batchFilePaths.length}
+        isRunning={isBatchAnalyzing}
+        logs={batchJobLogs}
+        open={isBatchAnalysisOpen}
+        outputDirectory={batchOutputDirectory}
+        onChooseFiles={chooseBatchFiles}
+        onChooseOutputDirectory={chooseBatchOutputDirectory}
+        onClose={() => setIsBatchAnalysisOpen(false)}
+        onStart={(settings) => void runBatchAnalysis(settings)}
+        onStop={stopBatchAnalysis}
+      />
       <TianshuReportDialog
         open={isTianshuOpen}
         report={tianshuReport}
@@ -2277,6 +2530,157 @@ export function App() {
       />
     </main>
   );
+}
+
+async function analyzeGameForBatch(params: {
+  parsed: ReturnType<typeof parseGameRecord>;
+  sourceContent: string;
+  sourceFileName: string;
+  settings: BatchAnalysisSettings;
+  profile: EngineProfile;
+  shouldStop: { current: boolean };
+}): Promise<{ analyzed: number; document: ResearchDocument; problemCount: number }> {
+  const { parsed, profile, settings, shouldStop, sourceContent, sourceFileName } = params;
+  const moves = parsed.moves;
+  const startMove = Math.max(1, Math.min(moves.length, Math.min(settings.startMove, settings.endMove)));
+  const endMove = Math.max(startMove, Math.min(moves.length, Math.max(settings.startMove, settings.endMove)));
+  const targetVisits = settings.visitsPerMove > 0 ? settings.visitsPerMove : 0;
+  const secondsPerMove = settings.visitsPerMove > 0 ? settings.secondsPerMove : Math.max(0.1, settings.secondsPerMove);
+  const summary = createEmptyAutoAnalysisSummary();
+  const points: ReviewAnalysisPoint[] = [];
+  const problems: ProblemItem[] = [];
+  let document = createResearchDocument({
+    blackName: parsed.blackName,
+    boardSize: parsed.boardSize,
+    currentMoveNumber: moves.length,
+    gameDate: parsed.gameDate,
+    result: parsed.result,
+    komi: parsed.komi,
+    moves,
+    rules: parsed.rules,
+    sourceFileName,
+    stones: buildBoardPosition(moves, parsed.boardSize, moves.length).stones,
+    totalMoves: moves.length,
+    whiteName: parsed.whiteName
+  });
+  document.mainSgf = sourceContent;
+  document.gameTree = parsed.gameTree;
+
+  for (let moveNumber = startMove; moveNumber <= endMove; moveNumber += 1) {
+    if (shouldStop.current) {
+      break;
+    }
+    const actualMove = moves[moveNumber - 1];
+    if (!actualMove) {
+      continue;
+    }
+    if ((actualMove.color === "black" && !settings.includeBlack) || (actualMove.color === "white" && !settings.includeWhite)) {
+      continue;
+    }
+
+    const moveStartedAt = Date.now();
+    const positionMoveNumber = moveNumber - 1;
+    let result = await analyzePositionContinuous({
+      boardSize: parsed.boardSize,
+      komi: parsed.komi,
+      moves: moves.slice(0, positionMoveNumber),
+      nextColor: actualMove.color,
+      profile
+    });
+    let best = result.candidates[0];
+    while (!shouldStop.current && shouldContinueAutoAnalysisMove(moveStartedAt, secondsPerMove, targetVisits, best)) {
+      await waitForAutoAnalysisPoll(shouldStop);
+      result = await analyzePositionContinuous({
+        boardSize: parsed.boardSize,
+        komi: parsed.komi,
+        moves: moves.slice(0, positionMoveNumber),
+        nextColor: actualMove.color,
+        profile
+      });
+      best = result.candidates[0];
+      if (!best && result.status !== "waiting-for-candidates") {
+        break;
+      }
+    }
+    if (shouldStop.current || !best) {
+      continue;
+    }
+
+    document = appendCandidateBlockForBatch(document, positionMoveNumber, result.candidates);
+    points.push({
+      moveNumber,
+      scoreLead: best.scoreLead,
+      visits: best.visits,
+      winrate: best.winrate
+    });
+
+    const actualPoint = moveToGtpPoint(actualMove, parsed.boardSize);
+    const statisticsCandidates = result.candidates.slice(0, DEFAULT_CANDIDATE_DISPLAY_LIMIT);
+    const actualCandidateIndex = statisticsCandidates.findIndex((candidate) => candidate.moveName === actualPoint);
+    const actualCandidate = actualCandidateIndex >= 0 ? result.candidates[actualCandidateIndex] : null;
+    const bestVisits = Math.max(1, ...statisticsCandidates.map((candidate) => candidate.visits));
+    const matchScore = actualCandidate ? actualCandidate.visits / bestVisits : 0;
+    const winrateLoss = actualCandidate ? Math.max(0, best.winrate - actualCandidate.winrate) : null;
+    const scoreLoss = actualCandidate ? calculateScoreLoss(actualMove.color, best, actualCandidate) : null;
+    summary.analyzed += 1;
+    summary.topMatches += actualCandidateIndex === 0 ? 1 : 0;
+    summary.candidateMatches += actualCandidateIndex >= 0 ? 1 : 0;
+    summary.matches += actualCandidateIndex >= 0 && actualCandidateIndex < MATCH_SETTINGS.bestNums && matchScore * 100 >= MATCH_SETTINGS.percentVisits ? 1 : 0;
+    summary.totalMatchScore += matchScore;
+    if (winrateLoss !== null) {
+      summary.totalWinrateLoss += winrateLoss;
+      summary.knownWinrateLosses += 1;
+    }
+    if (scoreLoss !== null) {
+      summary.totalScoreLoss += scoreLoss;
+      summary.knownScoreLosses += 1;
+    }
+    summary.details.push({
+      actualMoveName: actualPoint,
+      color: actualMove.color,
+      isCandidate: actualCandidateIndex >= 0,
+      isMatch: actualCandidateIndex >= 0 && actualCandidateIndex < MATCH_SETTINGS.bestNums && matchScore * 100 >= MATCH_SETTINGS.percentVisits,
+      isTopMove: actualCandidateIndex === 0,
+      matchScore,
+      moveNumber,
+      rank: actualCandidateIndex >= 0 ? actualCandidateIndex + 1 : null,
+      scoreLoss,
+      winrate: best.winrate,
+      winrateLoss
+    });
+
+    if (settings.mode !== "analysis" && winrateLoss !== null && winrateLoss >= settings.winrateLossThreshold) {
+      problems.push(createProblemItem({
+        actualMoveName: actualPoint,
+        candidates: result.candidates,
+        color: actualMove.color,
+        engineName: profile.name,
+        modelName: profile.modelPath ? profile.modelPath.split("/").pop() : undefined,
+        moveNumber,
+        threshold: settings.winrateLossThreshold,
+        winrateLoss,
+        candidateLimit: settings.candidateLimit
+      }));
+    }
+  }
+
+  if (settings.mode !== "problems") {
+    document.analysis = buildResearchAnalysisSnapshot(summary, points, { startMove, endMove }, profile);
+  }
+  if (settings.mode !== "analysis") {
+    document.problemSet = createProblemSet(problems, settings);
+  }
+  document.analysisCompletion = createAnalysisCompletionMarker({
+    analyzedMoves: summary.analyzed,
+    endMove,
+    parsed,
+    profile,
+    settings,
+    shouldStop: shouldStop.current,
+    sourceFileName,
+    startMove
+  });
+  return { analyzed: summary.analyzed, document, problemCount: problems.length };
 }
 
 function GameProgressPanel({
@@ -3041,6 +3445,46 @@ async function readGameRecordFile(file: File): Promise<string> {
   }
 }
 
+async function chooseBrowserGameRecordFiles(): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = ".sgf,.gib,.tsg,.json,.txt,application/json,application/x-go-sgf,text/plain";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.style.top = "0";
+    document.body.appendChild(input);
+    input.addEventListener(
+      "change",
+      () => {
+        const files = Array.from(input.files ?? []);
+        input.remove();
+        resolve(files);
+      },
+      { once: true }
+    );
+    input.click();
+  });
+}
+
+type BrowserDirectoryHandle = {
+  name?: string;
+};
+
+type BrowserDirectoryPicker = () => Promise<BrowserDirectoryHandle>;
+
+function getBrowserDirectoryPicker(): BrowserDirectoryPicker | null {
+  const candidate = window as Window & {
+    showDirectoryPicker?: BrowserDirectoryPicker;
+  };
+  return typeof candidate.showDirectoryPicker === "function" ? candidate.showDirectoryPicker.bind(window) : null;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 function downloadTextFile(text: string, fileName: string, mimeType: string) {
   const blob = new Blob([text], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -3259,12 +3703,163 @@ function buildResearchAnalysisSnapshot(
   };
 }
 
+function createAnalysisCompletionMarker(params: {
+  analyzedMoves: number;
+  endMove: number;
+  parsed: ReturnType<typeof parseGameRecord>;
+  profile: EngineProfile;
+  settings: BatchAnalysisSettings;
+  shouldStop: boolean;
+  sourceFileName: string;
+  startMove: number;
+}): ResearchAnalysisCompletion | undefined {
+  const totalMoves = params.parsed.moves.length;
+  const isFullRange =
+    totalMoves > 0 &&
+    params.startMove === 1 &&
+    params.endMove === totalMoves &&
+    params.settings.includeBlack &&
+    params.settings.includeWhite &&
+    !params.shouldStop &&
+    params.analyzedMoves === totalMoves;
+  if (!isFullRange) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    complete: true,
+    completedAt: new Date().toISOString(),
+    startMove: params.startMove,
+    endMove: params.endMove,
+    totalMoves,
+    analyzedMoves: params.analyzedMoves,
+    engineName: params.profile.name,
+    modelName: params.profile.modelPath ? params.profile.modelPath.split("/").pop() : undefined,
+    sourceFileName: params.sourceFileName
+  };
+}
+
+function readTsgAnalysisCompletion(content: string): ResearchAnalysisCompletion | null {
+  try {
+    const record = JSON.parse(content) as Record<string, unknown>;
+    const tensugo = record.tensugo && typeof record.tensugo === "object" ? record.tensugo as Record<string, unknown> : {};
+    const completion = tensugo.analysisCompletion ?? record.analysisCompletion;
+    if (!completion || typeof completion !== "object") {
+      return null;
+    }
+    const marker = completion as Partial<ResearchAnalysisCompletion>;
+    if (marker.complete !== true) {
+      return null;
+    }
+    return {
+      version: marker.version === 1 ? 1 : 1,
+      complete: true,
+      completedAt: typeof marker.completedAt === "string" ? marker.completedAt : "",
+      startMove: typeof marker.startMove === "number" ? marker.startMove : 1,
+      endMove: typeof marker.endMove === "number" ? marker.endMove : 0,
+      totalMoves: typeof marker.totalMoves === "number" ? marker.totalMoves : 0,
+      analyzedMoves: typeof marker.analyzedMoves === "number" ? marker.analyzedMoves : 0,
+      engineName: typeof marker.engineName === "string" ? marker.engineName : undefined,
+      modelName: typeof marker.modelName === "string" ? marker.modelName : undefined,
+      sourceFileName: typeof marker.sourceFileName === "string" ? marker.sourceFileName : undefined
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readExistingTsgAnalysisCompletion(path: string): Promise<ResearchAnalysisCompletion | null> {
+  try {
+    return readTsgAnalysisCompletion(await readTextFile(path));
+  } catch {
+    return null;
+  }
+}
+
+function appendCandidateBlockForBatch(
+  document: ResearchDocument,
+  moveNumber: number,
+  candidates: EngineCandidateMove[]
+): ResearchDocument {
+  const block = createCandidateMovesBlock(moveNumber, candidates);
+  if (!block) {
+    return document;
+  }
+  const existingBlock = document.sections
+    .flatMap((section) => section.blocks)
+    .find((item) => item.type === "candidate_moves" && item.moveNumber === moveNumber);
+  return existingBlock ? replaceBlock(document, existingBlock.id, block) : appendBlock(document, block);
+}
+
+function createProblemSet(items: ProblemItem[], settings: BatchAnalysisSettings): ProblemSet {
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    settings: {
+      winrateLossThreshold: settings.winrateLossThreshold,
+      candidateLimit: settings.candidateLimit
+    },
+    items
+  };
+}
+
+function createProblemItem(params: {
+  actualMoveName: string;
+  candidateLimit: number;
+  candidates: EngineCandidateMove[];
+  color: "black" | "white";
+  engineName?: string;
+  modelName?: string;
+  moveNumber: number;
+  threshold: number;
+  winrateLoss: number;
+}): ProblemItem {
+  const scoredCandidates = params.candidates.slice(0, params.candidateLimit).map((candidate, index) => ({
+    moveName: candidate.moveName,
+    rank: candidate.rank,
+    score: index === 0 ? 10 : index === 1 ? 9 : index === 2 ? 8 : index === 3 ? 7 : 5,
+    visits: candidate.visits,
+    winrate: candidate.winrate,
+    scoreLead: candidate.scoreLead,
+    pv: candidate.pv
+  }));
+  return {
+    id: createLocalId("problem"),
+    moveNumber: params.moveNumber,
+    color: params.color,
+    actualMoveName: params.actualMoveName,
+    trigger: {
+      type: "winrateLoss",
+      threshold: params.threshold,
+      value: params.winrateLoss
+    },
+    prompt: `第 ${params.moveNumber} 手，${params.color === "black" ? "黑棋" : "白棋"}请选择更好的下法。`,
+    fullScoreMove: scoredCandidates[0]?.moveName ?? "",
+    candidateScores: scoredCandidates,
+    analysis: {
+      engineName: params.engineName,
+      modelName: params.modelName,
+      generatedAt: new Date().toISOString(),
+      candidates: params.candidates
+    }
+  };
+}
+
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const numberValue = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numberValue)) {
     return fallback;
   }
   return Math.max(min, Math.min(max, numberValue));
+}
+
+function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function joinPath(directory: string, fileName: string): string {
+  const separator = directory.includes("\\") ? "\\" : "/";
+  return `${directory.replace(/[\\/]+$/, "")}${separator}${fileName}`;
 }
 
 function directoryName(path: string): string {

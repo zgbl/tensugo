@@ -42,3 +42,11 @@ pub fn choose_save_path(
 pub fn choose_file_path(kind: &str) -> Result<Option<PathBuf>, String> {
     Err(format!("移动端暂不支持选择本地 KataGo {} 文件。", kind))
 }
+
+pub fn choose_game_record_paths() -> Result<Vec<PathBuf>, String> {
+    Err("移动端暂不支持批量选择本地棋谱。".to_string())
+}
+
+pub fn choose_directory_path() -> Result<Option<PathBuf>, String> {
+    Err("移动端暂不支持选择本地输出目录。".to_string())
+}
