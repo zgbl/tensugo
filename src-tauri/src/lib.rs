@@ -2,6 +2,7 @@ mod engine_discovery;
 mod platform;
 
 use engine_discovery::{EngineDiscoveryResult, EngineProfile, EngineProfileCandidate};
+use postgres::NoTls;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -151,7 +152,20 @@ struct ReadTextFileResult {
 }
 
 #[derive(Debug, Serialize)]
+struct ReadFileBytesResult {
+    ok: bool,
+    content: Option<Vec<u8>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct WriteTextFileResult {
+    ok: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SaveProblemResult {
     ok: bool,
     error: Option<String>,
 }
@@ -308,6 +322,78 @@ fn read_text_file(path: String) -> ReadTextFileResult {
             ok: false,
             content: None,
             error: Some(error.to_string()),
+        },
+    }
+}
+
+#[tauri::command]
+fn read_file_bytes(path: String) -> ReadFileBytesResult {
+    match std::fs::read(path) {
+        Ok(content) => ReadFileBytesResult {
+            ok: true,
+            content: Some(content),
+            error: None,
+        },
+        Err(error) => ReadFileBytesResult {
+            ok: false,
+            content: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+#[tauri::command]
+fn save_problem_to_database(payload: String) -> SaveProblemResult {
+    let database_url = std::env::var("TENSUGO_PROBLEM_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://tensugo:tensugo_dev@127.0.0.1:5432/tensugo_forum".to_string()
+    });
+    let value: serde_json::Value = match serde_json::from_str(&payload) {
+        Ok(value) => value,
+        Err(error) => {
+            return SaveProblemResult {
+                ok: false,
+                error: Some(format!("题目数据无效：{error}")),
+            }
+        }
+    };
+    let id = value.get("id").and_then(|item| item.as_str()).unwrap_or("");
+    if id.is_empty() {
+        return SaveProblemResult {
+            ok: false,
+            error: Some("题目缺少 id".to_string()),
+        };
+    }
+    let sql = r#"
+        CREATE TABLE IF NOT EXISTS go_problems (
+            id TEXT PRIMARY KEY,
+            payload JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    "#;
+    let result = (|| -> Result<(), String> {
+        let mut config = database_url
+            .parse::<postgres::Config>()
+            .map_err(|error| error.to_string())?;
+        config.connect_timeout(Duration::from_secs(2));
+        let mut client = config.connect(NoTls).map_err(|error| error.to_string())?;
+        client
+            .batch_execute(sql)
+            .map_err(|error| error.to_string())?;
+        client.execute(
+            "INSERT INTO go_problems (id, payload, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()",
+            &[&id, &value],
+        ).map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => SaveProblemResult {
+            ok: true,
+            error: None,
+        },
+        Err(error) => SaveProblemResult {
+            ok: false,
+            error: Some(error),
         },
     }
 }
@@ -1641,7 +1727,9 @@ pub fn run() {
             choose_game_record_files,
             choose_output_directory,
             read_text_file,
+            read_file_bytes,
             write_text_file,
+            save_problem_to_database,
             default_engine_profile,
             discover_engine_profile,
             choose_engine_path,

@@ -22,6 +22,7 @@ import {
   isTauriRuntime,
   probeEngine,
   readTextFile,
+  saveProblemToDatabase,
   stopContinuousAnalysis,
   writeTextFile
 } from "../engine/tauriEngine";
@@ -91,6 +92,17 @@ type AutoAnalysisSummary = {
   totalScoreLoss: number;
   totalWinrateLoss: number;
   totalMatchScore: number;
+};
+
+type BatchRunReport = {
+  analyzedMoves: number;
+  completedFiles: number;
+  outputDirectory: string;
+  problemCount: number;
+  selectedFiles: number;
+  skippedFiles: number;
+  stopped: boolean;
+  targetPlayer: string;
 };
 
 type TianshuReport = AutoAnalysisSummary & {
@@ -175,7 +187,14 @@ export function App() {
   const [batchBrowserFiles, setBatchBrowserFiles] = useState<File[]>([]);
   const [batchOutputDirectory, setBatchOutputDirectory] = useState<string | null>(() => window.localStorage.getItem("tensugo.batchOutputDir"));
   const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
+  const [isBatchPaused, setIsBatchPaused] = useState(false);
+  const [isBatchConsoleVisible, setIsBatchConsoleVisible] = useState(false);
   const [batchJobLogs, setBatchJobLogs] = useState<string[]>([]);
+  const [batchRunReport, setBatchRunReport] = useState<BatchRunReport | null>(null);
+  const [activeProblem, setActiveProblem] = useState<ProblemItem | null>(null);
+  const [isEditingProblemCandidates, setIsEditingProblemCandidates] = useState(false);
+  const [isSavingProblem, setIsSavingProblem] = useState(false);
+  const [problemSaveStatus, setProblemSaveStatus] = useState("");
   const [isGameProgressPanelOpen, setIsGameProgressPanelOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
   const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
@@ -244,6 +263,7 @@ export function App() {
   const autoAnalysisStopRef = useRef(false);
   const autoAnalysisFinishRef = useRef(false);
   const batchAnalysisStopRef = useRef(false);
+  const batchAnalysisPauseRef = useRef(false);
   const autoAnalysisReportRangeRef = useRef<{ startMove: number; endMove: number } | null>(null);
   const autoAnalysisSummaryRef = useRef<AutoAnalysisSummary>(createEmptyAutoAnalysisSummary());
   const engineProgressTimerRef = useRef<number | null>(null);
@@ -292,6 +312,11 @@ export function App() {
   const previewCandidate =
     activeCandidates.find((candidate) => candidate.rank === previewCandidateRank) ?? bestCandidate ?? null;
   const displayedWinrate = bestCandidate?.winrate ?? 28;
+  const activeProblemActualMove = useMemo(() => {
+    if (!activeProblem || currentMoveNumber !== activeProblem.moveNumber - 1) return null;
+    const move = sourceMainLineMoves[activeProblem.moveNumber - 1] ?? moves[activeProblem.moveNumber - 1];
+    return move ? { ...move, isLast: false } : null;
+  }, [activeProblem, currentMoveNumber, moves, sourceMainLineMoves]);
   const displayedScoreLead = bestCandidate?.scoreLead ?? -3.4;
   const displayedVisits = bestCandidate?.visits ?? 137000;
   const engineLabel = isShowingSavedAnalysis ? "TSG 静态分析" : engineProfile?.name ?? "未配置";
@@ -1910,6 +1935,21 @@ export function App() {
     const line = `${new Date().toLocaleTimeString()} ${message}`;
     setBatchJobLogs((logs) => [...logs, line].slice(-500));
   };
+  const suggestBatchTargetPlayers = async (): Promise<string[]> => {
+    try {
+      const records = isTauriRuntime()
+        ? await Promise.all(batchFilePaths.slice(0, 2).map(async (path) => parseGameRecord(await readTextFile(path), baseName(path))))
+        : await Promise.all(batchBrowserFiles.slice(0, 2).map(async (file) => parseGameRecord(await readGameRecordFile(file), file.name)));
+      if (records.length < 2) {
+        return [];
+      }
+      const firstNames = [records[0].blackName, records[0].whiteName].filter(Boolean);
+      return firstNames.filter((name) => playerNameMatches(records[1].blackName, name) || playerNameMatches(records[1].whiteName, name));
+    } catch (error) {
+      appendBatchJobLog(`目标棋手自动识别失败：${String(error)}`);
+      return [];
+    }
+  };
   const chooseBatchFiles = async () => {
     if (!isTauriRuntime()) {
       try {
@@ -2016,8 +2056,9 @@ export function App() {
   };
   const runBatchAnalysis = async (settings: BatchAnalysisSettings) => {
     setBatchJobLogs([]);
+    setBatchRunReport(null);
     appendBatchJobLog(
-      `任务启动: mode=${settings.mode}, range=${settings.startMove}-${settings.endMove}, seconds=${settings.secondsPerMove}, visits=${settings.visitsPerMove || "time"}`
+      `任务启动: mode=${settings.mode}, target=${settings.targetPlayer || "全部棋手"}, range=${settings.startMove}-${settings.endMove}, seconds=${settings.secondsPerMove}, visits=${settings.visitsPerMove || "time"}`
     );
     if (!isTauriRuntime()) {
       if (batchBrowserFiles.length === 0) {
@@ -2064,12 +2105,19 @@ export function App() {
     }
 
     batchAnalysisStopRef.current = false;
+    batchAnalysisPauseRef.current = false;
+    setIsBatchPaused(false);
     setIsBatchAnalyzing(true);
+    setIsBatchConsoleVisible(true);
+    setIsBatchAnalysisOpen(false);
     setIsAnalysisEnabled(false);
     appendBatchJobLog(`Desktop: 批量任务开始，文件=${batchFilePaths.length}, 输出=${batchOutputDirectory}`);
     setLastAction(`批量任务开始：${batchFilePaths.length} 个棋谱。`);
 
     let completed = 0;
+    let skipped = 0;
+    let totalAnalyzedMoves = 0;
+    let totalProblemCount = 0;
     try {
       for (const [fileIndex, path] of batchFilePaths.entries()) {
         if (batchAnalysisStopRef.current) {
@@ -2086,6 +2134,7 @@ export function App() {
             `Desktop: 跳过 ${fileName}，输出 TSG 已完整自动分析 ${existingOutputCompletion.startMove}-${existingOutputCompletion.endMove}/${existingOutputCompletion.totalMoves}: ${outputPath}`
           );
           setLastAction(`已跳过：${fileName} 的输出 TSG 已有完整自动分析标记。`);
+          skipped += 1;
           continue;
         }
         const content = await readTextFile(path);
@@ -2095,26 +2144,76 @@ export function App() {
             `Desktop: 跳过 ${fileName}，TSG 已完整自动分析 ${completion.startMove}-${completion.endMove}/${completion.totalMoves}，完成时间 ${completion.completedAt}`
           );
           setLastAction(`已跳过：${fileName} 已有完整自动分析标记。`);
+          skipped += 1;
           continue;
         }
         const parsed = parseGameRecord(content, fileName);
         appendBatchJobLog(`Desktop: 已读取 ${fileName}, ${parsed.moves.length} 手`);
+        const parsedSelectedNodeId = findMainLineEndNodeId(parsed.gameTree);
+        const parsedPathNodeIds = moveNodeIdsToNode(parsed.gameTree, parsedSelectedNodeId);
+        setBoardSize(parsed.boardSize);
+        setKomi(parsed.komi);
+        setRules(parsed.rules);
+        setBlackName(parsed.blackName);
+        setWhiteName(parsed.whiteName);
+        setGameDate(parsed.gameDate);
+        setGameResult(parsed.result);
+        setSourceFileName(fileName);
+        setMoves(parsed.moves);
+        setSourceMainLineMoves(parsed.moves);
+        setSourceMainLineMoveCount(parsed.moves.length);
+        setGameTree(parsed.gameTree);
+        setSelectedGameNodeId("root");
+        setCurrentPathNodeIds(parsedPathNodeIds);
+        setCurrentMoveNumber(0);
+        setEngineCandidates([]);
+        setAnalysisPoints([]);
         const result = await analyzeGameForBatch({
           parsed,
           sourceContent: content,
           sourceFileName: fileName,
           settings,
           profile: engineProfile,
-          shouldStop: batchAnalysisStopRef
+          shouldStop: batchAnalysisStopRef,
+          shouldPause: batchAnalysisPauseRef,
+          onProgress: ({ candidates, moveNumber, point, status }) => {
+            const positionMoveNumber = Math.max(0, moveNumber - 1);
+            setCurrentMoveNumber(positionMoveNumber);
+            setSelectedGameNodeId(positionMoveNumber > 0 ? parsedPathNodeIds[positionMoveNumber - 1] ?? "root" : "root");
+            setEngineCandidatesPositionKey(candidatePositionKey(parsed.boardSize, parsed.komi, parsed.moves.slice(0, positionMoveNumber)));
+            setEngineCandidates(candidates);
+            if (point) {
+              setAnalysisPoints((points) => upsertAnalysisPoint(points, point));
+            }
+            setEngineStatus(`批量分析 ${fileIndex + 1}/${batchFilePaths.length} · 第 ${moveNumber}/${parsed.moves.length} 手 · ${status}`);
+            setLastAction(`正在分析 ${fileName} 第 ${moveNumber} 手：${status}`);
+            if (status.startsWith("正在启动")) {
+              appendBatchJobLog(`Desktop: ${fileName} 第 ${moveNumber} 手，${status}`);
+            }
+          }
         });
         await writeTextFile(outputPath, JSON.stringify(toBrgDocument(result.document, parsed.gameTree)));
+        setResearchDocument(result.document);
+        setShowSavedAnalysis(documentHasSavedAnalysis(result.document));
         completed += 1;
+        totalAnalyzedMoves += result.analyzed;
+        totalProblemCount += result.problemCount;
         appendBatchJobLog(`Desktop: 已保存 ${outputPath} 分析=${result.analyzed} 题目=${result.problemCount}`);
         setLastAction(`已保存：${outputPath}（分析 ${result.analyzed} 手，题目 ${result.problemCount} 题）`);
       }
       appendBatchJobLog(batchAnalysisStopRef.current ? `Desktop: 已停止，完成 ${completed}/${batchFilePaths.length}` : `Desktop: 完成 ${completed}/${batchFilePaths.length}`);
       setEngineStatus(batchAnalysisStopRef.current ? `批量任务已停止：完成 ${completed} 个棋谱` : `批量任务完成：${completed} 个棋谱`);
       setLastAction(batchAnalysisStopRef.current ? `批量任务已停止：完成 ${completed} 个棋谱。` : `批量任务完成：已保存 ${completed} 个 TSG。`);
+      setBatchRunReport({
+        analyzedMoves: totalAnalyzedMoves,
+        completedFiles: completed,
+        outputDirectory: batchOutputDirectory,
+        problemCount: totalProblemCount,
+        selectedFiles: batchFilePaths.length,
+        skippedFiles: skipped,
+        stopped: batchAnalysisStopRef.current,
+        targetPlayer: settings.targetPlayer
+      });
     } catch (error) {
       appendBatchJobLog(`Desktop: 任务失败 ${String(error)}`);
       setEngineStatus("批量任务失败");
@@ -2126,7 +2225,10 @@ export function App() {
         // The engine session may already be stopped after an error.
       }
       setIsBatchAnalyzing(false);
+      setIsBatchPaused(false);
+      setIsBatchConsoleVisible(false);
       batchAnalysisStopRef.current = false;
+      batchAnalysisPauseRef.current = false;
       appendBatchJobLog("任务结束");
     }
   };
@@ -2134,6 +2236,16 @@ export function App() {
     batchAnalysisStopRef.current = true;
     appendBatchJobLog("收到终止请求，等待当前分析点结束");
     setLastAction("正在终止批量任务，当前手分析结束后停止。");
+  };
+  const toggleBatchAnalysisPause = () => {
+    const nextPaused = !batchAnalysisPauseRef.current;
+    batchAnalysisPauseRef.current = nextPaused;
+    setIsBatchPaused(nextPaused);
+    appendBatchJobLog(nextPaused ? "批量任务已暂停" : "批量任务继续");
+    setLastAction(nextPaused ? "批量分析已暂停，可继续或终止。" : "批量分析继续运行。");
+    if (nextPaused) {
+      void stopContinuousAnalysis();
+    }
   };
   const toggleAnalysis = () => {
     if (isAnalysisEnabled) {
@@ -2143,6 +2255,104 @@ export function App() {
     setIsAnalysisEnabled(true);
     setLastAction("AI 分析已开启。");
     queueAnalysisIfEnabled(20);
+  };
+  const openProblemReview = (moveNumber: number) => {
+    const problem = researchDocument.problemSet?.items.find((item) => item.moveNumber === moveNumber);
+    if (!problem) {
+      setLastAction(`第 ${moveNumber} 手没有可读取的出题标记。`);
+      return;
+    }
+    const positionMoveNumber = Math.max(0, problem.moveNumber - 1);
+    setActiveProblem(problem);
+    setIsEditingProblemCandidates(false);
+    setProblemSaveStatus("");
+    setCurrentMoveNumber(positionMoveNumber);
+    setSelectedGameNodeId(positionMoveNumber > 0 ? currentPathNodeIds[positionMoveNumber - 1] ?? "root" : "root");
+    setEngineCandidatesPositionKey(candidatePositionKey(boardSize, komi, sourceMainLineMoves.slice(0, positionMoveNumber)));
+    setEngineCandidates(problem.analysis.candidates);
+    setPreviewCandidateRank(null);
+    setLastAction(`正在 REVIEW 第 ${problem.moveNumber} 手出题标记：已显示 AI 候选点和实战下一手。`);
+  };
+
+  const updateProblemCandidateAtPoint = (x: number, y: number) => {
+    if (!activeProblem || !isEditingProblemCandidates) {
+      playMove(x, y);
+      return;
+    }
+    const moveName = moveToGtpPoint({ color: activeProblem.color, moveNumber: activeProblem.moveNumber, x, y }, boardSize);
+    const exists = activeProblem.candidateScores.some((candidate) => candidate.moveName === moveName);
+    const nextScores = exists
+      ? activeProblem.candidateScores.filter((candidate) => candidate.moveName !== moveName)
+      : [...activeProblem.candidateScores, {
+          moveName,
+          rank: activeProblem.candidateScores.length + 1,
+          score: 5,
+          visits: 0,
+          winrate: 0,
+          scoreLead: 0,
+          pv: []
+        }];
+    const nextProblem = { ...activeProblem, candidateScores: nextScores.map((candidate, index) => ({ ...candidate, rank: index + 1 })) };
+    setActiveProblem(nextProblem);
+    setResearchDocument((document) => document.problemSet ? {
+      ...document,
+      problemSet: { ...document.problemSet, items: document.problemSet.items.map((item) => item.id === nextProblem.id ? nextProblem : item) }
+    } : document);
+    if (!engineCandidates.some((candidate) => candidate.moveName === moveName)) {
+      const added = nextProblem.candidateScores.find((candidate) => candidate.moveName === moveName);
+      if (added) setEngineCandidates((candidates) => [...candidates, { ...added }]);
+    }
+  };
+  const toggleProblemCandidate = (moveName: string) => {
+    if (!activeProblem) return;
+    const exists = activeProblem.candidateScores.some((candidate) => candidate.moveName === moveName);
+    const sourceCandidate = activeProblem.analysis.candidates.find((candidate) => candidate.moveName === moveName)
+      ?? engineCandidates.find((candidate) => candidate.moveName === moveName);
+    if (!exists && !sourceCandidate) return;
+    const nextScores = exists
+      ? activeProblem.candidateScores.filter((candidate) => candidate.moveName !== moveName)
+      : [...activeProblem.candidateScores, {
+          moveName,
+          rank: activeProblem.candidateScores.length + 1,
+          score: 5,
+          visits: sourceCandidate?.visits ?? 0,
+          winrate: sourceCandidate?.winrate ?? 0,
+          scoreLead: sourceCandidate?.scoreLead ?? 0,
+          pv: sourceCandidate?.pv ?? []
+        }];
+    const nextProblem = { ...activeProblem, candidateScores: nextScores.map((candidate, index) => ({ ...candidate, rank: index + 1 })) };
+    setActiveProblem(nextProblem);
+    setResearchDocument((document) => document.problemSet ? {
+      ...document,
+      problemSet: { ...document.problemSet, items: document.problemSet.items.map((item) => item.id === nextProblem.id ? nextProblem : item) }
+    } : document);
+  };
+  const saveReviewedProblem = async (problem: ProblemItem) => {
+    setIsSavingProblem(true);
+    setProblemSaveStatus("正在连接开发数据库并保存…");
+    try {
+      await saveProblemToDatabase({
+        ...problem,
+        source: {
+          fileName: sourceFileName,
+          blackName,
+          whiteName,
+          boardSize,
+          komi,
+          rules,
+          movesBeforeProblem: sourceMainLineMoves.slice(0, Math.max(0, problem.moveNumber - 1)),
+          actualMove: sourceMainLineMoves[problem.moveNumber - 1] ?? null
+        },
+        reviewedAt: new Date().toISOString()
+      });
+      setLastAction(`第 ${problem.moveNumber} 手题目已保存到开发数据库。`);
+      setProblemSaveStatus("保存成功");
+    } catch (error) {
+      setLastAction(`保存题目失败：${String(error)}`);
+      setProblemSaveStatus(`保存失败：${String(error)}`);
+    } finally {
+      setIsSavingProblem(false);
+    }
   };
   const pauseAnalysis = () => {
     analysisRequestRef.current += 1;
@@ -2374,8 +2584,9 @@ export function App() {
             pixelSize={boardPixelSize}
             stones={stones}
             variationBaseMoveNumber={displayedVariationBaseMoveNumber}
+            actualNextMove={activeProblemActualMove}
             onStoneClick={jumpToMove}
-            onPointClick={playMove}
+            onPointClick={updateProblemCandidateAtPoint}
             onCandidatePreview={setPreviewCandidateRank}
           />
         </section>
@@ -2413,6 +2624,11 @@ export function App() {
               onCandidateListVisibleChange={setCandidateListVisible}
               onBranchNodeClick={jumpToGameNode}
               onPreviewCandidate={setPreviewCandidateRank}
+              problemMoveNumbers={new Set(researchDocument.problemSet?.items.map((item) => item.moveNumber) ?? [])}
+              onProblemClick={openProblemReview}
+              problemReviewActive={Boolean(activeProblem)}
+              problemSelectedMoveNames={new Set(activeProblem?.candidateScores.map((candidate) => candidate.moveName) ?? [])}
+              onProblemCandidateToggle={toggleProblemCandidate}
             />
           )}
         </aside>
@@ -2449,6 +2665,20 @@ export function App() {
         onToggleMoveNumbers={toggleMoveNumberDisplay}
         t={t}
       />
+      {activeProblem ? (
+        <div className="problem-review-toolbar" aria-label="出题操作">
+          <strong>出题 REVIEW · 第 {activeProblem.moveNumber} 手</strong>
+          <span>胜率损失 {activeProblem.trigger.value.toFixed(1)}%</span>
+          <button type="button" className={isEditingProblemCandidates ? "active" : ""} onClick={() => setIsEditingProblemCandidates((value) => !value)}>
+            {isEditingProblemCandidates ? "完成选点" : "修改/增加选点"}
+          </button>
+          <button type="button" disabled={isSavingProblem} onClick={() => void saveReviewedProblem(activeProblem)}>
+            {isSavingProblem ? "保存中…" : "保存题目"}
+          </button>
+          {problemSaveStatus ? <span className={problemSaveStatus.startsWith("保存失败") ? "problem-save-error" : "problem-save-status"}>{problemSaveStatus}</span> : null}
+          <button type="button" onClick={() => { setActiveProblem(null); setIsEditingProblemCandidates(false); }}>关闭</button>
+        </div>
+      ) : null}
       <AutoAnalysisDialog
         currentMoveNumber={currentMoveNumber}
         isRunning={isAutoAnalyzing}
@@ -2471,8 +2701,29 @@ export function App() {
         onChooseOutputDirectory={chooseBatchOutputDirectory}
         onClose={() => setIsBatchAnalysisOpen(false)}
         onStart={(settings) => void runBatchAnalysis(settings)}
+        onSuggestTargetPlayers={suggestBatchTargetPlayers}
         onStop={stopBatchAnalysis}
       />
+      {isBatchAnalyzing && (
+        <div className="batch-task-controls" aria-label="批量任务控制">
+          <strong>{isBatchPaused ? "批量分析已暂停" : "批量分析运行中"}</strong>
+          <button type="button" onClick={toggleBatchAnalysisPause}>{isBatchPaused ? "继续" : "暂停"}</button>
+          <button type="button" onClick={() => setIsBatchConsoleVisible((visible) => !visible)}>
+            {isBatchConsoleVisible ? "隐藏日志" : "显示日志"}
+          </button>
+          <button type="button" className="danger" onClick={stopBatchAnalysis}>终止</button>
+        </div>
+      )}
+      {isBatchAnalyzing && isBatchConsoleVisible && (
+        <BatchJobConsole
+          isPaused={isBatchPaused}
+          logs={batchJobLogs}
+          onClose={() => setIsBatchConsoleVisible(false)}
+          onPauseToggle={toggleBatchAnalysisPause}
+          onStop={stopBatchAnalysis}
+        />
+      )}
+      <BatchRunReportDialog report={batchRunReport} onClose={() => setBatchRunReport(null)} />
       <TianshuReportDialog
         open={isTianshuOpen}
         report={tianshuReport}
@@ -2542,6 +2793,94 @@ export function App() {
   );
 }
 
+function BatchRunReportDialog({ report, onClose }: { report: BatchRunReport | null; onClose: () => void }) {
+  if (!report) return null;
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="auto-analysis-dialog batch-run-report" role="dialog" aria-modal="true" aria-labelledby="batch-report-title">
+        <div className="dialog-title-row">
+          <h2 id="batch-report-title">{report.stopped ? "批量分析已终止" : "批量分析完成"}</h2>
+          <button type="button" aria-label="关闭" onClick={onClose}>×</button>
+        </div>
+        <dl className="batch-report-grid">
+          <div><dt>选择棋谱</dt><dd>{report.selectedFiles} 个</dd></div>
+          <div><dt>生成 TSG</dt><dd>{report.completedFiles} 个</dd></div>
+          <div><dt>跳过棋谱</dt><dd>{report.skippedFiles} 个</dd></div>
+          <div><dt>分析回合</dt><dd>{report.analyzedMoves} 手</dd></div>
+          <div><dt>出题标记</dt><dd>{report.problemCount} 个</dd></div>
+          <div><dt>目标棋手</dt><dd>{report.targetPlayer || "全部棋手"}</dd></div>
+        </dl>
+        <div className="batch-report-output"><strong>TSG 输出目录</strong><span>{report.outputDirectory}</span></div>
+        <div className="dialog-actions"><button type="button" onClick={onClose}>关闭</button></div>
+      </section>
+    </div>
+  );
+}
+
+function BatchJobConsole({ isPaused, logs, onClose, onPauseToggle, onStop }: {
+  isPaused: boolean;
+  logs: string[];
+  onClose: () => void;
+  onPauseToggle: () => void;
+  onStop: () => void;
+}) {
+  const [position, setPosition] = useState(() => ({
+    x: Math.max(16, window.innerWidth - 576),
+    y: Math.max(72, window.innerHeight - 440)
+  }));
+  const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
+  const consoleRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const move = (event: MouseEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const width = consoleRef.current?.offsetWidth ?? 560;
+      const height = consoleRef.current?.offsetHeight ?? 300;
+      setPosition({
+        x: Math.max(-width + 48, Math.min(window.innerWidth - 48, event.clientX - drag.offsetX)),
+        y: Math.max(-height + 32, Math.min(window.innerHeight - 32, event.clientY - drag.offsetY))
+      });
+    };
+    const end = () => { dragRef.current = null; };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", end);
+    };
+  }, []);
+
+  return (
+    <section className="batch-job-console batch-job-console-floating" aria-label="Batch job console" ref={consoleRef} style={{ left: position.x, top: position.y }}>
+      <div
+        className="batch-job-console-title batch-job-console-drag-handle"
+        onMouseDown={(event) => {
+          const bounds = consoleRef.current?.getBoundingClientRect();
+          dragRef.current = {
+            offsetX: event.clientX - (bounds?.left ?? position.x),
+            offsetY: event.clientY - (bounds?.top ?? position.y)
+          };
+        }}
+      >
+        <span>Job Console · {isPaused ? "批量分析已暂停" : "批量分析进行中"} · 拖动此处移动</span>
+        <button
+          type="button"
+          className="batch-job-console-close"
+          aria-label="关闭日志窗口"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={onClose}
+        >×</button>
+      </div>
+      <pre>{logs.length > 0 ? logs.join("\n") : "等待批量任务日志..."}</pre>
+      <div className="batch-job-console-actions">
+        <button type="button" onClick={onPauseToggle}>{isPaused ? "继续" : "暂停"}</button>
+        <button type="button" onClick={onStop}>终止批量任务</button>
+      </div>
+    </section>
+  );
+}
+
 async function analyzeGameForBatch(params: {
   parsed: ReturnType<typeof parseGameRecord>;
   sourceContent: string;
@@ -2549,8 +2888,10 @@ async function analyzeGameForBatch(params: {
   settings: BatchAnalysisSettings;
   profile: EngineProfile;
   shouldStop: { current: boolean };
+  shouldPause: { current: boolean };
+  onProgress?: (progress: { candidates: EngineCandidateMove[]; moveNumber: number; point?: ReviewAnalysisPoint; status: string }) => void;
 }): Promise<{ analyzed: number; document: ResearchDocument; problemCount: number }> {
-  const { parsed, profile, settings, shouldStop, sourceContent, sourceFileName } = params;
+  const { onProgress, parsed, profile, settings, shouldPause, shouldStop, sourceContent, sourceFileName } = params;
   const moves = parsed.moves;
   const startMove = Math.max(1, Math.min(moves.length, Math.min(settings.startMove, settings.endMove)));
   const endMove = Math.max(startMove, Math.min(moves.length, Math.max(settings.startMove, settings.endMove)));
@@ -2575,8 +2916,20 @@ async function analyzeGameForBatch(params: {
   });
   document.mainSgf = sourceContent;
   document.gameTree = parsed.gameTree;
+  const targetPlayer = settings.targetPlayer.trim();
+  const targetColor: "black" | "white" | "none" | null = targetPlayer
+    ? playerNameMatches(parsed.blackName, targetPlayer)
+      ? "black"
+      : playerNameMatches(parsed.whiteName, targetPlayer)
+        ? "white"
+        : "none"
+    : null;
+  if (targetColor === "none") {
+    throw new Error(`目标棋手“${targetPlayer}”未匹配本局棋手：黑方“${parsed.blackName}”，白方“${parsed.whiteName}”`);
+  }
 
   for (let moveNumber = startMove; moveNumber <= endMove; moveNumber += 1) {
+    await waitWhileBatchPaused(shouldPause, shouldStop);
     if (shouldStop.current) {
       break;
     }
@@ -2587,9 +2940,13 @@ async function analyzeGameForBatch(params: {
     if ((actualMove.color === "black" && !settings.includeBlack) || (actualMove.color === "white" && !settings.includeWhite)) {
       continue;
     }
+    if (targetColor !== null && actualMove.color !== targetColor) {
+      continue;
+    }
 
-    const moveStartedAt = Date.now();
+    let moveStartedAt = Date.now();
     const positionMoveNumber = moveNumber - 1;
+    onProgress?.({ candidates: [], moveNumber, status: "正在启动引擎并等待候选点" });
     let result = await analyzePositionContinuous({
       boardSize: parsed.boardSize,
       komi: parsed.komi,
@@ -2598,7 +2955,16 @@ async function analyzeGameForBatch(params: {
       profile
     });
     let best = result.candidates[0];
+    onProgress?.({
+      candidates: result.candidates,
+      moveNumber,
+      status: best ? `已返回 ${result.candidates.length} 个候选点` : "等待首批候选点"
+    });
     while (!shouldStop.current && shouldContinueAutoAnalysisMove(moveStartedAt, secondsPerMove, targetVisits, best)) {
+      moveStartedAt += await waitWhileBatchPaused(shouldPause, shouldStop);
+      if (shouldStop.current) {
+        break;
+      }
       await waitForAutoAnalysisPoll(shouldStop);
       result = await analyzePositionContinuous({
         boardSize: parsed.boardSize,
@@ -2608,6 +2974,15 @@ async function analyzeGameForBatch(params: {
         profile
       });
       best = result.candidates[0];
+      onProgress?.({
+        candidates: result.candidates,
+        moveNumber,
+        status: best
+          ? targetVisits > 0
+            ? `计算量 ${formatVisits(best.visits)}/${formatVisits(targetVisits)}`
+            : `持续计算，候选 ${result.candidates.length}`
+          : "等待首批候选点"
+      });
       if (!best && result.status !== "waiting-for-candidates") {
         break;
       }
@@ -2621,7 +2996,13 @@ async function analyzeGameForBatch(params: {
       moveNumber,
       scoreLead: best.scoreLead,
       visits: best.visits,
-      winrate: best.winrate
+      winrate: toBlackWinrate(best.winrate, actualMove.color)
+    });
+    onProgress?.({
+      candidates: result.candidates,
+      moveNumber,
+      point: points[points.length - 1],
+      status: `第 ${moveNumber} 手分析完成`
     });
 
     const actualPoint = moveToGtpPoint(actualMove, parsed.boardSize);
@@ -2655,11 +3036,11 @@ async function analyzeGameForBatch(params: {
       moveNumber,
       rank: actualCandidateIndex >= 0 ? actualCandidateIndex + 1 : null,
       scoreLoss,
-      winrate: best.winrate,
+      winrate: toBlackWinrate(best.winrate, actualMove.color),
       winrateLoss
     });
 
-    if (settings.mode !== "analysis" && winrateLoss !== null && winrateLoss >= settings.winrateLossThreshold) {
+    if (winrateLoss !== null && winrateLoss >= settings.winrateLossThreshold) {
       problems.push(createProblemItem({
         actualMoveName: actualPoint,
         candidates: result.candidates,
@@ -2677,8 +3058,9 @@ async function analyzeGameForBatch(params: {
   if (settings.mode !== "problems") {
     document.analysis = buildResearchAnalysisSnapshot(summary, points, { startMove, endMove }, profile);
   }
-  if (settings.mode !== "analysis") {
-    document.problemSet = createProblemSet(problems, settings);
+  document.problemSet = createProblemSet(problems, settings);
+  if (document.analysis && targetPlayer) {
+    document.analysis = { ...document.analysis, targetPlayer };
   }
   document.analysisCompletion = createAnalysisCompletionMarker({
     analyzedMoves: summary.analyzed,
@@ -2887,6 +3269,9 @@ function ResearchRightPane({
             >
               <span className={`branch-stone ${row.color}`} />
               <span className="branch-label">{row.label}</span>
+              {document.problemSet?.items.some((item) => item.moveNumber === row.moveNumber) ? (
+                <span className="branch-problem-marker" title="出题标记">题</span>
+              ) : null}
               {researchMarkers.get(row.moveNumber)?.map((block) => (
                 <span
                   aria-label="显示评论变化"
@@ -3797,10 +4182,18 @@ function createProblemSet(items: ProblemItem[], settings: BatchAnalysisSettings)
     generatedAt: new Date().toISOString(),
     settings: {
       winrateLossThreshold: settings.winrateLossThreshold,
-      candidateLimit: settings.candidateLimit
+      candidateLimit: settings.candidateLimit,
+      ...(settings.targetPlayer ? { targetPlayer: settings.targetPlayer } : {})
     },
     items
   };
+}
+
+function playerNameMatches(recordName: string, targetName: string): boolean {
+  const normalize = (value: string) => value.trim().replace(/\s*\([^)]*\)\s*$/, "");
+  const record = normalize(recordName).toLocaleLowerCase();
+  const target = normalize(targetName).toLocaleLowerCase();
+  return target.length > 0 && (record.includes(target) || target.includes(record));
 }
 
 function createProblemItem(params: {
@@ -3905,6 +4298,18 @@ async function waitForAutoAnalysisPoll(stopRef: { current: boolean }): Promise<v
     await new Promise((resolve) => window.setTimeout(resolve, nextWait));
     waitedMs += nextWait;
   }
+}
+
+async function waitWhileBatchPaused(
+  pauseRef: { current: boolean },
+  stopRef: { current: boolean }
+): Promise<number> {
+  if (!pauseRef.current) return 0;
+  const startedAt = Date.now();
+  while (pauseRef.current && !stopRef.current) {
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+  }
+  return Date.now() - startedAt;
 }
 
 async function yieldToUi(): Promise<void> {

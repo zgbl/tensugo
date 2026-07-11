@@ -35,6 +35,8 @@ Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinat
 - Eagle Eye report should follow the legacy structure: match degree/rate, first-choice hit rate, winrate trend, score-loss stats, winrate-loss stats, and bottom summary/conditions.
 - Automatic analysis must show candidate bubbles/table for each analyzed position, move branch-tree highlight, update winrate graph, obey seconds-per-move as a wall-clock minimum, and stop with a visible reason if no candidates return. Use short engine batches so the UI can render updates and respond to stop.
 - SGF `KM` must be loaded and sent to the engine before analysis; changing komi invalidates stale candidates/graph points.
+- All winrate history and graphs use one stable perspective: black winrate. KataGo candidate winrate is for the side to move, so persist/display it directly for a black-to-move position and convert white-to-move positions with `100 - winrate`. Never mix side-to-move values across alternating moves; that creates a false mirrored zigzag graph. Apply the same conversion in realtime, automatic, batch, saved TSG, and restored TSG paths.
+- Batch analysis must create threshold markers during analysis even when task mode is `analysis`; later problem review consumes those markers. Opening a TSG must make marked moves visible in the branch tree.
 
 ## Game Tree Rules
 

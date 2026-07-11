@@ -30,6 +30,11 @@ type CandidatePanelProps = {
   onCandidateListVisibleChange: (visible: boolean) => void;
   onBranchNodeClick: (nodeId: string) => void;
   onPreviewCandidate: (rank: number | null) => void;
+  problemMoveNumbers: Set<number>;
+  onProblemClick: (moveNumber: number) => void;
+  problemSelectedMoveNames: Set<string>;
+  onProblemCandidateToggle: (moveName: string) => void;
+  problemReviewActive: boolean;
 };
 
 export function CandidatePanel({
@@ -45,11 +50,17 @@ export function CandidatePanel({
   selectedNodeId,
   onCandidateListVisibleChange,
   onBranchNodeClick,
-  onPreviewCandidate
+  onPreviewCandidate,
+  problemMoveNumbers,
+  onProblemClick,
+  problemSelectedMoveNames,
+  onProblemCandidateToggle,
+  problemReviewActive
 }: CandidatePanelProps) {
   const branchTreeRef = useRef<HTMLDivElement | null>(null);
   const hasCandidates = candidates.length > 0;
   const sourceRows = hasCandidates ? candidates : null;
+  const bestWinrate = candidates[0]?.winrate ?? 0;
   const rows = sourceRows
     ? sourceRows.map((candidate) => ({
         rank: candidate.rank,
@@ -58,9 +69,10 @@ export function CandidatePanel({
         visits: formatVisits(candidate.visits),
         delta: "-",
         scoreLead: candidate.scoreLead.toFixed(1),
+        winrateLoss: candidate.visits > 0 ? `${Math.max(0, bestWinrate - candidate.winrate).toFixed(1)}%` : "待评估",
         pv: candidate.pv
       }))
-    : placeholderRows.map((row) => ({ ...row, pv: [] as string[] }));
+    : placeholderRows.map((row) => ({ ...row, pv: [] as string[], winrateLoss: "-" }));
   const miniLines = Array.from({ length: boardSize }, (_, index) => index);
   const preview = previewCandidate ?? candidates[0] ?? null;
   const pvStones = preview
@@ -99,6 +111,16 @@ export function CandidatePanel({
             >
               <span className={`branch-stone ${row.color}`} />
               <span className="branch-label">{row.label}</span>
+              {problemMoveNumbers.has(row.moveNumber) ? (
+                <span
+                  className="branch-problem-marker"
+                  title="打开出题 REVIEW"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onProblemClick(row.moveNumber);
+                  }}
+                >题</span>
+              ) : null}
             </button>
           ))
         )}
@@ -118,9 +140,11 @@ export function CandidatePanel({
                   <th>序号</th>
                   <th>点位</th>
                   <th>胜率</th>
+                  <th>胜损</th>
                   <th>计算量</th>
                   <th>占比</th>
                   <th>目差</th>
+                  {problemReviewActive ? <th>入题</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -134,9 +158,17 @@ export function CandidatePanel({
                     <td>{row.rank}</td>
                     <td>{row.move}</td>
                     <td>{row.winrate}</td>
+                    <td>{row.winrateLoss}</td>
                     <td>{row.visits}</td>
                     <td>{row.delta}</td>
                     <td>{row.scoreLead}</td>
+                    {problemReviewActive ? (
+                      <td>
+                        <button type="button" className="problem-candidate-toggle" onClick={() => onProblemCandidateToggle(row.move)}>
+                          {problemSelectedMoveNames.has(row.move) ? "删除" : "加入"}
+                        </button>
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>

@@ -55,6 +55,7 @@ Keep coordinate conversion centralized and shared with `go-board-ui` and `sgf-fo
 ## Gotchas
 
 - Always record perspective: MVP winrate and score views default to black perspective.
+- KataGo candidate winrate is side-to-move perspective. Before adding a cross-move history point, store black perspective: keep black-to-move values and use `100 - winrate` for white-to-move values. Never graph alternating raw side-to-move values.
 - Distinguish live incremental analysis updates from stable stored node analysis.
 - Engine process failures should surface as UI status, not silent empty analysis.
 - Komi changes affect score interpretation and must be reflected in engine requests.
