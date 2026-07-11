@@ -1420,7 +1420,10 @@ fn parse_candidate_line(
         .and_then(|value| value.parse::<f64>().ok())
         .map(|value| normalize_winrate(value, winrate_scale))
         .unwrap_or(0.0);
+    // `kata-analyze` reports scoreLead; continuous `lz-analyze` reports
+    // scoreMean. Both represent the engine's expected score at this point.
     let score_lead = token_after(line, "scoreLead")
+        .or_else(|| token_after(line, "scoreMean"))
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.0);
     let pv = tokens_after_until_keyword(line, "pv");
@@ -1610,6 +1613,16 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].move_name, "K11");
         assert!((candidates[0].winrate - 53.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn lz_analyze_uses_score_mean_when_score_lead_is_absent() {
+        let output = "info move K11 visits 658 winrate 0.53 scoreMean -3.4 pv K11 L12";
+
+        let candidates = parse_analysis_output(output, WinrateScale::LizzieCentipercent);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].score_lead, -3.4);
     }
 }
 

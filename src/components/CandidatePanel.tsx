@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import type { EngineCandidateMove, ReviewAnalysisPoint } from "../engine/types";
 import { buildBoardPosition } from "../game/boardRules";
 import type { BranchTreeRow, StoneColor } from "../game/gameTree";
@@ -187,36 +187,47 @@ type ReviewGraphProps = {
 };
 
 export function ReviewGraph({ currentMoveNumber, points, totalMoves, onJump }: ReviewGraphProps) {
+  const [hoveredPoint, setHoveredPoint] = useState<(ReviewAnalysisPoint & { x: number; y: number }) | null>(null);
   const width = 300;
-  const height = 104;
-  const paddingX = 12;
-  const paddingY = 12;
-  const usableWidth = width - paddingX * 2;
-  const usableHeight = height - paddingY * 2;
+  const height = 116;
+  const paddingLeft = 25;
+  const paddingRight = 10;
+  const paddingTop = 10;
+  const paddingBottom = 22;
+  const usableWidth = width - paddingLeft - paddingRight;
+  const usableHeight = height - paddingTop - paddingBottom;
   const moveMax = Math.max(1, totalMoves);
   const dedupedPoints = Array.from(
     points
-      .filter((point) => point.moveNumber >= 0 && point.moveNumber <= moveMax)
+      .filter(
+        (point) =>
+          point.moveNumber >= 0 &&
+          point.moveNumber <= moveMax &&
+          Number.isFinite(point.winrate) &&
+          Number.isFinite(point.scoreLead) &&
+          Number.isFinite(point.visits) &&
+          point.visits > 0
+      )
       .reduce((byMove, point) => byMove.set(point.moveNumber, point), new Map<number, ReviewAnalysisPoint>())
       .values()
   ).sort((a, b) => a.moveNumber - b.moveNumber);
   const plotPoints = dedupedPoints.map((point) => ({
       ...point,
-      x: paddingX + (point.moveNumber / moveMax) * usableWidth,
-      y: paddingY + ((100 - point.winrate) / 100) * usableHeight
+      x: paddingLeft + (point.moveNumber / moveMax) * usableWidth,
+      y: paddingTop + ((100 - point.winrate) / 100) * usableHeight
     }));
   const path = plotPoints
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
     .join(" ");
-  const currentX = paddingX + (Math.max(0, Math.min(moveMax, currentMoveNumber)) / moveMax) * usableWidth;
+  const currentX = paddingLeft + (Math.max(0, Math.min(moveMax, currentMoveNumber)) / moveMax) * usableWidth;
   const currentPoint = plotPoints.find((point) => point.moveNumber === currentMoveNumber);
   const latestPoint = dedupedPoints.find((point) => point.moveNumber === currentMoveNumber) ?? dedupedPoints.at(-1);
-  const visibleDots = plotPoints.filter((point, index) => {
-    if (point.moveNumber === currentMoveNumber || index === 0 || index === plotPoints.length - 1) {
-      return true;
-    }
-    return plotPoints.length <= 90 || index % Math.ceil(plotPoints.length / 45) === 0;
-  });
+  const pointForEvent = (event: MouseEvent<SVGSVGElement>) => {
+    if (plotPoints.length === 0) return null;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const targetX = paddingLeft + Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * usableWidth;
+    return plotPoints.reduce((closest, point) => Math.abs(point.x - targetX) < Math.abs(closest.x - targetX) ? point : closest);
+  };
 
   const handleClick = (event: MouseEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -226,38 +237,47 @@ export function ReviewGraph({ currentMoveNumber, points, totalMoves, onJump }: R
 
   return (
     <div className="review-graph">
-      <svg viewBox={`0 0 ${width} ${height}`} role="button" tabIndex={0} onClick={handleClick}>
-        <rect className="graph-plot-bg" x={paddingX} y={paddingY} width={usableWidth} height={usableHeight} rx="3" />
-        {[25, 50, 75].map((tick) => {
-          const y = paddingY + ((100 - tick) / 100) * usableHeight;
+      <div className="review-graph-head">
+        <span className="review-graph-title"><i className="graph-legend-black" />黑方胜率</span>
+        <span className="review-graph-scale">优势区间 50% 以上</span>
+      </div>
+      <svg preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`} role="button" tabIndex={0} onClick={handleClick} onMouseMove={(event) => setHoveredPoint(pointForEvent(event))} onMouseLeave={() => setHoveredPoint(null)} aria-label="黑方胜率变化图，悬停查看胜率和目差">
+        <rect className="graph-plot-bg" x={paddingLeft} y={paddingTop} width={usableWidth} height={usableHeight} rx="3" />
+        {[0, 50, 100].map((tick) => {
+          const y = paddingTop + ((100 - tick) / 100) * usableHeight;
           return (
-            <line
-              className={tick === 50 ? "graph-grid graph-mid" : "graph-grid"}
-              key={tick}
-              x1={paddingX}
-              y1={y}
-              x2={width - paddingX}
-              y2={y}
-            />
+            <g key={tick}>
+              <line className={tick === 50 ? "graph-grid graph-mid" : "graph-grid"} x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} />
+              <text className="graph-axis-label" x={paddingLeft - 5} y={y + 3} textAnchor="end">{tick}</text>
+            </g>
           );
         })}
         {[0.25, 0.5, 0.75].map((ratio) => {
-          const x = paddingX + ratio * usableWidth;
-          return <line className="graph-grid graph-vertical" key={ratio} x1={x} y1={paddingY} x2={x} y2={height - paddingY} />;
+          const x = paddingLeft + ratio * usableWidth;
+          return <line className="graph-grid graph-vertical" key={ratio} x1={x} y1={paddingTop} x2={x} y2={height - paddingBottom} />;
         })}
         {path ? <path className="graph-winrate-line" d={path} /> : null}
-        {visibleDots.map((point) => (
-          <circle
-            className={point.moveNumber === currentMoveNumber ? "graph-point current" : "graph-point"}
-            cx={point.x}
-            cy={point.y}
-            key={point.moveNumber}
-            r={point.moveNumber === currentMoveNumber ? 3.8 : 2.1}
-          />
-        ))}
-        <line className="graph-current-line" x1={currentX} y1={paddingY} x2={currentX} y2={height - paddingY} />
+        <line className="graph-current-line" x1={currentX} y1={paddingTop} x2={currentX} y2={height - paddingBottom} />
         {currentPoint ? <circle className="graph-current-ring" cx={currentPoint.x} cy={currentPoint.y} r="5.2" /> : null}
+        {hoveredPoint ? (
+          <g className="graph-hover">
+            <line className="graph-hover-line" x1={hoveredPoint.x} y1={paddingTop} x2={hoveredPoint.x} y2={height - paddingBottom} />
+            <circle className="graph-hover-point" cx={hoveredPoint.x} cy={hoveredPoint.y} r="4.2" />
+          </g>
+        ) : null}
       </svg>
+      {hoveredPoint ? (
+        <div
+          className="graph-tooltip-html"
+          style={{
+            left: `${(hoveredPoint.x / width) * 100}%`,
+            top: `${((hoveredPoint.y < 38 ? hoveredPoint.y + 8 : hoveredPoint.y - 34) / height) * 100}%`
+          }}
+        >
+          <span>第 {hoveredPoint.moveNumber} 手</span>
+          <span>黑 {hoveredPoint.winrate.toFixed(1)}% · {hoveredPoint.scoreLead.toFixed(1)}目</span>
+        </div>
+      ) : null}
       <div className="review-graph-meta">
         <span>第 {currentMoveNumber} / {totalMoves} 手</span>
         <span>

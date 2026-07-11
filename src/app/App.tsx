@@ -1509,6 +1509,10 @@ export function App() {
     const requestMoves = moves.slice(0, currentMoveNumber);
     const requestPositionKey = candidatePositionKey(boardSize, komi, requestMoves);
     const requestNextColor = nextColor;
+    // A new analysis at an earlier move invalidates any stale points from the
+    // old continuation. Keep the completed history, but never connect to a
+    // point that lies after the position being analyzed.
+    setAnalysisPoints((points) => points.filter((point) => point.moveNumber <= requestMoveNumber));
     setIsAnalyzing(true);
     setHasAnalysisAttempted(true);
     setEngineStatus(`分析第 ${requestMoveNumber} 手，${requestNextColor === "black" ? "黑棋" : "白棋"}候选...`);
@@ -1540,7 +1544,7 @@ export function App() {
             moveNumber: requestMoveNumber,
             scoreLead: result.candidates[0].scoreLead,
             visits: result.candidates[0].visits,
-            winrate: result.candidates[0].winrate
+            winrate: toBlackWinrate(result.candidates[0].winrate, requestNextColor)
           })
         );
       }
@@ -1605,6 +1609,7 @@ export function App() {
       setAutoAnalysisResume(null);
       setAutoAnalysisSummary(null);
       autoAnalysisSummaryRef.current = createEmptyAutoAnalysisSummary();
+      setAnalysisPoints([]);
     }
     setPreviewCandidateRank(null);
     markAutoAnalysis("正在启动自动分析...");
@@ -1703,19 +1708,24 @@ export function App() {
           moveNumber,
           rank: actualCandidateIndex >= 0 ? actualCandidateIndex + 1 : null,
           scoreLoss,
-          winrate: best.winrate,
+          winrate: toBlackWinrate(best.winrate, actualMove.color),
           winrateLoss
         });
         setAutoAnalysisSummary({ ...summary });
       }
-      setAnalysisPoints((points) =>
-        upsertAnalysisPoint(points, {
-          moveNumber,
-          scoreLead: best.scoreLead,
-          visits: best.visits,
-          winrate: best.winrate
-        })
-      );
+      // The chart records one point only after this move's analysis window has
+      // finished. Intermediate KataGo polls update the live candidates, but
+      // must not become extra winrate points on the review graph.
+      if (countSummary) {
+        setAnalysisPoints((points) =>
+          upsertAnalysisPoint(points, {
+            moveNumber,
+            scoreLead: best.scoreLead,
+            visits: best.visits,
+            winrate: toBlackWinrate(best.winrate, actualMove.color)
+          })
+        );
+      }
       markAutoAnalysis(
         `第 ${moveNumber} 手${countSummary ? "分析完成" : "分析刷新"}：返回 ${result.candidates.length} 个候选点，实战 ${
           actualCandidateIndex >= 0 ? `命中第 ${actualCandidateIndex + 1} 候选` : "未进候选"
@@ -3403,16 +3413,6 @@ function TianshuTrendChart({
           );
         })}
         <line className="tianshu-report-axis" x1={chartLeft} x2={chartRight} y1={chartBottom} y2={chartBottom} />
-        {points.map((point) => (
-          <rect
-            className={point.rank === null ? "tianshu-report-miss-bar" : "tianshu-report-hit-bar"}
-            height={chartBottom - point.y}
-            key={`bar-${point.moveNumber}`}
-            width="6"
-            x={point.x - 3}
-            y={point.y}
-          />
-        ))}
         {line && <polyline className="tianshu-report-winrate-line" points={line} />}
         {points.map((point) => (
           <circle
@@ -4180,6 +4180,10 @@ function gtpPointToMove(point: string, boardSize: number, moveNumber: number): R
 function buildAnalysisKey(boardSize: number, komi: number, moveNumber: number, moves: ReviewMove[]): string {
   const tail = moves.map((move) => `${move.moveNumber}:${move.color}:${move.x},${move.y}`).join("|");
   return `${boardSize}:${komi}:${moveNumber}:${tail}`;
+}
+
+function toBlackWinrate(winrate: number, nextColor: "black" | "white"): number {
+  return nextColor === "black" ? winrate : 100 - winrate;
 }
 
 function upsertAnalysisPoint(points: ReviewAnalysisPoint[], nextPoint: ReviewAnalysisPoint): ReviewAnalysisPoint[] {

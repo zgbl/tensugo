@@ -504,7 +504,10 @@ function renderWinrateChart(analysis: ResearchAnalysisSnapshot | undefined): str
   const right = width - 12;
   const top = 14;
   const bottom = height - 28;
-  const points = (analysis?.details.length ? analysis.details : analysis?.points) ?? [];
+  // `analysis.points` is the canonical chart series. App.tsx normalizes it to
+  // black's perspective; details.winrate is retained in the report for loss
+  // statistics and may be from the side-to-move perspective.
+  const points = (analysis?.points.length ? analysis.points : analysis?.details) ?? [];
   const startMove = analysis?.startMove ?? 1;
   const lastPoint = points.length > 0 ? points[points.length - 1] : null;
   const endMove = analysis?.endMove ?? Math.max(startMove + 1, lastPoint?.moveNumber ?? 1);
@@ -537,7 +540,6 @@ function renderWinrateChart(analysis: ResearchAnalysisSnapshot | undefined): str
     return `<g><line class="tianshu-report-grid-line" x1="${left}" x2="${right}" y1="${y}" y2="${y}" /><text x="8" y="${y + 4}">${tick}</text></g>`;
   }).join("")}
       <line class="tianshu-report-axis" x1="${left}" x2="${right}" y1="${bottom}" y2="${bottom}" />
-      ${plotted.map((point) => `<rect class="${chartBarClass(point)}" height="${Math.max(0, bottom - point.y).toFixed(1)}" width="6" x="${(point.x - 3).toFixed(1)}" y="${point.y.toFixed(1)}" />`).join("")}
       ${lineSegments.length ? lineSegments.map((line) => `<polyline class="tianshu-report-winrate-line" points="${line}" />`).join("") : `<text class="chart-empty" x="${width / 2}" y="${height / 2}" text-anchor="middle">尚未保存自动分析数据</text>`}
       ${plotted.map((point) => `<circle class="${chartDotClass(point)}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="3.5" />`).join("")}
       ${[startMove, Math.round((startMove + endMove) / 2), endMove].map((move) => {
@@ -560,11 +562,6 @@ function splitContinuousChartSegments<T extends { moveNumber: number }>(points: 
     }
   }
   return segments;
-}
-
-function chartBarClass(point: { moveNumber: number }): string {
-  const rank = "rank" in point ? point.rank : undefined;
-  return rank === null ? "tianshu-report-miss-bar" : "tianshu-report-hit-bar";
 }
 
 function chartDotClass(point: { moveNumber: number }): string {
@@ -787,8 +784,6 @@ function articleCss(exportSettings: ResearchExportSettings): string {
   .tianshu-report-axis { stroke: rgba(255, 255, 255, 0.7); stroke-width: 1; }
   .winrate-report svg text { fill: #ffffff; font-size: 11px; font-weight: 600; }
   .tianshu-report-move-label { fill: #ffffff; }
-  .tianshu-report-hit-bar { fill: rgba(62, 198, 83, 0.72); }
-  .tianshu-report-miss-bar { fill: rgba(81, 91, 210, 0.72); }
   .tianshu-report-winrate-line { fill: none; stroke: #22d7df; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }
   .tianshu-report-top-dot { fill: #ff41d8; }
   .tianshu-report-candidate-dot { fill: #fee053; }
@@ -823,8 +818,6 @@ function articleCssV2(exportSettings: ResearchExportSettings): string {
   .tianshu-report-axis { stroke: rgba(255, 255, 255, 0.7); stroke-width: 1; }
   .winrate-report svg text { fill: #ffffff; font-size: 11px; font-weight: 600; }
   .tianshu-report-move-label { fill: #ffffff; }
-  .tianshu-report-hit-bar { fill: rgba(62, 198, 83, 0.72); }
-  .tianshu-report-miss-bar { fill: rgba(81, 91, 210, 0.72); }
   .tianshu-report-winrate-line { fill: none; stroke: #22d7df; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }
   .tianshu-report-top-dot { fill: #ff41d8; }
   .tianshu-report-candidate-dot { fill: #fee053; }
