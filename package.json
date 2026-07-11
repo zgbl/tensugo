@@ -11,6 +11,7 @@
     "version:bump": "node scripts/bump-version.mjs",
     "tauri:clean-cache": "node scripts/clean-tauri-cache.mjs",
     "package:win": "powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
+    "package:win:ui": "powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Mode UiOnly",
     "package:mac": "npm run version:bump && npm run tauri:clean-cache && npm run tauri -- build && node scripts/label-mac-artifact.mjs",
     "install:mac": "bash scripts/install-mac-app.sh"
   },
