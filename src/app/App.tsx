@@ -2940,10 +2940,6 @@ async function analyzeGameForBatch(params: {
     if ((actualMove.color === "black" && !settings.includeBlack) || (actualMove.color === "white" && !settings.includeWhite)) {
       continue;
     }
-    if (targetColor !== null && actualMove.color !== targetColor) {
-      continue;
-    }
-
     let moveStartedAt = Date.now();
     const positionMoveNumber = moveNumber - 1;
     onProgress?.({ candidates: [], moveNumber, status: "正在启动引擎并等待候选点" });
@@ -3040,7 +3036,8 @@ async function analyzeGameForBatch(params: {
       winrateLoss
     });
 
-    if (winrateLoss !== null && winrateLoss >= settings.winrateLossThreshold) {
+    const isTargetPlayerMove = targetColor === null || actualMove.color === targetColor;
+    if (isTargetPlayerMove && winrateLoss !== null && winrateLoss >= settings.winrateLossThreshold) {
       problems.push(createProblemItem({
         actualMoveName: actualPoint,
         candidates: result.candidates,
