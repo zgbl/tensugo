@@ -41,6 +41,12 @@ type ReadTextFileResult = {
   error: string | null;
 };
 
+type ReadFileBytesResult = {
+  ok: boolean;
+  content: number[] | null;
+  error: string | null;
+};
+
 type WriteTextFileResult = {
   ok: boolean;
   error: string | null;
@@ -98,9 +104,14 @@ export async function chooseOutputDirectory(): Promise<ChoosePathResult> {
 }
 
 export async function readTextFile(path: string): Promise<string> {
-  const result = await invoke<ReadTextFileResult>("read_text_file", { path });
+  const result = /\.gib$/i.test(path)
+    ? await invoke<ReadFileBytesResult>("read_file_bytes", { path })
+    : await invoke<ReadTextFileResult>("read_text_file", { path });
   if (!result.ok || result.content === null) {
     throw new Error(result.error ?? "读取文件失败");
+  }
+  if (Array.isArray(result.content)) {
+    return new TextDecoder("gb18030").decode(new Uint8Array(result.content));
   }
   return result.content;
 }
@@ -111,6 +122,15 @@ export async function writeTextFile(path: string, content: string): Promise<void
   });
   if (!result.ok) {
     throw new Error(result.error ?? "写入文件失败");
+  }
+}
+
+export async function saveProblemToDatabase(payload: unknown): Promise<void> {
+  const result = await invoke<{ ok: boolean; error: string | null }>("save_problem_to_database", {
+    payload: JSON.stringify(payload)
+  });
+  if (!result.ok) {
+    throw new Error(result.error ?? "保存题目失败");
   }
 }
 

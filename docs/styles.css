@@ -171,6 +171,18 @@ h3 {
   line-height: 1.55;
 }
 
+.release-note {
+  max-width: 620px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.release-note strong {
+  color: var(--ink);
+}
+
 .button {
   display: inline-flex;
   min-height: 48px;

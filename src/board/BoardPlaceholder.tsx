@@ -14,6 +14,7 @@ type BoardPlaceholderProps = {
   onStoneClick: (moveNumber: number) => void;
   onPointClick: (x: number, y: number) => void;
   onCandidatePreview: (rank: number | null) => void;
+  actualNextMove?: ReviewStone | null;
 };
 
 export type MoveNumberDisplayMode = "all" | "last10" | "last1";
@@ -28,7 +29,8 @@ export function BoardPlaceholder({
   variationBaseMoveNumber = null,
   onStoneClick,
   onPointClick,
-  onCandidatePreview
+  onCandidatePreview,
+  actualNextMove = null
 }: BoardPlaceholderProps) {
   const lines = Array.from({ length: boardSize }, (_, index) => index);
   const displayedCurrentMoveNumber = currentMoveNumber(stones);
@@ -157,6 +159,11 @@ export function BoardPlaceholder({
               <span>{formatVisits(candidate.visits)}</span>
             </b>
           ))}
+          {actualNextMove ? (
+            <span className={`actual-next-move ${actualNextMove.color}`} style={pointStyle(actualNextMove.x, actualNextMove.y)}>
+              实战
+            </span>
+          ) : null}
         </div>
       </div>
       {coordinateLabelsVisible && (

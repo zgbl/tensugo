@@ -40,6 +40,7 @@ export type ResearchAnalysisSnapshot = {
   totalMatchScore: number;
   totalScoreLoss: number;
   totalWinrateLoss: number;
+  targetPlayer?: string;
 };
 
 export type ResearchAnalysisCompletion = {
@@ -92,6 +93,7 @@ export type ProblemSet = {
   settings: {
     winrateLossThreshold: number;
     candidateLimit: number;
+    targetPlayer?: string;
   };
   items: ProblemItem[];
 };

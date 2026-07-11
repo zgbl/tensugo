@@ -12,6 +12,7 @@ export type BatchAnalysisSettings = {
   startMove: number;
   visitsPerMove: number;
   winrateLossThreshold: number;
+  targetPlayer: string;
 };
 
 type BatchAnalysisDialogProps = {
@@ -24,6 +25,7 @@ type BatchAnalysisDialogProps = {
   onChooseOutputDirectory: () => void;
   onClose: () => void;
   onStart: (settings: BatchAnalysisSettings) => void;
+  onSuggestTargetPlayers: () => Promise<string[]>;
   onStop: () => void;
 };
 
@@ -37,16 +39,26 @@ export function BatchAnalysisDialog({
   onChooseOutputDirectory,
   onClose,
   onStart,
+  onSuggestTargetPlayers,
   onStop
 }: BatchAnalysisDialogProps) {
   const formRef = useRef<HTMLFormElement | null>(null);
   const consoleRef = useRef<HTMLPreElement | null>(null);
   const [pickerStatus, setPickerStatus] = useState("");
+  const [targetSuggestionLoading, setTargetSuggestionLoading] = useState(false);
+  const targetSuggestionAttemptedRef = useRef(false);
   useEffect(() => {
     if (consoleRef.current) {
       consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
     }
   }, [logs]);
+  useEffect(() => {
+    targetSuggestionAttemptedRef.current = false;
+    const input = formRef.current?.elements.namedItem("targetPlayer");
+    if (input instanceof HTMLInputElement) {
+      input.value = "";
+    }
+  }, [fileCount]);
   if (!open) {
     return null;
   }
@@ -75,9 +87,35 @@ export function BatchAnalysisDialog({
       visitsPerMove: Math.max(0, Math.floor(Number(data.get("visitsPerMove")) || 0)),
       includeBlack: data.get("includeBlack") === "on",
       includeWhite: data.get("includeWhite") === "on",
-      winrateLossThreshold: Math.max(0, Number(data.get("winrateLossThreshold")) || 3),
-      candidateLimit: Math.max(1, Math.floor(Number(data.get("candidateLimit")) || 8))
+      winrateLossThreshold: Math.max(0, Number(data.get("winrateLossThreshold")) || 2),
+      candidateLimit: Math.max(1, Math.floor(Number(data.get("candidateLimit")) || 8)),
+      targetPlayer: String(data.get("targetPlayer") ?? "").trim()
     });
+  };
+
+  const suggestTargetPlayer = async () => {
+    if (targetSuggestionAttemptedRef.current || targetSuggestionLoading || !formRef.current) {
+      return;
+    }
+    targetSuggestionAttemptedRef.current = true;
+    setTargetSuggestionLoading(true);
+    try {
+      const names = await onSuggestTargetPlayers();
+      if (names.length === 0) {
+        setPickerStatus("暂未找到前两个棋谱共同出现的棋手名。");
+        return;
+      }
+      const name = names.length === 1 ? names[0] : names.join("、");
+      if (window.confirm(`前两个棋谱共同出现的棋手：${name}\n是否填入目标棋手？`)) {
+        const input = formRef.current.elements.namedItem("targetPlayer");
+        if (input instanceof HTMLInputElement) {
+          input.value = names[0];
+        }
+        setPickerStatus(`已填入目标棋手：${names[0]}`);
+      }
+    } finally {
+      setTargetSuggestionLoading(false);
+    }
   };
 
   return (
@@ -137,7 +175,16 @@ export function BatchAnalysisDialog({
         </label>
         <label>
           <span>出题阈值(胜率损失%)</span>
-          <input name="winrateLossThreshold" type="number" min="0" step="0.5" defaultValue="3" />
+          <input name="winrateLossThreshold" type="number" min="0" step="0.5" defaultValue="2" />
+        </label>
+        <label>
+          <span>目标棋手</span>
+          <input
+            name="targetPlayer"
+            type="text"
+            placeholder="点击自动识别，或输入棋手名的一部分"
+            onFocus={() => void suggestTargetPlayer()}
+          />
         </label>
         <label>
           <span>候选评分数</span>

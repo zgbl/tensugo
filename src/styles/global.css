@@ -1026,6 +1026,121 @@ button:hover {
   padding: 5px 8px;
 }
 
+.batch-job-console-floating {
+  max-width: min(560px, calc(100vw - 32px));
+  position: fixed;
+  width: min(560px, calc(100vw - 32px));
+  z-index: 20;
+}
+
+.batch-job-console-drag-handle {
+  align-items: center;
+  cursor: move;
+  display: flex;
+  justify-content: space-between;
+  user-select: none;
+}
+
+.batch-job-console-floating .batch-job-console-close {
+  border: 0;
+  font-size: 18px;
+  line-height: 1;
+  margin: 0;
+  padding: 0 3px;
+}
+
+.batch-job-console-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.batch-task-controls {
+  align-items: center;
+  background: #172027;
+  border: 1px solid #51636b;
+  border-radius: 5px;
+  bottom: 70px;
+  color: #dce8de;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  position: fixed;
+  right: 12px;
+  z-index: 21;
+}
+
+.batch-task-controls strong {
+  color: #9fc5a8;
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+.batch-task-controls button {
+  background: #25333b;
+  border: 1px solid #60747e;
+  border-radius: 3px;
+  color: #f0f5f2;
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 9px;
+}
+
+.batch-task-controls button.danger {
+  border-color: #a76c6c;
+  color: #ffd6d6;
+}
+
+.batch-run-report {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.batch-report-grid {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.batch-report-grid div,
+.batch-report-output {
+  background: #eef3f4;
+  border: 1px solid #c7d3d7;
+  border-radius: 4px;
+  padding: 10px;
+}
+
+.batch-report-grid dt {
+  color: #637078;
+  font-size: 12px;
+}
+
+.batch-report-grid dd {
+  font-size: 18px;
+  font-weight: 800;
+  margin: 4px 0 0;
+}
+
+.batch-report-output {
+  display: grid;
+  gap: 5px;
+  grid-column: 1 / -1;
+}
+
+.batch-report-output span {
+  overflow-wrap: anywhere;
+}
+
+.batch-job-console-floating button {
+  background: #172027;
+  border: 1px solid #51636b;
+  color: #dce8de;
+  cursor: pointer;
+  font: inherit;
+  margin: 8px;
+  padding: 4px 10px;
+}
+
 .batch-job-console pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -2432,6 +2547,93 @@ button:hover {
 .branch-label {
   line-height: 1;
   min-width: 12px;
+}
+
+.branch-problem-marker {
+  background: #b64036;
+  border-radius: 3px;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 2px 3px;
+}
+
+.actual-next-move {
+  align-items: center;
+  border: 3px solid #d83a31;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #fff;
+  color: #fff;
+  display: flex;
+  font-size: 9px;
+  font-weight: 900;
+  height: var(--candidate-bubble-size, 28px);
+  justify-content: center;
+  pointer-events: none;
+  position: absolute;
+  text-shadow: 0 1px 2px #000;
+  transform: translate(-50%, -50%);
+  width: var(--candidate-bubble-size, 28px);
+  z-index: 8;
+}
+
+.actual-next-move.black { background: rgba(18, 23, 25, 0.82); }
+.actual-next-move.white { background: rgba(255, 255, 255, 0.88); color: #222; text-shadow: none; }
+
+.problem-review-toolbar {
+  align-items: center;
+  background: #fff7df;
+  border: 1px solid #c99c35;
+  border-radius: 5px;
+  bottom: 70px;
+  display: flex;
+  gap: 8px;
+  left: 50%;
+  padding: 7px 10px;
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 22;
+}
+
+.problem-review-toolbar button {
+  background: #fff;
+  border: 1px solid #a98435;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 9px;
+}
+
+.problem-review-toolbar button.active {
+  background: #b64036;
+  color: #fff;
+}
+
+.problem-review-toolbar button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.problem-save-status {
+  color: #256b3c;
+  font-weight: 700;
+}
+
+.problem-save-error {
+  color: #a62525;
+  font-weight: 700;
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+
+.problem-candidate-toggle {
+  background: #fff;
+  border: 1px solid #b7c4ca;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 4px;
 }
 
 .branch-comment-icon {
