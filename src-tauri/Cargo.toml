@@ -1,6 +1,6 @@
 [package]
 name = "tensugo"
-version = "0.6.28"
+version = "0.6.29"
 description = "TensuGo desktop application"
 authors = ["TensuGo contributors"]
 edition = "2021"
