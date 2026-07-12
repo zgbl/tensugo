@@ -207,3 +207,4 @@ For engine work, also use `设置 -> 引擎 -> Test Engine` with a real KataGo e
 - [KataGo Troubleshooting](docs/project-docs/KataGo-Troubleshooting.md)
 - [Release v0.1 Scope](docs/project-docs/Release-v0.1.md)
 - [Research Document Design](docs/project-docs/Research-Doc-Design-V1.md)
+- [User Requirements (Persistent)](docs/project-docs/User-Requirements.md)

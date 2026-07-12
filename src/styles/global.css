@@ -2985,6 +2985,7 @@ button:hover {
 }
 
 .mini-board-plane {
+  background: var(--board);
   height: 100%;
   position: relative;
   width: 100%;

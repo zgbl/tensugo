@@ -38,6 +38,7 @@ Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinat
 - All winrate history and graphs use one stable perspective: black winrate. KataGo candidate winrate is for the side to move, so persist/display it directly for a black-to-move position and convert white-to-move positions with `100 - winrate`. Never mix side-to-move values across alternating moves; that creates a false mirrored zigzag graph. Apply the same conversion in realtime, automatic, batch, saved TSG, and restored TSG paths.
 - Batch analysis must create threshold markers during analysis even when task mode is `analysis`; later problem review consumes those markers. Opening a TSG must make marked moves visible in the branch tree.
 - Batch `targetPlayer` filters problem markers only; it must never filter engine analysis moves. Analyze every enabled black and white move continuously so saved candidates, winrate history, and loss calculations remain complete, then create threshold markers only when the move belongs to the target player. Never skip the opponent's turns merely because a target player was selected.
+- Automatic analysis winrate graphs must remain complete from the beginning through the original game end. Returning to an earlier move and running a higher-visit manual analysis updates that move in the existing graph; it must not delete later points or shorten the graph axis to the selected move.
 
 ## Game Tree Rules
 
@@ -58,8 +59,14 @@ Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinat
 - `坐标` toggles coordinate labels; hidden coordinates must let the main board grow into the released space.
 - Do not add a bottom-toolbar `候选列表` button; use the right candidate panel hide/show control.
 - Right side contains branch tree, collapsible candidate list, and PV mini-board.
-- PV mini-board must stay square, show the full board, and include border/padding in sizing.
+- PV mini-board must stay square, show the full board, and include border/padding in sizing. During analysis, empty regions must show the board color rather than a large gray overlay.
 - Research mode right pane keeps branch tree on top and uses the remaining space for live document preview: board/variation figures paired with commentary text.
+
+## Persistent User Requirements
+
+- User-confirmed details must be recorded in `docs/project-docs/User-Requirements.md`, the relevant design document, or this skill; they must not live only in chat history.
+- When the model changes or code is refactored, do not restore behavior the user explicitly rejected.
+- Before implementing a newly confirmed requirement, update the persistent requirement record first when practical, then implement and verify the workflow.
 
 ## Build, Package, And Install
 

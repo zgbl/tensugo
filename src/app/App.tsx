@@ -1243,7 +1243,6 @@ export function App() {
     setCurrentPathNodeIds(nextPathNodeIds);
     setCurrentMoveNumber(nextMoves.length);
     setEngineCandidates([]);
-    setAnalysisPoints((points) => points.filter((point) => point.moveNumber <= currentMoveNumber));
     setHasAnalysisAttempted(false);
     setLastAction(
       existingChildNodeId
@@ -1535,10 +1534,6 @@ export function App() {
     const requestMoves = moves.slice(0, currentMoveNumber);
     const requestPositionKey = candidatePositionKey(boardSize, komi, requestMoves);
     const requestNextColor = nextColor;
-    // A new analysis at an earlier move invalidates any stale points from the
-    // old continuation. Keep the completed history, but never connect to a
-    // point that lies after the position being analyzed.
-    setAnalysisPoints((points) => points.filter((point) => point.moveNumber <= requestMoveNumber));
     setIsAnalyzing(true);
     setHasAnalysisAttempted(true);
     setEngineStatus(`分析第 ${requestMoveNumber} 手，${requestNextColor === "black" ? "黑棋" : "白棋"}候选...`);
@@ -2483,7 +2478,7 @@ export function App() {
               rules={rules}
               sourceFileName={sourceFileName}
               timeControl={gameTimeControl}
-              totalMoves={totalMoves}
+              totalMoves={navigationTotalMoves}
               whiteName={whiteName}
             />
           </details>
