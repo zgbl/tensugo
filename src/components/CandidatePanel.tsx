@@ -3,6 +3,7 @@ import type { EngineCandidateMove, ReviewAnalysisPoint } from "../engine/types";
 import { buildBoardPosition } from "../game/boardRules";
 import type { BranchTreeRow, StoneColor } from "../game/gameTree";
 import type { ReviewStone } from "../game/sampleGame";
+import type { ProblemCandidateScore } from "../research/types";
 
 const placeholderRows = [
   { rank: 1, move: "T2", winrate: "72.0", visits: "123k", delta: "90.6", scoreLead: "3.4" },
@@ -35,6 +36,8 @@ type CandidatePanelProps = {
   problemSelectedMoveNames: Set<string>;
   onProblemCandidateToggle: (moveName: string) => void;
   problemReviewActive: boolean;
+  problemSelectedCandidates: ProblemCandidateScore[];
+  onProblemCandidateReorder: (fromIndex: number, toIndex: number) => void;
 };
 
 export function CandidatePanel({
@@ -55,11 +58,13 @@ export function CandidatePanel({
   onProblemClick,
   problemSelectedMoveNames,
   onProblemCandidateToggle,
-  problemReviewActive
+  problemReviewActive,
+  problemSelectedCandidates,
+  onProblemCandidateReorder
 }: CandidatePanelProps) {
   const branchTreeRef = useRef<HTMLDivElement | null>(null);
   const hasCandidates = candidates.length > 0;
-  const sourceRows = hasCandidates ? candidates : null;
+  const sourceRows = hasCandidates ? (problemReviewActive ? candidates.filter((candidate) => !problemSelectedMoveNames.has(candidate.moveName)) : candidates) : null;
   const bestWinrate = candidates[0]?.winrate ?? 0;
   const rows = sourceRows
     ? sourceRows.map((candidate) => ({
@@ -134,6 +139,31 @@ export function CandidatePanel({
         </div>
         {candidateListVisible ? (
           <div className="candidate-table-wrap">
+            {problemReviewActive ? (
+              <section className="problem-selected-section">
+                <h3>已选入题 · 拖拽排序</h3>
+                <div className="problem-selected-chips">
+                  {problemSelectedCandidates.map((candidate, index) => (
+                    <span
+                      className="problem-selected-chip"
+                      draggable
+                      key={candidate.moveName}
+                      onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        onProblemCandidateReorder(Number(event.dataTransfer.getData("text/plain")), index);
+                      }}
+                    >
+                      <b>{index + 1}</b> {candidate.moveName}
+                      <button type="button" aria-label={`删除 ${candidate.moveName}`} onClick={() => onProblemCandidateToggle(candidate.moveName)}>×</button>
+                    </span>
+                  ))}
+                  {problemSelectedCandidates.length === 0 ? <em>尚未选择入题点</em> : null}
+                </div>
+              </section>
+            ) : null}
+            {problemReviewActive ? <h3 className="problem-candidate-heading">AI 待选候选</h3> : null}
             <table className="candidate-table">
               <thead>
                 <tr>
@@ -144,7 +174,7 @@ export function CandidatePanel({
                   <th>计算量</th>
                   <th>占比</th>
                   <th>目差</th>
-                  {problemReviewActive ? <th>入题</th> : null}
+                  {problemReviewActive ? <th>操作</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -154,6 +184,7 @@ export function CandidatePanel({
                     className={preview?.rank === row.rank ? "selected" : ""}
                     onMouseEnter={hasCandidates ? () => onPreviewCandidate(row.rank) : undefined}
                     onFocus={hasCandidates ? () => onPreviewCandidate(row.rank) : undefined}
+                    onClick={hasCandidates ? () => onPreviewCandidate(row.rank) : undefined}
                   >
                     <td>{row.rank}</td>
                     <td>{row.move}</td>
@@ -165,7 +196,7 @@ export function CandidatePanel({
                     {problemReviewActive ? (
                       <td>
                         <button type="button" className="problem-candidate-toggle" onClick={() => onProblemCandidateToggle(row.move)}>
-                          {problemSelectedMoveNames.has(row.move) ? "删除" : "加入"}
+                          加入
                         </button>
                       </td>
                     ) : null}

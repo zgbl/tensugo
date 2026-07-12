@@ -15,6 +15,9 @@ type BoardPlaceholderProps = {
   onPointClick: (x: number, y: number) => void;
   onCandidatePreview: (rank: number | null) => void;
   actualNextMove?: ReviewStone | null;
+  candidateClickSelectOnly?: boolean;
+  selectedCandidateRank?: number | null;
+  suggestedCandidates?: EngineCandidateMove[];
 };
 
 export type MoveNumberDisplayMode = "all" | "last10" | "last1";
@@ -30,7 +33,10 @@ export function BoardPlaceholder({
   onStoneClick,
   onPointClick,
   onCandidatePreview,
-  actualNextMove = null
+  actualNextMove = null,
+  candidateClickSelectOnly = false,
+  selectedCandidateRank = null,
+  suggestedCandidates = []
 }: BoardPlaceholderProps) {
   const lines = Array.from({ length: boardSize }, (_, index) => index);
   const displayedCurrentMoveNumber = currentMoveNumber(stones);
@@ -49,7 +55,16 @@ export function BoardPlaceholder({
       if (!item.point) {
         return false;
       }
+      if (actualNextMove && item.point.x === actualNextMove.x && item.point.y === actualNextMove.y) {
+        return false;
+      }
       return !occupiedPoints.has(boardPointKey(item.point.x, item.point.y));
+    });
+  const suggestedPoints = suggestedCandidates
+    .map((candidate) => ({ candidate, point: gtpPointToBoardPoint(candidate.moveName, boardSize) }))
+    .filter((item): item is { candidate: EngineCandidateMove; point: { x: number; y: number } } => {
+      if (!item.point || occupiedPoints.has(boardPointKey(item.point.x, item.point.y))) return false;
+      return !actualNextMove || item.point.x !== actualNextMove.x || item.point.y !== actualNextMove.y;
     });
   const starPoints = [3, 9, 15].flatMap((y) => [3, 9, 15].map((x) => ({ y, x })));
   const pointStyle = (x: number, y: number) =>
@@ -66,10 +81,6 @@ export function BoardPlaceholder({
       left: `${(x / (boardSize - 1)) * 100}%`
     }) as CSSProperties;
   const handleBoardClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget) {
-      return;
-    }
-
     const rect = event.currentTarget.getBoundingClientRect();
     const x = Math.round(((event.clientX - rect.left) / rect.width) * (boardSize - 1));
     const y = Math.round(((event.clientY - rect.top) / rect.height) * (boardSize - 1));
@@ -125,7 +136,10 @@ export function BoardPlaceholder({
                 }`}
               key={stone.moveNumber}
               style={pointStyle(stone.x, stone.y)}
-              onClick={() => onStoneClick(stone.moveNumber)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onStoneClick(stone.moveNumber);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
@@ -141,10 +155,14 @@ export function BoardPlaceholder({
             <b
               role="button"
               tabIndex={0}
-              className={`candidate-bubble ${candidate.rank === 1 ? "best" : ""}`}
+              className={`candidate-bubble ${candidate.rank === 1 ? "best" : ""} ${candidate.rank === selectedCandidateRank ? "selected" : ""}`}
               key={candidate.moveName}
               style={pointStyle(point.x, point.y)}
-              onClick={() => onPointClick(point.x, point.y)}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (candidateClickSelectOnly) onCandidatePreview(candidate.rank);
+                else onPointClick(point.x, point.y);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
@@ -159,10 +177,21 @@ export function BoardPlaceholder({
               <span>{formatVisits(candidate.visits)}</span>
             </b>
           ))}
+          {suggestedPoints.map(({ candidate, point }) => (
+            <button
+              type="button"
+              className="candidate-suggestion-ring"
+              key={`suggested-${candidate.moveName}`}
+              style={pointStyle(point.x, point.y)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onCandidatePreview(candidate.rank);
+              }}
+              title={`AI 待选 ${candidate.moveName}`}
+            >{candidate.rank}</button>
+          ))}
           {actualNextMove ? (
-            <span className={`actual-next-move ${actualNextMove.color}`} style={pointStyle(actualNextMove.x, actualNextMove.y)}>
-              实战
-            </span>
+            <span aria-label="实战下一手" className="actual-next-move" style={pointStyle(actualNextMove.x, actualNextMove.y)} />
           ) : null}
         </div>
       </div>

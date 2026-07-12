@@ -195,6 +195,7 @@ export function App() {
   const [isEditingProblemCandidates, setIsEditingProblemCandidates] = useState(false);
   const [isSavingProblem, setIsSavingProblem] = useState(false);
   const [problemSaveStatus, setProblemSaveStatus] = useState("");
+  const [problemAiCandidates, setProblemAiCandidates] = useState<EngineCandidateMove[]>([]);
   const [isGameProgressPanelOpen, setIsGameProgressPanelOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
   const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
@@ -1557,11 +1558,15 @@ export function App() {
       }
       if (result.candidates.length > 0) {
         setEngineCandidatesPositionKey(requestPositionKey);
-        setEngineCandidates((previous) =>
-          engineCandidatesPositionKey === requestPositionKey
-            ? mergeStableCandidates(previous, result.candidates)
-            : result.candidates
-        );
+        if (activeProblem) {
+          setProblemAiCandidates((previous) => mergeStableCandidates(previous, result.candidates));
+        } else {
+          setEngineCandidates((previous) =>
+            engineCandidatesPositionKey === requestPositionKey
+              ? mergeStableCandidates(previous, result.candidates)
+              : result.candidates
+          );
+        }
       }
       if (result.candidates[0]) {
         setAnalysisPoints((points) =>
@@ -2269,7 +2274,8 @@ export function App() {
     setCurrentMoveNumber(positionMoveNumber);
     setSelectedGameNodeId(positionMoveNumber > 0 ? currentPathNodeIds[positionMoveNumber - 1] ?? "root" : "root");
     setEngineCandidatesPositionKey(candidatePositionKey(boardSize, komi, sourceMainLineMoves.slice(0, positionMoveNumber)));
-    setEngineCandidates(problem.analysis.candidates);
+    setEngineCandidates(problem.candidateScores.map((candidate) => ({ ...candidate })));
+    setProblemAiCandidates(problem.analysis.candidates);
     setPreviewCandidateRank(null);
     setLastAction(`正在 REVIEW 第 ${problem.moveNumber} 手出题标记：已显示 AI 候选点和实战下一手。`);
   };
@@ -2298,10 +2304,7 @@ export function App() {
       ...document,
       problemSet: { ...document.problemSet, items: document.problemSet.items.map((item) => item.id === nextProblem.id ? nextProblem : item) }
     } : document);
-    if (!engineCandidates.some((candidate) => candidate.moveName === moveName)) {
-      const added = nextProblem.candidateScores.find((candidate) => candidate.moveName === moveName);
-      if (added) setEngineCandidates((candidates) => [...candidates, { ...added }]);
-    }
+    setEngineCandidates(nextProblem.candidateScores.map((candidate) => ({ ...candidate })));
   };
   const toggleProblemCandidate = (moveName: string) => {
     if (!activeProblem) return;
@@ -2326,6 +2329,20 @@ export function App() {
       ...document,
       problemSet: { ...document.problemSet, items: document.problemSet.items.map((item) => item.id === nextProblem.id ? nextProblem : item) }
     } : document);
+    setEngineCandidates(nextProblem.candidateScores.map((candidate) => ({ ...candidate })));
+  };
+  const reorderProblemCandidate = (fromIndex: number, toIndex: number) => {
+    if (!activeProblem || fromIndex === toIndex) return;
+    const nextScores = [...activeProblem.candidateScores];
+    const [moved] = nextScores.splice(fromIndex, 1);
+    nextScores.splice(toIndex, 0, moved);
+    const nextProblem = { ...activeProblem, candidateScores: nextScores.map((candidate, index) => ({ ...candidate, rank: index + 1 })) };
+    setActiveProblem(nextProblem);
+    setResearchDocument((document) => document.problemSet ? {
+      ...document,
+      problemSet: { ...document.problemSet, items: document.problemSet.items.map((item) => item.id === nextProblem.id ? nextProblem : item) }
+    } : document);
+    setEngineCandidates(nextProblem.candidateScores.map((candidate) => ({ ...candidate })));
   };
   const saveReviewedProblem = async (problem: ProblemItem) => {
     setIsSavingProblem(true);
@@ -2578,13 +2595,16 @@ export function App() {
         <section className="board-stage" aria-label="Go board">
           <BoardPlaceholder
             boardSize={boardSize}
-            candidates={activeCandidates}
+            candidates={activeProblem ? activeProblem.candidateScores.map((candidate) => ({ ...candidate })) : activeCandidates}
+            suggestedCandidates={activeProblem ? problemAiCandidates.filter((candidate) => !activeProblem.candidateScores.some((selected) => selected.moveName === candidate.moveName)) : []}
             coordinateLabelsVisible={coordinateLabelsVisible}
             moveNumberDisplay={moveNumberDisplay}
             pixelSize={boardPixelSize}
             stones={stones}
             variationBaseMoveNumber={displayedVariationBaseMoveNumber}
             actualNextMove={activeProblemActualMove}
+            candidateClickSelectOnly={Boolean(activeProblem)}
+            selectedCandidateRank={previewCandidateRank}
             onStoneClick={jumpToMove}
             onPointClick={updateProblemCandidateAtPoint}
             onCandidatePreview={setPreviewCandidateRank}
@@ -2613,7 +2633,7 @@ export function App() {
             <CandidatePanel
               baseStones={stones}
               boardSize={boardSize}
-              candidates={activeCandidates}
+              candidates={activeProblem ? problemAiCandidates : activeCandidates}
               candidateListVisible={candidateListVisible}
               currentMoveNumber={currentMoveNumber}
               nextColor={nextColor}
@@ -2629,6 +2649,8 @@ export function App() {
               problemReviewActive={Boolean(activeProblem)}
               problemSelectedMoveNames={new Set(activeProblem?.candidateScores.map((candidate) => candidate.moveName) ?? [])}
               onProblemCandidateToggle={toggleProblemCandidate}
+              problemSelectedCandidates={activeProblem?.candidateScores ?? []}
+              onProblemCandidateReorder={reorderProblemCandidate}
             />
           )}
         </aside>

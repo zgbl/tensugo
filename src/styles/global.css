@@ -2059,8 +2059,11 @@ button:hover {
 
 .grid-line {
   background: rgba(83, 57, 29, 0.78);
+  pointer-events: none;
   position: absolute;
 }
+
+.star-point { pointer-events: none; }
 
 .grid-line.horizontal {
   height: 1px;
@@ -2233,6 +2236,30 @@ button:hover {
   background: rgba(59, 195, 214, 0.8);
   border-color: #007e91;
   color: #00343d;
+}
+
+.candidate-bubble.selected {
+  box-shadow: 0 0 0 3px rgba(255, 245, 122, 0.95), 0 0 0 5px rgba(25, 34, 38, 0.65);
+  z-index: 7;
+}
+
+.candidate-suggestion-ring {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.12);
+  border: 2px solid rgba(255, 255, 255, 0.96);
+  border-radius: 50%;
+  color: #fff7a0;
+  cursor: pointer;
+  display: flex;
+  font-size: 11px;
+  font-weight: 900;
+  height: var(--candidate-bubble-size, 22px);
+  justify-content: center;
+  position: absolute;
+  text-shadow: 0 1px 2px #342410;
+  transform: translate(-50%, -50%);
+  width: var(--candidate-bubble-size, 22px);
+  z-index: 5;
 }
 
 .candidate-bubble em {
@@ -2560,16 +2587,11 @@ button:hover {
 }
 
 .actual-next-move {
-  align-items: center;
-  border: 3px solid #d83a31;
+  background: transparent;
+  border: 3px solid rgba(255, 255, 255, 0.96);
   border-radius: 50%;
-  box-shadow: 0 0 0 2px #fff;
-  color: #fff;
-  display: flex;
-  font-size: 9px;
-  font-weight: 900;
+  box-shadow: 0 0 0 1px rgba(40, 30, 18, 0.45);
   height: var(--candidate-bubble-size, 28px);
-  justify-content: center;
   pointer-events: none;
   position: absolute;
   text-shadow: 0 1px 2px #000;
@@ -2577,9 +2599,6 @@ button:hover {
   width: var(--candidate-bubble-size, 28px);
   z-index: 8;
 }
-
-.actual-next-move.black { background: rgba(18, 23, 25, 0.82); }
-.actual-next-move.white { background: rgba(255, 255, 255, 0.88); color: #222; text-shadow: none; }
 
 .problem-review-toolbar {
   align-items: center;
@@ -2634,6 +2653,52 @@ button:hover {
   cursor: pointer;
   font-size: 10px;
   padding: 2px 4px;
+}
+
+.problem-selected-section {
+  border-bottom: 1px solid #cbd6d9;
+  padding: 7px;
+}
+
+.problem-selected-section h3,
+.problem-candidate-heading {
+  color: #47545b;
+  font-size: 11px;
+  margin: 0 0 6px;
+}
+
+.problem-candidate-heading { padding: 7px 7px 0; }
+
+.problem-selected-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.problem-selected-chips > em {
+  color: #7b858a;
+  font-size: 11px;
+}
+
+.problem-selected-chip {
+  align-items: center;
+  background: #0d8998;
+  border-radius: 4px;
+  color: #fff;
+  cursor: grab;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px 5px;
+}
+
+.problem-selected-chip button {
+  background: transparent;
+  border: 0;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 1px;
 }
 
 .branch-comment-icon {
