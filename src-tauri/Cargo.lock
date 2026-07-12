@@ -3881,7 +3881,7 @@ dependencies = [
 
 [[package]]
 name = "tensugo"
-version = "0.6.36"
+version = "0.6.37"
 dependencies = [
  "postgres",
  "rfd 0.15.4",

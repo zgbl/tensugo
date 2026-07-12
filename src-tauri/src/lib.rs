@@ -1160,13 +1160,16 @@ fn write_continuous_position_commands(
     } else {
         "W"
     };
-    writeln!(
-        session.stdin,
-        "lz-analyze {} {}",
+    writeln!(session.stdin, "{}", continuous_analysis_command(next_color))
+        .map_err(|error| error.to_string())?;
+    session.stdin.flush().map_err(|error| error.to_string())
+}
+
+fn continuous_analysis_command(next_color: &str) -> String {
+    format!(
+        "kata-analyze {} {}",
         next_color, CONTINUOUS_ANALYSIS_INTERVAL_CS
     )
-    .map_err(|error| error.to_string())?;
-    session.stdin.flush().map_err(|error| error.to_string())
 }
 
 fn collect_continuous_analysis_snapshot(session: &mut EngineSession) -> AnalysisResult {
@@ -1222,7 +1225,7 @@ fn collect_continuous_analysis_snapshot(session: &mut EngineSession) -> Analysis
         }
         let parsed = parse_analysis_output(
             &analysis.raw_output_tail.join("\n"),
-            WinrateScale::LizzieCentipercent,
+            WinrateScale::KataAnalyzeProbability,
         );
         if !parsed.is_empty() {
             analysis.candidates = parsed;
@@ -1454,6 +1457,7 @@ fn to_gtp_point(x: usize, y: usize, board_size: usize) -> String {
 #[derive(Clone, Copy, Debug)]
 enum WinrateScale {
     KataAnalyzeProbability,
+    #[cfg(test)]
     LizzieCentipercent,
 }
 
@@ -1506,8 +1510,9 @@ fn parse_candidate_line(
         .and_then(|value| value.parse::<f64>().ok())
         .map(|value| normalize_winrate(value, winrate_scale))
         .unwrap_or(0.0);
-    // `kata-analyze` reports scoreLead; continuous `lz-analyze` reports
-    // scoreMean. Both represent the engine's expected score at this point.
+    // Native `kata-analyze` reports both scoreLead and scoreMean. Prefer
+    // scoreLead because it is the expected absolute score margin (including
+    // komi) from the analyzed side's perspective, not a move-to-move delta.
     let score_lead = token_after(line, "scoreLead")
         .or_else(|| token_after(line, "scoreMean"))
         .and_then(|value| value.parse::<f64>().ok())
@@ -1534,6 +1539,7 @@ fn normalize_winrate(value: f64, scale: WinrateScale) -> f64 {
                 value / 100.0
             }
         }
+        #[cfg(test)]
         WinrateScale::LizzieCentipercent => value / 100.0,
     }
     .clamp(0.0, 100.0)
@@ -1709,6 +1715,23 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].score_lead, -3.4);
+    }
+
+    #[test]
+    fn kata_analyze_parses_real_score_lead_sample() {
+        let output = "info move Q16 visits 378 edgeVisits 378 utility 0.134031 winrate 0.564374 scoreMean 0.222173 scoreStdev 18.8274 scoreLead 0.222173 scoreSelfplay 0.769586 prior 0.0843889 lcb 0.562286 utilityLcb 0.128184 weight 377.13 order 0 pv Q16 D4 D16 Q4";
+
+        let candidates = parse_analysis_output(output, WinrateScale::KataAnalyzeProbability);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].move_name, "Q16");
+        assert!((candidates[0].winrate - 56.4374).abs() < 0.0001);
+        assert!((candidates[0].score_lead - 0.222173).abs() < 0.000001);
+    }
+
+    #[test]
+    fn continuous_analysis_uses_native_katago_output_with_score_lead() {
+        assert_eq!(continuous_analysis_command("B"), "kata-analyze B 30");
     }
 }
 

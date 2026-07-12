@@ -20,15 +20,19 @@
 
 `playouts` 是很多老界面或其他围棋引擎 UI 常用的计算量名称。实际含义通常接近“搜索次数”，但不同引擎和不同 UI 的口径不一定完全一致。对用户读数来说，可以粗略把它理解成“这个点算了多少”，但在 TensuGo 代码里当前字段名和来源是 `visits`。
 
+## 目差 scoreLead
+
+胜率图中的目差来自 KataGo 原生分析输出的 `scoreLead`，是该局面的预期绝对领先目数（包含贴目），不是比上一手多得或少得多少目。KataGo 按当前分析方给出该值；TensuGo 的胜率图固定为黑方视角，因此白方行棋局面的值要取反后再保存。最终正数表示黑方领先，负数表示黑方落后。
+
 ## TensuGo 的实时分析方式
 
 实时分析采用持续分析模式。局面变化时，TensuGo 向同一个持久 KataGo GTP 会话发送当前局面，然后启动一次 Lizzie/KataGo 兼容的长生命周期分析：
 
 ```text
-lz-analyze <color> 30
+kata-analyze <color> 30
 ```
 
-这里的 `30` 是输出间隔，约 0.3 秒。裸 `kata-analyze <color>` 只会返回 GTP 成功标记 `=`，不会提供 TensuGo 需要的持续 `info move` 输出。
+这里的 `30` 是输出间隔，约 0.3 秒。使用 KataGo 原生命令是必要的，因为它的 `info move` 同时包含 `winrate`、`scoreMean` 和 `scoreLead`；旧的 `lz-analyze` 兼容输出没有目差字段，会导致 UI 只能得到伪造的 `0.0`。
 
 同一个局面不重复发送新的分析命令。KataGo 持续搜索同一局面，并持续在 stdout 中输出 `info move` 行。Rust 后端持续读取这些行，把最新解析结果缓存为当前分析快照。前端约每 300ms 请求一次最新快照，只刷新 UI 显示。
 

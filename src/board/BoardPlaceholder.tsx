@@ -5,6 +5,7 @@ import type { ReviewStone } from "../game/sampleGame";
 
 type BoardPlaceholderProps = {
   boardSize: number;
+  candidateBubbleLines: CandidateBubbleLines;
   candidates: EngineCandidateMove[];
   coordinateLabelsVisible: boolean;
   moveNumberDisplay: MoveNumberDisplayMode;
@@ -21,9 +22,11 @@ type BoardPlaceholderProps = {
 };
 
 export type MoveNumberDisplayMode = "all" | "last10" | "last1";
+export type CandidateBubbleLines = 2 | 3;
 
 export function BoardPlaceholder({
   boardSize,
+  candidateBubbleLines,
   candidates,
   coordinateLabelsVisible,
   moveNumberDisplay,
@@ -155,7 +158,7 @@ export function BoardPlaceholder({
             <b
               role="button"
               tabIndex={0}
-              className={`candidate-bubble ${candidate.rank === 1 ? "best" : ""} ${candidate.rank === selectedCandidateRank ? "selected" : ""}`}
+              className={`candidate-bubble ${candidateBubbleLines === 3 ? "three-lines" : "two-lines"} ${candidate.rank === 1 ? "best" : ""} ${candidate.rank === selectedCandidateRank ? "selected" : ""}`}
               key={candidate.moveName}
               style={pointStyle(point.x, point.y)}
               onClick={(event) => {
@@ -175,6 +178,11 @@ export function BoardPlaceholder({
               <em>{candidate.rank}</em>
               <span>{candidate.winrate.toFixed(1)}</span>
               <span>{formatVisits(candidate.visits)}</span>
+              {candidateBubbleLines === 3 ? (
+                <span className="candidate-score-lead" title="当前显示方绝对目差（含贴目）">
+                  {candidate.scoreLead.toFixed(1)}
+                </span>
+              ) : null}
             </b>
           ))}
           {suggestedPoints.map(({ candidate, point }) => (

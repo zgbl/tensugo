@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BoardPlaceholder, type MoveNumberDisplayMode } from "../board/BoardPlaceholder";
+import { BoardPlaceholder, type CandidateBubbleLines, type MoveNumberDisplayMode } from "../board/BoardPlaceholder";
 import { AutoAnalysisDialog, type AutoAnalysisSettings } from "../components/AutoAnalysisDialog";
 import { BatchAnalysisDialog, type BatchAnalysisSettings } from "../components/BatchAnalysisDialog";
 import { BottomToolbar } from "../components/BottomToolbar";
@@ -150,6 +150,7 @@ const ENGINE_PROFILES_STORAGE_KEY = "tensugo.engineProfiles";
 const ACTIVE_ENGINE_PROFILE_KEY = "tensugo.activeEngineProfileKey";
 const HIDDEN_ENGINE_PROFILE_KEYS = "tensugo.hiddenEngineProfileKeys";
 const DEFAULT_CANDIDATE_DISPLAY_LIMIT = 5;
+const DEFAULT_CANDIDATE_BUBBLE_LINES: CandidateBubbleLines = 2;
 const INITIAL_GAME_TREE = createEmptyGameTree(19, 7.5);
 const INITIAL_SELECTED_NODE_ID = "root";
 const INITIAL_PATH_NODE_IDS: string[] = [];
@@ -173,6 +174,7 @@ export function App() {
   const [engineStatus, setEngineStatus] = useState("引擎未配置");
   const [engineDiagnostics, setEngineDiagnostics] = useState("尚未运行引擎测试。");
   const [researchExportSettings, setResearchExportSettings] = useState<ResearchExportSettings>(() => loadResearchExportSettings());
+  const [candidateBubbleLines, setCandidateBubbleLines] = useState<CandidateBubbleLines>(() => loadCandidateBubbleLines());
   const [candidateDisplayLimit, setCandidateDisplayLimit] = useState(() => loadCandidateDisplayLimit());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
@@ -697,7 +699,12 @@ export function App() {
     const nextLimit = normalizeCandidateDisplayLimit(value);
     setCandidateDisplayLimit(nextLimit);
     setPreviewCandidateRank(null);
-    window.localStorage.setItem(INTERFACE_SETTINGS_KEY, JSON.stringify({ candidateDisplayLimit: nextLimit }));
+    saveInterfaceSettings({ candidateDisplayLimit: nextLimit });
+  };
+  const updateCandidateBubbleLines = (value: CandidateBubbleLines) => {
+    const nextLines = normalizeCandidateBubbleLines(value);
+    setCandidateBubbleLines(nextLines);
+    saveInterfaceSettings({ candidateBubbleLines: nextLines });
   };
   const updateLanguage = (nextLanguage: AppLanguage) => {
     const normalized = normalizeLanguage(nextLanguage);
@@ -1567,7 +1574,7 @@ export function App() {
         setAnalysisPoints((points) =>
           upsertAnalysisPoint(points, {
             moveNumber: requestMoveNumber,
-            scoreLead: result.candidates[0].scoreLead,
+            scoreLead: toBlackScoreLead(result.candidates[0].scoreLead, requestNextColor),
             visits: result.candidates[0].visits,
             winrate: toBlackWinrate(result.candidates[0].winrate, requestNextColor)
           })
@@ -1745,7 +1752,7 @@ export function App() {
         setAnalysisPoints((points) =>
           upsertAnalysisPoint(points, {
             moveNumber,
-            scoreLead: best.scoreLead,
+            scoreLead: toBlackScoreLead(best.scoreLead, actualMove.color),
             visits: best.visits,
             winrate: toBlackWinrate(best.winrate, actualMove.color)
           })
@@ -2590,6 +2597,7 @@ export function App() {
         <section className="board-stage" aria-label="Go board">
           <BoardPlaceholder
             boardSize={boardSize}
+            candidateBubbleLines={candidateBubbleLines}
             candidates={activeProblem ? activeProblem.candidateScores.map((candidate) => ({ ...candidate })) : activeCandidates}
             suggestedCandidates={activeProblem ? problemAiCandidates.filter((candidate) => !activeProblem.candidateScores.some((selected) => selected.moveName === candidate.moveName)) : []}
             coordinateLabelsVisible={coordinateLabelsVisible}
@@ -2748,6 +2756,7 @@ export function App() {
         t={t}
       />
       <SettingsDialog
+        candidateBubbleLines={candidateBubbleLines}
         candidateDisplayLimit={candidateDisplayLimit}
         engineDiagnostics={engineDiagnostics}
         engineProfiles={engineProfiles}
@@ -2759,6 +2768,7 @@ export function App() {
         profile={engineProfile}
         selectedEngineProfileIndex={selectedEngineProfileIndex}
         onAnalyze={analyzeCurrentPosition}
+        onCandidateBubbleLinesChange={updateCandidateBubbleLines}
         onCandidateDisplayLimitChange={updateCandidateDisplayLimit}
         onClose={() => setIsSettingsOpen(false)}
         onExportSettingsChange={updateResearchExportSettings}
@@ -3007,7 +3017,7 @@ async function analyzeGameForBatch(params: {
     document = appendCandidateBlockForBatch(document, positionMoveNumber, result.candidates);
     points.push({
       moveNumber,
-      scoreLead: best.scoreLead,
+      scoreLead: toBlackScoreLead(best.scoreLead, actualMove.color),
       visits: best.visits,
       winrate: toBlackWinrate(best.winrate, actualMove.color)
     });
@@ -3929,11 +3939,32 @@ function loadResearchExportSettings(): ResearchExportSettings {
 
 function loadCandidateDisplayLimit(): number {
   try {
-    const value = JSON.parse(window.localStorage.getItem(INTERFACE_SETTINGS_KEY) ?? "{}") as { candidateDisplayLimit?: number };
+    const value = loadInterfaceSettings();
     return normalizeCandidateDisplayLimit(value.candidateDisplayLimit);
   } catch {
     return DEFAULT_CANDIDATE_DISPLAY_LIMIT;
   }
+}
+
+function loadCandidateBubbleLines(): CandidateBubbleLines {
+  return normalizeCandidateBubbleLines(loadInterfaceSettings().candidateBubbleLines);
+}
+
+type InterfaceSettings = {
+  candidateBubbleLines?: CandidateBubbleLines;
+  candidateDisplayLimit?: number;
+};
+
+function loadInterfaceSettings(): InterfaceSettings {
+  try {
+    return JSON.parse(window.localStorage.getItem(INTERFACE_SETTINGS_KEY) ?? "{}") as InterfaceSettings;
+  } catch {
+    return {};
+  }
+}
+
+function saveInterfaceSettings(patch: InterfaceSettings): void {
+  window.localStorage.setItem(INTERFACE_SETTINGS_KEY, JSON.stringify({ ...loadInterfaceSettings(), ...patch }));
 }
 
 function loadEngineProfile(): EngineProfile {
@@ -4048,6 +4079,10 @@ function isTransientAutoDetectedProfile(profile: EngineProfile): boolean {
 
 function normalizeCandidateDisplayLimit(value: unknown): number {
   return Math.round(clampNumber(typeof value === "number" ? value : undefined, 1, 12, DEFAULT_CANDIDATE_DISPLAY_LIMIT));
+}
+
+function normalizeCandidateBubbleLines(value: unknown): CandidateBubbleLines {
+  return value === 3 ? 3 : DEFAULT_CANDIDATE_BUBBLE_LINES;
 }
 
 function normalizeResearchExportSettings(value: Partial<ResearchExportSettings>): ResearchExportSettings {
@@ -4603,6 +4638,10 @@ function buildAnalysisKey(boardSize: number, komi: number, moveNumber: number, m
 
 function toBlackWinrate(winrate: number, nextColor: "black" | "white"): number {
   return nextColor === "black" ? winrate : 100 - winrate;
+}
+
+function toBlackScoreLead(scoreLead: number, nextColor: "black" | "white"): number {
+  return nextColor === "black" ? scoreLead : -scoreLead;
 }
 
 function upsertAnalysisPoint(points: ReviewAnalysisPoint[], nextPoint: ReviewAnalysisPoint): ReviewAnalysisPoint[] {

@@ -39,6 +39,8 @@ Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinat
 - Batch analysis must create threshold markers during analysis even when task mode is `analysis`; later problem review consumes those markers. Opening a TSG must make marked moves visible in the branch tree.
 - Batch `targetPlayer` filters problem markers only; it must never filter engine analysis moves. Analyze every enabled black and white move continuously so saved candidates, winrate history, and loss calculations remain complete, then create threshold markers only when the move belongs to the target player. Never skip the opponent's turns merely because a target player was selected.
 - Automatic analysis winrate graphs must remain complete from the beginning through the original game end. Returning to an earlier move and running a higher-visit manual analysis updates that move in the existing graph; it must not delete later points or shorten the graph axis to the selected move.
+- Review-graph score lead is the absolute expected margin including komi, not a delta from the previous move. Because the graph uses black winrate, persist score lead in black perspective too: positive means black leads and negative means black trails. Use KataGo's real `scoreLead`/`scoreMean`; never silently substitute persistent fake `0.0` values when the selected analysis command does not emit score data.
+- Candidate bubbles support a persistent two-line/three-line interface setting. Two-line mode shows winrate and visits; three-line mode adds the displayed side's absolute score lead including komi as the bottom line, using the same side perspective as that bubble's winrate.
 
 ## Game Tree Rules
 

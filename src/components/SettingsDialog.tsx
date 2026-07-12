@@ -3,10 +3,12 @@ import { EngineConfigPanel } from "./EngineConfigPanel";
 import type { EngineProfile } from "../engine/types";
 import { LANGUAGE_OPTIONS, type AppLanguage, type Translator } from "../i18n";
 import type { ResearchExportSettings } from "../research/renderHtml";
+import type { CandidateBubbleLines } from "../board/BoardPlaceholder";
 
 type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 type SettingsDialogProps = {
+  candidateBubbleLines: CandidateBubbleLines;
   candidateDisplayLimit: number;
   engineDiagnostics: string;
   engineProfiles: EngineProfile[];
@@ -17,6 +19,7 @@ type SettingsDialogProps = {
   selectedEngineProfileIndex: number;
   onAnalyze: () => void;
   onClose: () => void;
+  onCandidateBubbleLinesChange: (value: CandidateBubbleLines) => void;
   onCandidateDisplayLimitChange: (value: number) => void;
   onExportSettingsChange: (patch: Partial<ResearchExportSettings>) => void;
   onLanguageChange: (language: AppLanguage) => void;
@@ -37,6 +40,7 @@ type SettingsDialogProps = {
 };
 
 export function SettingsDialog({
+  candidateBubbleLines,
   candidateDisplayLimit,
   engineDiagnostics,
   engineProfiles,
@@ -47,6 +51,7 @@ export function SettingsDialog({
   selectedEngineProfileIndex,
   onAnalyze,
   onClose,
+  onCandidateBubbleLinesChange,
   onCandidateDisplayLimitChange,
   onExportSettingsChange,
   onLanguageChange,
@@ -206,8 +211,10 @@ export function SettingsDialog({
             <ExportSettingsPanel settings={exportSettings} onChange={onExportSettingsChange} t={t} />
           ) : activeTab === "interface" ? (
             <InterfaceSettingsPanel
+              candidateBubbleLines={candidateBubbleLines}
               candidateDisplayLimit={candidateDisplayLimit}
               exportSettings={exportSettings}
+              onCandidateBubbleLinesChange={onCandidateBubbleLinesChange}
               onCandidateDisplayLimitChange={onCandidateDisplayLimitChange}
               onExportSettingsChange={onExportSettingsChange}
             />
@@ -234,13 +241,17 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function InterfaceSettingsPanel({
+  candidateBubbleLines,
   candidateDisplayLimit,
   exportSettings,
+  onCandidateBubbleLinesChange,
   onCandidateDisplayLimitChange,
   onExportSettingsChange
 }: {
+  candidateBubbleLines: CandidateBubbleLines;
   candidateDisplayLimit: number;
   exportSettings: ResearchExportSettings;
+  onCandidateBubbleLinesChange: (value: CandidateBubbleLines) => void;
   onCandidateDisplayLimitChange: (value: number) => void;
   onExportSettingsChange: (patch: Partial<ResearchExportSettings>) => void;
 }) {
@@ -248,6 +259,16 @@ function InterfaceSettingsPanel({
     <section className="export-settings-panel">
       <h2>界面</h2>
       <div className="export-setting-grid">
+        <label>
+          候选点气泡显示
+          <select
+            value={candidateBubbleLines}
+            onChange={(event) => onCandidateBubbleLinesChange(event.target.value === "3" ? 3 : 2)}
+          >
+            <option value={2}>两行：胜率 / 计算量</option>
+            <option value={3}>三行：胜率 / 计算量 / 目差</option>
+          </select>
+        </label>
         <label>
           棋盘候选点数量
           <input

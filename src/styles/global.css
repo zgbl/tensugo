@@ -2232,6 +2232,15 @@ button:hover {
   line-height: 1.02;
 }
 
+.candidate-bubble.three-lines {
+  font-size: calc(var(--candidate-font-size, 8px) * 0.82);
+  line-height: 0.94;
+}
+
+.candidate-bubble .candidate-score-lead {
+  font-weight: 800;
+}
+
 .candidate-bubble.best {
   background: rgba(59, 195, 214, 0.8);
   border-color: #007e91;
