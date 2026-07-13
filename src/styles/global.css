@@ -199,32 +199,22 @@ button:hover {
   white-space: nowrap;
 }
 
-.mode-switch {
+.mode-select-label {
   align-items: center;
+  display: inline-flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.mode-select-label select {
+  background: #ffffff;
   border: 1px solid #b9c8c9;
   border-radius: 6px;
-  display: inline-flex;
-  flex: 0 0 auto;
-  overflow: hidden;
-}
-
-.mode-switch button {
-  background: #ffffff;
-  border: 0;
-  border-radius: 0;
+  color: var(--accent-strong);
   font-size: calc(12px * var(--toolbar-scale, 1));
+  font-weight: 700;
   min-height: calc(20px * var(--toolbar-scale, 1));
   padding: 0 calc(8px * var(--toolbar-scale, 1));
-}
-
-.mode-switch button + button {
-  border-left: 1px solid #d5e0df;
-}
-
-.mode-switch button.active {
-  background: var(--accent);
-  color: #ffffff;
-  font-weight: 700;
 }
 
 .toolbar-toggle {
@@ -2700,6 +2690,19 @@ button:hover {
   padding: 4px 5px;
 }
 
+.problem-selected-chip label {
+  align-items: center;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 3px;
+}
+
+.problem-selected-chip input {
+  height: 24px;
+  padding: 0 3px;
+  width: 42px;
+}
+
 .problem-selected-chip button {
   background: transparent;
   border: 0;
@@ -2965,6 +2968,114 @@ button:hover {
   overflow: hidden;
 }
 
+.problem-editor-section {
+  border-top: 1px solid var(--panel-border);
+  display: grid;
+  gap: 6px;
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 7px;
+}
+
+.problem-editor-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.problem-editor-heading h2 {
+  margin: 0;
+}
+
+.problem-editor-heading span,
+.problem-position-hash {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.problem-selected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.problem-selected-row {
+  align-items: center;
+  background: #f7faf9;
+  border: 1px solid #d4dfdf;
+  border-radius: 5px;
+  cursor: pointer;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 20px 42px minmax(0, 1fr) auto;
+  min-height: 31px;
+  padding: 3px 5px;
+}
+
+.problem-selected-row.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.problem-selected-row em {
+  color: #a14c24;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.problem-selected-row label {
+  align-items: center;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 3px;
+}
+
+.problem-selected-row input {
+  height: 24px;
+  padding: 0 3px;
+  width: 42px;
+}
+
+.problem-position-hash {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.problem-editor-actions {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.problem-editor-actions button {
+  min-width: 0;
+  padding: 0 5px;
+}
+
+.problem-editor-actions button.active {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.problem-editor-hint,
+.problem-create-empty p,
+.problem-editor-section > .problem-save-status,
+.problem-editor-section > .problem-save-error {
+  font-size: 11px;
+  margin: 0;
+}
+
+.problem-create-empty {
+  align-content: start;
+  display: grid;
+  gap: 8px;
+}
+
 .pv-line {
   background: #f3f8f7;
   border: 1px solid #dce3e7;
@@ -2980,7 +3091,7 @@ button:hover {
   aspect-ratio: 1;
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0.1), transparent 24%, rgba(80, 48, 20, 0.09)),
-    var(--board);
+    #d9aa67;
   border: 1px solid #8a6433;
   box-sizing: border-box;
   justify-self: center;
@@ -2994,8 +3105,11 @@ button:hover {
 }
 
 .mini-board-plane {
-  background: var(--board);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08), transparent 24%, rgba(80, 48, 20, 0.06)),
+    #d9aa67;
   height: 100%;
+  isolation: isolate;
   position: relative;
   width: 100%;
 }

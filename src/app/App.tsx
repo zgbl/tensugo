@@ -11,13 +11,15 @@ import { ResearchDocumentPanel } from "../components/ResearchDocumentPanel";
 import { OgsBrowserDialog } from "../components/OgsBrowserDialog";
 import { OgsDialog } from "../components/OgsDialog";
 import { SettingsDialog } from "../components/SettingsDialog";
-import { TopToolbar } from "../components/TopToolbar";
+import { TopToolbar, type AppMode } from "../components/TopToolbar";
 import type { EngineAnalysisResult, EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
 import {
   analyzePositionContinuous,
+  chooseGameRecordFiles,
   chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
   discoverEngineProfile,
+  findProblemByPositionHash,
   getDefaultEngineProfile,
   isTauriRuntime,
   probeEngine,
@@ -163,6 +165,7 @@ export function App() {
   const [blackName, setBlackName] = useState("黑棋");
   const [whiteName, setWhiteName] = useState("白棋");
   const [sourceFileName, setSourceFileName] = useState("新棋谱");
+  const [currentTsgPath, setCurrentTsgPath] = useState<string | null>(null);
   const [gameDate, setGameDate] = useState<string | undefined>(undefined);
   const [gameResult, setGameResult] = useState<string | undefined>(undefined);
   const [gameTimeControl, setGameTimeControl] = useState<string | undefined>(undefined);
@@ -217,7 +220,8 @@ export function App() {
   const [candidateListVisible, setCandidateListVisible] = useState(true);
   const [coordinateLabelsVisible, setCoordinateLabelsVisible] = useState(true);
   const [moveNumberDisplay, setMoveNumberDisplay] = useState<MoveNumberDisplayMode>("last1");
-  const [isResearchMode, setIsResearchMode] = useState(false);
+  const [appMode, setAppMode] = useState<AppMode>("review");
+  const isResearchMode = appMode === "research";
   const [showVariationNumbers, setShowVariationNumbers] = useState(false);
   const [researchBaseMoveNumber, setResearchBaseMoveNumber] = useState<number | null>(null);
   const [sourceMainLineMoveCount, setSourceMainLineMoveCount] = useState(0);
@@ -525,7 +529,18 @@ export function App() {
   const saveResearchDocument = async () => {
     const document = researchDocumentWithAnalysis(withCurrentAnalysisBlocks(updateDocumentSource(researchDocument, currentSnapshot)));
     const json = JSON.stringify(toBrgDocument(document, gameTree));
-    await saveTextFileWithDialog(json, fileStem(document.title) + ".tsg", `已保存 TensuGo 研究文件，大小 ${formatBytes(utf8ByteLength(json))}。`);
+    const successText = `已保存 TensuGo 研究文件，大小 ${formatBytes(utf8ByteLength(json))}。`;
+    if (isTauriRuntime() && currentTsgPath) {
+      try {
+        await writeTextFile(currentTsgPath, json);
+        setLastAction(`${successText} ${currentTsgPath}`);
+      } catch (error) {
+        setLastAction(`保存失败: ${String(error)}`);
+      }
+      return;
+    }
+    const savedPath = await saveTextFileWithDialog(json, fileStem(document.title) + ".tsg", successText);
+    if (isTauriRuntime() && savedPath) setCurrentTsgPath(savedPath);
   };
   const exportResearchPdf = async () => {
     const html = renderResearchDocumentHtml(
@@ -560,11 +575,11 @@ export function App() {
       setLastAction(`PDF 导出失败: ${String(error)}`);
     }
   };
-  const saveTextFileWithDialog = async (content: string, defaultName: string, successText: string) => {
+  const saveTextFileWithDialog = async (content: string, defaultName: string, successText: string): Promise<string | null> => {
     if (!isTauriRuntime()) {
       downloadTextFile(content, defaultName, "text/plain;charset=utf-8");
       setLastAction(`${successText}（浏览器预览使用下载保存。）`);
-      return;
+      return defaultName;
     }
 
     try {
@@ -578,6 +593,7 @@ export function App() {
       if (result.saved && result.path) {
         window.localStorage.setItem(LAST_RESEARCH_SAVE_DIR_KEY, directoryName(result.path));
         setLastAction(`${successText} ${result.path}`);
+        return result.path;
       } else if (result.error) {
         setLastAction(`保存失败: ${result.error}`);
       } else {
@@ -586,6 +602,7 @@ export function App() {
     } catch (error) {
       setLastAction(`保存失败: ${String(error)}`);
     }
+    return null;
   };
   const loadResearchDocument = async (file: File) => {
     try {
@@ -988,13 +1005,21 @@ export function App() {
       setLastAction(`已跳到原棋谱第 ${block.endMoveNumber} 手。`);
     }
   };
-  const setResearchMode = (enabled: boolean) => {
-    setIsResearchMode(enabled);
-    if (enabled) {
+  const changeAppMode = (mode: AppMode) => {
+    setAppMode(mode);
+    if (mode === "research") {
       setShowVariationNumbers(true);
       setResearchBaseMoveNumber(null);
       setLastAction("已进入写棋评模式：从任意手开始落子时，会自动记录变化图起点。");
+    } else if (mode === "problem-create") {
+      setShowVariationNumbers(true);
+      setLastAction("已进入出题模式：定位出题局面，打开 AI 分析后创建题目。");
+    } else if (mode === "problem-solve") {
+      setShowVariationNumbers(true);
+      setActiveProblem(null);
+      setLastAction("已进入做题模式：点击棋谱树中的“题”标记选择题目。");
     } else {
+      setActiveProblem(null);
       setLastAction("已回到复盘模式。");
     }
   };
@@ -1074,8 +1099,16 @@ export function App() {
     setLastAction(`贴目已改为 ${nextKomi.toFixed(1)}，当前分析结果已作废。`);
     queueAnalysisIfEnabled();
   };
+  const clearProblemDraftForNavigation = () => {
+    setActiveProblem(null);
+    setProblemAiCandidates([]);
+    setIsEditingProblemCandidates(false);
+    setProblemSaveStatus("");
+    setPreviewCandidateRank(null);
+  };
   const jumpToMove = (moveNumber: number) => {
     invalidatePendingAnalysis();
+    clearProblemDraftForNavigation();
     const nextMoveNumber = Math.max(0, Math.min(navigationTotalMoves, moveNumber));
     if (nextMoveNumber > totalMoves && sourceMainLineMoves.length >= nextMoveNumber) {
       const mainLineEndNodeId = findMainLineEndNodeId(gameTree);
@@ -1106,6 +1139,7 @@ export function App() {
   };
   const jumpToGameNode = (nodeId: string) => {
     invalidatePendingAnalysis();
+    clearProblemDraftForNavigation();
     const pathMoves = pathMovesToNode(gameTree, nodeId);
     const fullPath = pathMovesWithMainContinuation(gameTree, nodeId);
     if (!pathMoves) {
@@ -1216,6 +1250,7 @@ export function App() {
       setLastAction(`不能在 ${x + 1},${y + 1} 落子：交点已被占用或不合法。`);
       return;
     }
+    clearProblemDraftForNavigation();
 
     const nextMoveNumber = currentMoveNumber + 1;
     const inferredVariationBase = inferVariationBaseMoveNumber(moves, sourceMainLineMoves);
@@ -1267,6 +1302,23 @@ export function App() {
       return;
     }
     await openSgfFile(file);
+  };
+  const openNativeGameRecord = async () => {
+    try {
+      const result = await chooseGameRecordFiles();
+      if (result.error) {
+        setLastAction(`打开棋谱失败：${result.error}`);
+        return;
+      }
+      const path = result.paths[0];
+      if (!path) return;
+      const content = await readTextFile(path);
+      const file = new File([content], baseName(path));
+      setCurrentTsgPath(/\.(tsg|brg|brg\.json|json)$/i.test(path) ? path : null);
+      await openGameFile(file);
+    } catch (error) {
+      setLastAction(`打开棋谱失败：${String(error)}`);
+    }
   };
   const openSgfFile = async (file: File) => {
     invalidatePendingAnalysis();
@@ -1332,6 +1384,7 @@ export function App() {
     setGameResult(undefined);
     setGameTimeControl(undefined);
     setSourceFileName("新棋谱");
+    setCurrentTsgPath(null);
     setSgfWarnings([]);
     setMoves([]);
     setSourceMainLineMoves([]);
@@ -2263,6 +2316,56 @@ export function App() {
     setLastAction("AI 分析已开启。");
     queueAnalysisIfEnabled(20);
   };
+  const createProblemFromCurrentPosition = async () => {
+    if (boardActiveCandidates.length === 0) {
+      setLastAction("当前局面还没有 AI 候选点。请先开启 AI 分析，收到候选点后再创建题目。");
+      return;
+    }
+    const positionMoves = moves.slice(0, currentMoveNumber);
+    const positionHash = hashProblemPosition(boardSize, nextColor, positionMoves);
+    const localDuplicate = researchDocument.problemSet?.items.find((item) =>
+      item.positionHash === positionHash || (
+        item.positionMoves && hashProblemPosition(boardSize, item.color, item.positionMoves) === positionHash
+      )
+    );
+    if (localDuplicate) {
+      const proceed = window.confirm(`这个棋盘局面已经在当前 TSG 的第 ${localDuplicate.moveNumber} 手用过。仍要创建重复题目吗？`);
+      if (!proceed) {
+        setLastAction(`已取消创建：局面哈希 ${positionHash} 已存在于当前 TSG。`);
+        return;
+      }
+    } else if (isTauriRuntime()) {
+      try {
+        const duplicate = await findProblemByPositionHash(positionHash);
+        if (duplicate.found) {
+          const source = duplicate.sourceFileName ? `${duplicate.sourceFileName} 第 ${duplicate.moveNumber ?? "?"} 手` : duplicate.id ?? "数据库题目";
+          const proceed = window.confirm(`这个棋盘局面已在题库中使用：${source}。仍要创建重复题目吗？`);
+          if (!proceed) {
+            setLastAction(`已取消创建：局面哈希 ${positionHash} 已存在于数据库。`);
+            return;
+          }
+        }
+      } catch (error) {
+        setLastAction(`数据库局面查重暂不可用，将继续创建本地题目：${String(error)}`);
+      }
+    }
+    const problem = createManualProblemItem({
+      boardSize,
+      candidates: boardActiveCandidates,
+      color: nextColor,
+      engineName: engineProfile?.name,
+      modelName: engineProfile?.modelPath ? engineProfile.modelPath.split("/").pop() : undefined,
+      moveNumber: currentMoveNumber + 1,
+      positionMoves,
+      sourceNodeId: selectedGameNodeId
+    });
+    setResearchDocument((document) => upsertProblemInDocument(document, problem));
+    setActiveProblem(problem);
+    setIsEditingProblemCandidates(true);
+    setProblemAiCandidates(boardActiveCandidates);
+    setProblemSaveStatus("");
+    setLastAction(`已从第 ${currentMoveNumber} 手局面创建题目草稿；AI 第一候选 ${problem.fullScoreMove} 为正确答案。`);
+  };
   const openProblemReview = (moveNumber: number) => {
     const problem = researchDocument.problemSet?.items.find((item) => item.moveNumber === moveNumber);
     if (!problem) {
@@ -2346,12 +2449,53 @@ export function App() {
     } : document);
     setEngineCandidates(nextProblem.candidateScores.map((candidate) => ({ ...candidate })));
   };
+  const updateProblemCandidateScore = (moveName: string, score: number) => {
+    if (!activeProblem) return;
+    const normalizedScore = moveName === activeProblem.fullScoreMove
+      ? 10
+      : Math.max(0, Math.min(9, Math.round(Number.isFinite(score) ? score : 0)));
+    const nextProblem = {
+      ...activeProblem,
+      candidateScores: activeProblem.candidateScores.map((candidate) =>
+        candidate.moveName === moveName ? { ...candidate, score: normalizedScore } : candidate
+      )
+    };
+    setActiveProblem(nextProblem);
+    setResearchDocument((document) => upsertProblemInDocument(document, nextProblem));
+  };
   const saveReviewedProblem = async (problem: ProblemItem) => {
     setIsSavingProblem(true);
-    setProblemSaveStatus("正在连接开发数据库并保存…");
+    setProblemSaveStatus("正在保存 TSG…");
     try {
-      await saveProblemToDatabase({
+      const sourceMoves = sourceMainLineMoves.length > 0 ? sourceMainLineMoves : moves;
+      const positionMoves = problem.positionMoves ?? sourceMoves.slice(0, Math.max(0, problem.moveNumber - 1));
+      const problemWithHash: ProblemItem = {
         ...problem,
+        positionMoves,
+        positionHash: problem.positionHash ?? hashProblemPosition(boardSize, problem.color, positionMoves),
+        positionHashAlgorithm: "fnv1a64-board-v1"
+      };
+      const documentWithProblem = upsertProblemInDocument(researchDocument, problemWithHash);
+      setActiveProblem(problemWithHash);
+      setResearchDocument(documentWithProblem);
+      const document = researchDocumentWithAnalysis(withCurrentAnalysisBlocks(updateDocumentSource(documentWithProblem, currentSnapshot)));
+      const json = JSON.stringify(toBrgDocument(document, gameTree));
+      const successText = `题目已写入当前 TSG，大小 ${formatBytes(utf8ByteLength(json))}。`;
+      let savedPath = currentTsgPath;
+      if (isTauriRuntime() && savedPath) {
+        await writeTextFile(savedPath, json);
+        setLastAction(`${successText} ${savedPath}`);
+      } else {
+        savedPath = await saveTextFileWithDialog(json, fileStem(document.title) + ".tsg", successText);
+        if (isTauriRuntime() && savedPath) setCurrentTsgPath(savedPath);
+      }
+      if (!savedPath) {
+        setProblemSaveStatus("已取消保存，数据库未写入");
+        return;
+      }
+      setProblemSaveStatus("TSG 已保存，正在写入数据库…");
+      await saveProblemToDatabase({
+        ...problemWithHash,
         source: {
           fileName: sourceFileName,
           blackName,
@@ -2359,13 +2503,14 @@ export function App() {
           boardSize,
           komi,
           rules,
-          movesBeforeProblem: sourceMainLineMoves.slice(0, Math.max(0, problem.moveNumber - 1)),
-          actualMove: sourceMainLineMoves[problem.moveNumber - 1] ?? null
+          sourceNodeId: problemWithHash.sourceNodeId ?? null,
+          movesBeforeProblem: positionMoves,
+          actualMove: sourceMoves[problemWithHash.moveNumber - 1] ?? null
         },
         reviewedAt: new Date().toISOString()
       });
-      setLastAction(`第 ${problem.moveNumber} 手题目已保存到开发数据库。`);
-      setProblemSaveStatus("保存成功");
+      setLastAction(`第 ${problem.moveNumber} 手题目已同时保存到 TSG 和开发数据库。`);
+      setProblemSaveStatus("TSG / 数据库保存成功");
     } catch (error) {
       setLastAction(`保存题目失败：${String(error)}`);
       setProblemSaveStatus(`保存失败：${String(error)}`);
@@ -2419,10 +2564,10 @@ export function App() {
   return (
     <main className="app-shell" style={{ "--toolbar-scale": toolbarScale } as CSSProperties}>
       <TopToolbar
+        appMode={appMode}
         boardPixelSize={boardPixelSize}
         hasSavedAnalysis={hasSavedAnalysis}
         title="TensuGo"
-        isResearchMode={isResearchMode}
         komi={komi}
         ogsDetail={ogsStatusDetail}
         ogsSourceLabel={ogsSourceLabel}
@@ -2430,7 +2575,11 @@ export function App() {
         showSavedAnalysis={showSavedAnalysis}
         showVariationNumbers={showVariationNumbers}
         onKomiChange={updateKomi}
-        onOpenFile={openGameFile}
+        onOpenDocument={isTauriRuntime() ? () => { void openNativeGameRecord(); } : undefined}
+        onOpenFile={(file) => {
+          setCurrentTsgPath(null);
+          void openGameFile(file);
+        }}
         onOpenOgsBrowser={() => setIsOgsBrowserOpen(true)}
         onOpenOgsUrl={() => setIsOgsDialogOpen(true)}
         onOgsDisconnect={() => disconnectOgs("已断开 OGS。")}
@@ -2455,7 +2604,7 @@ export function App() {
             return !visible;
           });
         }}
-        onResearchModeChange={setResearchMode}
+        onAppModeChange={changeAppMode}
         onShowVariationNumbersChange={setShowVariationNumbers}
         t={t}
       />
@@ -2641,17 +2790,28 @@ export function App() {
               currentMoveNumber={currentMoveNumber}
               nextColor={nextColor}
               previewCandidate={previewCandidate}
+              problemCreateMode={appMode === "problem-create"}
+              problemEditorActive={isEditingProblemCandidates}
+              problemPositionHash={activeProblem?.positionHash ?? null}
+              problemSaveStatus={problemSaveStatus}
+              problemSaving={isSavingProblem}
               totalMoves={totalMoves}
               branchRows={branchRows}
               selectedNodeId={selectedGameNodeId}
               onCandidateListVisibleChange={setCandidateListVisible}
               onBranchNodeClick={jumpToGameNode}
               onPreviewCandidate={setPreviewCandidateRank}
+              onCreateProblem={() => void createProblemFromCurrentPosition()}
+              onProblemClose={() => { setActiveProblem(null); setIsEditingProblemCandidates(false); setProblemSaveStatus(""); }}
               problemMoveNumbers={new Set(researchDocument.problemSet?.items.map((item) => item.moveNumber) ?? [])}
+              problemFullScoreMove={activeProblem?.fullScoreMove ?? null}
               onProblemClick={openProblemReview}
               problemReviewActive={Boolean(activeProblem)}
               problemSelectedMoveNames={new Set(activeProblem?.candidateScores.map((candidate) => candidate.moveName) ?? [])}
               onProblemCandidateToggle={toggleProblemCandidate}
+              onProblemCandidateScoreChange={updateProblemCandidateScore}
+              onProblemEditorActiveChange={setIsEditingProblemCandidates}
+              onProblemSave={() => { if (activeProblem) void saveReviewedProblem(activeProblem); }}
               problemSelectedCandidates={activeProblem?.candidateScores ?? []}
               onProblemCandidateReorder={reorderProblemCandidate}
             />
@@ -2690,10 +2850,10 @@ export function App() {
         onToggleMoveNumbers={toggleMoveNumberDisplay}
         t={t}
       />
-      {activeProblem ? (
+      {appMode !== "problem-create" && activeProblem ? (
         <div className="problem-review-toolbar" aria-label="出题操作">
           <strong>出题 REVIEW · 第 {activeProblem.moveNumber} 手</strong>
-          <span>胜率损失 {activeProblem.trigger.value.toFixed(1)}%</span>
+          <span>{activeProblem.trigger.type === "winrateLoss" ? `胜率损失 ${activeProblem.trigger.value.toFixed(1)}%` : "手工出题"}</span>
           <button type="button" className={isEditingProblemCandidates ? "active" : ""} onClick={() => setIsEditingProblemCandidates((value) => !value)}>
             {isEditingProblemCandidates ? "完成选点" : "修改/增加选点"}
           </button>
@@ -2702,6 +2862,11 @@ export function App() {
           </button>
           {problemSaveStatus ? <span className={problemSaveStatus.startsWith("保存失败") ? "problem-save-error" : "problem-save-status"}>{problemSaveStatus}</span> : null}
           <button type="button" onClick={() => { setActiveProblem(null); setIsEditingProblemCandidates(false); }}>关闭</button>
+        </div>
+      ) : appMode === "problem-solve" ? (
+        <div className="problem-review-toolbar" aria-label="做题模式">
+          <strong>做题模式</strong>
+          <span>点击右侧棋谱树中的“题”标记选择题目</span>
         </div>
       ) : null}
       <AutoAnalysisDialog
@@ -3067,11 +3232,13 @@ async function analyzeGameForBatch(params: {
     if (isTargetPlayerMove && winrateLoss !== null && winrateLoss >= settings.winrateLossThreshold) {
       problems.push(createProblemItem({
         actualMoveName: actualPoint,
+        boardSize: parsed.boardSize,
         candidates: result.candidates,
         color: actualMove.color,
         engineName: profile.name,
         modelName: profile.modelPath ? profile.modelPath.split("/").pop() : undefined,
         moveNumber,
+        positionMoves: moves.slice(0, positionMoveNumber),
         threshold: settings.winrateLossThreshold,
         winrateLoss,
         candidateLimit: settings.candidateLimit
@@ -4247,19 +4414,21 @@ function playerNameMatches(recordName: string, targetName: string): boolean {
 
 function createProblemItem(params: {
   actualMoveName: string;
+  boardSize: number;
   candidateLimit: number;
   candidates: EngineCandidateMove[];
   color: "black" | "white";
   engineName?: string;
   modelName?: string;
   moveNumber: number;
+  positionMoves: ReviewMove[];
   threshold: number;
   winrateLoss: number;
 }): ProblemItem {
   const scoredCandidates = params.candidates.slice(0, params.candidateLimit).map((candidate, index) => ({
     moveName: candidate.moveName,
     rank: candidate.rank,
-    score: index === 0 ? 10 : index === 1 ? 9 : index === 2 ? 8 : index === 3 ? 7 : 5,
+    score: defaultProblemCandidateScore(index),
     visits: candidate.visits,
     winrate: candidate.winrate,
     scoreLead: candidate.scoreLead,
@@ -4269,6 +4438,9 @@ function createProblemItem(params: {
     id: createLocalId("problem"),
     moveNumber: params.moveNumber,
     color: params.color,
+    positionMoves: params.positionMoves,
+    positionHash: hashProblemPosition(params.boardSize, params.color, params.positionMoves),
+    positionHashAlgorithm: "fnv1a64-board-v1",
     actualMoveName: params.actualMoveName,
     trigger: {
       type: "winrateLoss",
@@ -4283,6 +4455,92 @@ function createProblemItem(params: {
       modelName: params.modelName,
       generatedAt: new Date().toISOString(),
       candidates: params.candidates
+    }
+  };
+}
+
+function createManualProblemItem(params: {
+  boardSize: number;
+  candidates: EngineCandidateMove[];
+  color: "black" | "white";
+  engineName?: string;
+  modelName?: string;
+  moveNumber: number;
+  positionMoves: ReviewMove[];
+  sourceNodeId: string;
+}): ProblemItem {
+  const generatedAt = new Date().toISOString();
+  const candidateScores = params.candidates.map((candidate, index) => ({
+    moveName: candidate.moveName,
+    rank: index + 1,
+    score: defaultProblemCandidateScore(index),
+    visits: candidate.visits,
+    winrate: candidate.winrate,
+    scoreLead: candidate.scoreLead,
+    pv: candidate.pv
+  }));
+  return {
+    id: createLocalId("problem"),
+    moveNumber: params.moveNumber,
+    color: params.color,
+    sourceNodeId: params.sourceNodeId,
+    positionMoves: params.positionMoves,
+    positionHash: hashProblemPosition(params.boardSize, params.color, params.positionMoves),
+    positionHashAlgorithm: "fnv1a64-board-v1",
+    trigger: { type: "manual" },
+    prompt: `第 ${params.moveNumber} 手，${params.color === "black" ? "黑棋" : "白棋"}请选择最佳下法。`,
+    fullScoreMove: candidateScores[0]?.moveName ?? "",
+    candidateScores,
+    analysis: {
+      engineName: params.engineName,
+      modelName: params.modelName,
+      generatedAt,
+      candidates: params.candidates
+    }
+  };
+}
+
+function defaultProblemCandidateScore(index: number): number {
+  return index === 0 ? 10 : index === 1 ? 8 : index === 2 ? 6 : index === 3 ? 4 : 2;
+}
+
+function hashProblemPosition(
+  boardSize: number,
+  nextColor: "black" | "white",
+  positionMoves: ReviewMove[]
+): string {
+  const stones = buildBoardPosition(positionMoves, boardSize, positionMoves.length).stones
+    .map((stone) => `${stone.color === "black" ? "B" : "W"}:${stone.x},${stone.y}`)
+    .sort()
+    .join("|");
+  const canonical = `v1;size=${boardSize};next=${nextColor};stones=${stones}`;
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let index = 0; index < canonical.length; index += 1) {
+    hash ^= BigInt(canonical.charCodeAt(index));
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+function upsertProblemInDocument(document: ResearchDocument, problem: ProblemItem): ResearchDocument {
+  const existingItems = document.problemSet?.items ?? [];
+  const hasSameId = existingItems.some((item) => item.id === problem.id);
+  const items = hasSameId
+    ? existingItems.map((item) => item.id === problem.id ? problem : item)
+    : [...existingItems.filter((item) => item.moveNumber !== problem.moveNumber), problem];
+  return {
+    ...document,
+    updatedAt: new Date().toISOString(),
+    problemSet: {
+      version: 1,
+      generatedAt: document.problemSet?.generatedAt ?? new Date().toISOString(),
+      settings: document.problemSet?.settings ?? {
+        winrateLossThreshold: 0,
+        candidateLimit: problem.candidateScores.length
+      },
+      items
     }
   };
 }
@@ -4381,13 +4639,14 @@ function createEmptyAutoAnalysisSummary(): AutoAnalysisSummary {
 }
 
 function calculateScoreLoss(
-  color: ReviewMove["color"],
+  _color: ReviewMove["color"],
   best: EngineCandidateMove,
   actual: EngineCandidateMove
 ): number {
-  const loss = color === "black"
-    ? best.scoreLead - actual.scoreLead
-    : actual.scoreLead - best.scoreLead;
+  // KataGo's scoreLead is reported from the analyzed side's perspective.
+  // A worse played move therefore always has a lower scoreLead than the
+  // best candidate, regardless of whether the side is black or white.
+  const loss = best.scoreLead - actual.scoreLead;
   return Math.max(0, loss);
 }
 

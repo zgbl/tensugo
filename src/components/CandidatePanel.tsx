@@ -25,16 +25,27 @@ type CandidatePanelProps = {
   currentMoveNumber: number;
   nextColor: StoneColor;
   previewCandidate: EngineCandidateMove | null;
+  problemCreateMode: boolean;
+  problemEditorActive: boolean;
+  problemPositionHash: string | null;
+  problemSaveStatus: string;
+  problemSaving: boolean;
   totalMoves: number;
   branchRows: BranchTreeRow[];
   selectedNodeId: string;
   onCandidateListVisibleChange: (visible: boolean) => void;
   onBranchNodeClick: (nodeId: string) => void;
   onPreviewCandidate: (rank: number | null) => void;
+  onCreateProblem: () => void;
+  onProblemClose: () => void;
   problemMoveNumbers: Set<number>;
+  problemFullScoreMove: string | null;
   onProblemClick: (moveNumber: number) => void;
   problemSelectedMoveNames: Set<string>;
   onProblemCandidateToggle: (moveName: string) => void;
+  onProblemCandidateScoreChange: (moveName: string, score: number) => void;
+  onProblemEditorActiveChange: (active: boolean) => void;
+  onProblemSave: () => void;
   problemReviewActive: boolean;
   problemSelectedCandidates: ProblemCandidateScore[];
   onProblemCandidateReorder: (fromIndex: number, toIndex: number) => void;
@@ -48,21 +59,33 @@ export function CandidatePanel({
   currentMoveNumber,
   nextColor,
   previewCandidate,
+  problemCreateMode,
+  problemEditorActive,
+  problemPositionHash,
+  problemSaveStatus,
+  problemSaving,
   totalMoves: _totalMoves,
   branchRows,
   selectedNodeId,
   onCandidateListVisibleChange,
   onBranchNodeClick,
   onPreviewCandidate,
+  onCreateProblem,
+  onProblemClose,
   problemMoveNumbers,
+  problemFullScoreMove,
   onProblemClick,
   problemSelectedMoveNames,
   onProblemCandidateToggle,
+  onProblemCandidateScoreChange,
+  onProblemEditorActiveChange,
+  onProblemSave,
   problemReviewActive,
   problemSelectedCandidates,
   onProblemCandidateReorder
 }: CandidatePanelProps) {
   const branchTreeRef = useRef<HTMLDivElement | null>(null);
+  const [selectedProblemMoveName, setSelectedProblemMoveName] = useState<string | null>(null);
   const hasCandidates = candidates.length > 0;
   const sourceRows = hasCandidates ? (problemReviewActive ? candidates.filter((candidate) => !problemSelectedMoveNames.has(candidate.moveName)) : candidates) : null;
   const bestWinrate = candidates[0]?.winrate ?? 0;
@@ -93,6 +116,12 @@ export function CandidatePanel({
     const activeNode = tree?.querySelector<HTMLElement>(".branch-node.active");
     activeNode?.scrollIntoView({ block: "center", inline: "nearest" });
   }, [selectedNodeId, branchRows]);
+
+  useEffect(() => {
+    if (selectedProblemMoveName && !problemSelectedMoveNames.has(selectedProblemMoveName)) {
+      setSelectedProblemMoveName(null);
+    }
+  }, [problemSelectedMoveNames, selectedProblemMoveName]);
 
   return (
     <>
@@ -139,7 +168,7 @@ export function CandidatePanel({
         </div>
         {candidateListVisible ? (
           <div className="candidate-table-wrap">
-            {problemReviewActive ? (
+            {problemReviewActive && !problemCreateMode ? (
               <section className="problem-selected-section">
                 <h3>已选入题 · 拖拽排序</h3>
                 <div className="problem-selected-chips">
@@ -156,6 +185,19 @@ export function CandidatePanel({
                       }}
                     >
                       <b>{index + 1}</b> {candidate.moveName}
+                      <label>
+                        分数
+                        <input
+                          aria-label={`${candidate.moveName} 分数`}
+                          type="number"
+                          min="0"
+                          max="10"
+                          step="1"
+                          value={candidate.score}
+                          disabled={candidate.moveName === problemFullScoreMove}
+                          onChange={(event) => onProblemCandidateScoreChange(candidate.moveName, Number(event.target.value))}
+                        />
+                      </label>
                       <button type="button" aria-label={`删除 ${candidate.moveName}`} onClick={() => onProblemCandidateToggle(candidate.moveName)}>×</button>
                     </span>
                   ))}
@@ -207,37 +249,83 @@ export function CandidatePanel({
           </div>
         ) : null}
       </div>
-      <div className="panel-section branch-section">
-        <h2>变化图 / PV</h2>
-        <div className="pv-line">{preview?.pv.length ? preview.pv.join(" ") : "暂无变化"}</div>
-        <div className="mini-board">
-          <div className="mini-board-plane">
-            {miniLines.map((line) => (
-              <span
-                className="mini-grid-line horizontal"
-                key={`mini-h-${line}`}
-                style={{ top: `${(line / (boardSize - 1)) * 100}%` }}
-              />
-            ))}
-            {miniLines.map((line) => (
-              <span
-                className="mini-grid-line vertical"
-                key={`mini-v-${line}`}
-                style={{ left: `${(line / (boardSize - 1)) * 100}%` }}
-              />
-            ))}
-            {pvStones.map((stone) => (
-              <span
-                key={`${stone.moveNumber}-${stone.x}-${stone.y}`}
-                className={`mini-stone ${stone.color} ${stone.isPv ? "pv-stone" : ""}`}
-                style={miniPointStyle(stone.x, stone.y)}
-              >
-                {stone.pvIndex ?? ""}
-              </span>
-            ))}
+      {problemCreateMode ? (
+        <div className="panel-section problem-editor-section">
+          <div className="problem-editor-heading">
+            <h2>题目选点</h2>
+            <span>第 {currentMoveNumber + 1} 手</span>
+          </div>
+          {problemReviewActive ? (
+            <>
+              <div className="problem-selected-list">
+                {problemSelectedCandidates.map((candidate, index) => (
+                  <div
+                    className={`problem-selected-row ${selectedProblemMoveName === candidate.moveName ? "selected" : ""}`}
+                    key={candidate.moveName}
+                    onClick={() => setSelectedProblemMoveName(candidate.moveName)}
+                  >
+                    <b>{index + 1}</b>
+                    <strong>{candidate.moveName}</strong>
+                    {candidate.moveName === problemFullScoreMove ? <em>正确答案</em> : null}
+                    <label onClick={(event) => event.stopPropagation()}>
+                      分数
+                      <input
+                        aria-label={`${candidate.moveName} 分数`}
+                        type="number"
+                        min="0"
+                        max="10"
+                        step="1"
+                        value={candidate.score}
+                        disabled={candidate.moveName === problemFullScoreMove}
+                        onChange={(event) => onProblemCandidateScoreChange(candidate.moveName, Number(event.target.value))}
+                      />
+                    </label>
+                  </div>
+                ))}
+                {problemSelectedCandidates.length === 0 ? <p>尚未选择题目选点。</p> : null}
+              </div>
+              <div className="problem-position-hash" title={problemPositionHash ?? ""}>局面校验：{problemPositionHash ?? "未生成"}</div>
+              <div className="problem-editor-actions">
+                <button type="button" className={problemEditorActive ? "active" : ""} onClick={() => onProblemEditorActiveChange(true)}>增加候选点</button>
+                <button
+                  type="button"
+                  disabled={!selectedProblemMoveName || selectedProblemMoveName === problemFullScoreMove}
+                  onClick={() => {
+                    if (selectedProblemMoveName) {
+                      onProblemCandidateToggle(selectedProblemMoveName);
+                      setSelectedProblemMoveName(null);
+                    }
+                  }}
+                >删除候选点</button>
+                <button type="button" disabled={problemSaving} onClick={onProblemSave}>{problemSaving ? "保存中…" : "保存题目"}</button>
+                <button type="button" onClick={onProblemClose}>关闭草稿</button>
+              </div>
+              {problemEditorActive ? <p className="problem-editor-hint">在上方候选点列表点击“加入”，也可以直接点击棋盘交叉点增加候选。</p> : null}
+              {problemSaveStatus ? <p className={problemSaveStatus.startsWith("保存失败") ? "problem-save-error" : "problem-save-status"}>{problemSaveStatus}</p> : null}
+            </>
+          ) : (
+            <div className="problem-create-empty">
+              <p>出题模式 · 当前第 {currentMoveNumber} 手局面</p>
+              <p>{candidates.length > 0 ? `AI 候选 ${candidates.length} 个` : "请先开启 AI 分析，等待候选点。"}</p>
+              <button type="button" disabled={candidates.length === 0} onClick={onCreateProblem}>用当前局面创建题目</button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="panel-section branch-section">
+          <h2>变化图 / PV</h2>
+          <div className="pv-line">{preview?.pv.length ? preview.pv.join(" ") : "暂无变化"}</div>
+          <div className="mini-board">
+            <div className="mini-board-plane">
+              {miniLines.map((line) => <span className="mini-grid-line horizontal" key={`mini-h-${line}`} style={{ top: `${(line / (boardSize - 1)) * 100}%` }} />)}
+              {miniLines.map((line) => <span className="mini-grid-line vertical" key={`mini-v-${line}`} style={{ left: `${(line / (boardSize - 1)) * 100}%` }} />)}
+              {pvStones.map((stone) => (
+                <span key={`${stone.moveNumber}-${stone.x}-${stone.y}`} className={`mini-stone ${stone.color} ${stone.isPv ? "pv-stone" : ""}`} style={miniPointStyle(stone.x, stone.y)}>{stone.pvIndex ?? ""}</span>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   );
 }

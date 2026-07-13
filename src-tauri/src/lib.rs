@@ -170,6 +170,14 @@ struct SaveProblemResult {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct ProblemDuplicateResult {
+    found: bool,
+    id: Option<String>,
+    source_file_name: Option<String>,
+    move_number: Option<i32>,
+}
+
 #[tauri::command]
 fn app_name() -> &'static str {
     "TensuGo"
@@ -363,13 +371,50 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
             error: Some("题目缺少 id".to_string()),
         };
     }
+    let move_number = value.get("moveNumber").and_then(|item| item.as_i64()).unwrap_or(0) as i32;
+    let color = value.get("color").and_then(|item| item.as_str()).unwrap_or("");
+    let full_score_move = value.get("fullScoreMove").and_then(|item| item.as_str()).unwrap_or("");
+    let position_hash = value.get("positionHash").and_then(|item| item.as_str()).unwrap_or("");
+    let source = value.get("source").cloned().unwrap_or(serde_json::Value::Null);
+    let source_file_name = source.get("fileName").and_then(|item| item.as_str()).unwrap_or("");
+    let board_size = source.get("boardSize").and_then(|item| item.as_i64()).unwrap_or(0) as i32;
+    let source_position = source.get("movesBeforeProblem").cloned().unwrap_or_else(|| serde_json::json!([]));
+    let actual_move = source.get("actualMove").cloned().unwrap_or(serde_json::Value::Null);
+    let candidate_scores = value.get("candidateScores").cloned().unwrap_or_else(|| serde_json::json!([]));
+    if move_number <= 0 || board_size <= 0 || color.is_empty() || full_score_move.is_empty() || position_hash.is_empty() {
+        return SaveProblemResult {
+            ok: false,
+            error: Some("题目缺少手数、棋盘大小、行棋方、正确答案或局面哈希".to_string()),
+        };
+    }
     let sql = r#"
         CREATE TABLE IF NOT EXISTS go_problems (
             id TEXT PRIMARY KEY,
+            source_file_name TEXT NOT NULL,
+            move_number INTEGER NOT NULL,
+            board_size INTEGER NOT NULL,
+            color TEXT NOT NULL,
+            full_score_move TEXT NOT NULL,
+            position_hash TEXT NOT NULL,
+            source_position JSONB NOT NULL,
+            actual_move JSONB,
+            candidate_scores JSONB NOT NULL,
             payload JSONB NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS source_file_name TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS move_number INTEGER;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS board_size INTEGER;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS color TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS full_score_move TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS position_hash TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS source_position JSONB;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS actual_move JSONB;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS candidate_scores JSONB;
+        CREATE INDEX IF NOT EXISTS go_problems_source_move_idx ON go_problems(source_file_name, move_number);
+        CREATE INDEX IF NOT EXISTS go_problems_position_hash_idx ON go_problems(position_hash);
+        CREATE INDEX IF NOT EXISTS go_problems_updated_at_idx ON go_problems(updated_at DESC);
     "#;
     let result = (|| -> Result<(), String> {
         let mut config = database_url
@@ -381,8 +426,8 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
             .batch_execute(sql)
             .map_err(|error| error.to_string())?;
         client.execute(
-            "INSERT INTO go_problems (id, payload, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()",
-            &[&id, &value],
+            "INSERT INTO go_problems (id, source_file_name, move_number, board_size, color, full_score_move, position_hash, source_position, actual_move, candidate_scores, payload, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) ON CONFLICT (id) DO UPDATE SET source_file_name = EXCLUDED.source_file_name, move_number = EXCLUDED.move_number, board_size = EXCLUDED.board_size, color = EXCLUDED.color, full_score_move = EXCLUDED.full_score_move, position_hash = EXCLUDED.position_hash, source_position = EXCLUDED.source_position, actual_move = EXCLUDED.actual_move, candidate_scores = EXCLUDED.candidate_scores, payload = EXCLUDED.payload, updated_at = NOW()",
+            &[&id, &source_file_name, &move_number, &board_size, &color, &full_score_move, &position_hash, &source_position, &actual_move, &candidate_scores, &value],
         ).map_err(|error| error.to_string())?;
         Ok(())
     })();
@@ -396,6 +441,36 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
             error: Some(error),
         },
     }
+}
+
+#[tauri::command]
+fn find_problem_by_position_hash(position_hash: String) -> Result<ProblemDuplicateResult, String> {
+    let database_url = std::env::var("TENSUGO_PROBLEM_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://tensugo:tensugo_dev@127.0.0.1:5432/tensugo_forum".to_string()
+    });
+    let mut config = database_url.parse::<postgres::Config>().map_err(|error| error.to_string())?;
+    config.connect_timeout(Duration::from_secs(2));
+    let mut client = config.connect(NoTls).map_err(|error| error.to_string())?;
+    let row = client
+        .query_opt(
+            "SELECT id, source_file_name, move_number FROM go_problems WHERE position_hash = $1 ORDER BY updated_at DESC LIMIT 1",
+            &[&position_hash],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(match row {
+        Some(row) => ProblemDuplicateResult {
+            found: true,
+            id: row.get(0),
+            source_file_name: row.get(1),
+            move_number: row.get(2),
+        },
+        None => ProblemDuplicateResult {
+            found: false,
+            id: None,
+            source_file_name: None,
+            move_number: None,
+        },
+    })
 }
 
 #[tauri::command]
@@ -1753,6 +1828,7 @@ pub fn run() {
             read_file_bytes,
             write_text_file,
             save_problem_to_database,
+            find_problem_by_position_hash,
             default_engine_profile,
             discover_engine_profile,
             choose_engine_path,

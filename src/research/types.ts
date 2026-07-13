@@ -70,11 +70,17 @@ export type ProblemItem = {
   id: string;
   moveNumber: number;
   color: "black" | "white";
+  sourceNodeId?: string;
+  positionMoves?: ReviewMove[];
+  positionHash?: string;
+  positionHashAlgorithm?: "fnv1a64-board-v1";
   actualMoveName?: string;
   trigger: {
     type: "winrateLoss";
     threshold: number;
     value: number;
+  } | {
+    type: "manual";
   };
   prompt: string;
   fullScoreMove: string;

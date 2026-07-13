@@ -134,6 +134,28 @@ export async function saveProblemToDatabase(payload: unknown): Promise<void> {
   }
 }
 
+export type ProblemDuplicateMatch = {
+  found: boolean;
+  id: string | null;
+  sourceFileName: string | null;
+  moveNumber: number | null;
+};
+
+export async function findProblemByPositionHash(positionHash: string): Promise<ProblemDuplicateMatch> {
+  const result = await invoke<{
+    found: boolean;
+    id: string | null;
+    source_file_name: string | null;
+    move_number: number | null;
+  }>("find_problem_by_position_hash", { positionHash });
+  return {
+    found: result.found,
+    id: result.id,
+    sourceFileName: result.source_file_name,
+    moveNumber: result.move_number
+  };
+}
+
 export async function probeEngine(profile: EngineProfile): Promise<EngineProbeResult> {
   return invoke<EngineProbeResult>("probe_engine", { profile: toTauriProfile(profile) });
 }

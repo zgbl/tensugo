@@ -61,7 +61,7 @@ Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinat
 - `坐标` toggles coordinate labels; hidden coordinates must let the main board grow into the released space.
 - Do not add a bottom-toolbar `候选列表` button; use the right candidate panel hide/show control.
 - Right side contains branch tree, collapsible candidate list, and PV mini-board.
-- PV mini-board must stay square, show the full board, and include border/padding in sizing. During analysis, empty regions must show the board color rather than a large gray overlay.
+- PV mini-board must stay square, show the full board, and include border/padding in sizing. During realtime, automatic, and batch analysis (running or paused), both its outer board and inner plane must retain the wood board color and never expose a gray panel/disabled-state overlay.
 - Research mode right pane keeps branch tree on top and uses the remaining space for live document preview: board/variation figures paired with commentary text.
 
 ## Persistent User Requirements
@@ -69,6 +69,9 @@ Also use `weiqi-go-board` only when touching board geometry, SGF/kifu, coordinat
 - User-confirmed details must be recorded in `docs/project-docs/User-Requirements.md`, the relevant design document, or this skill; they must not live only in chat history.
 - When the model changes or code is refactored, do not restore behavior the user explicitly rejected.
 - Before implementing a newly confirmed requirement, update the persistent requirement record first when practical, then implement and verify the workflow.
+- The main mode control is one four-option dropdown: review, research writing, problem creation, and problem solving. Problem records are dual-persisted to TSG `tensugo.problemSet` and the PostgreSQL `go_problems` table. The source position links to the original game at `moveNumber - 1`; AI rank 1 is the 10-point full-score move, and other selected AI/manual candidates carry editable scores. Read `docs/project-docs/Problem-System-Design.md` before changing this workflow.
+- Problem authoring is document-scoped: all problems from one source game stay in that game's single TSG `problemSet.items[]`. Once the TSG path is known, save in place without prompting per problem. Navigating to another position must clear all previous-position problem draft and candidate state.
+- Every problem stores a stable board-position hash and warns on duplicates in the current TSG or database. In problem-creation mode, replace the right-pane PV mini-board with the `题目选点` editor and keep all create/add/delete/save controls there; never cover the main board with a floating problem toolbar.
 
 ## Build, Package, And Install
 

@@ -208,3 +208,4 @@ For engine work, also use `设置 -> 引擎 -> Test Engine` with a real KataGo e
 - [Release v0.1 Scope](docs/project-docs/Release-v0.1.md)
 - [Research Document Design](docs/project-docs/Research-Doc-Design-V1.md)
 - [User Requirements (Persistent)](docs/project-docs/User-Requirements.md)
+- [Problem System Design](docs/project-docs/Problem-System-Design.md)

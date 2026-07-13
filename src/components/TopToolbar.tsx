@@ -3,10 +3,10 @@ import type { Translator } from "../i18n";
 import type { OgsConnectionStatus } from "../ogs/types";
 
 type TopToolbarProps = {
+  appMode: AppMode;
   boardPixelSize: number;
   hasSavedAnalysis: boolean;
   title: string;
-  isResearchMode: boolean;
   komi: number;
   ogsDetail?: string;
   ogsSourceLabel?: string;
@@ -19,6 +19,7 @@ type TopToolbarProps = {
   onOpenAutoAnalysis: () => void;
   onOpenBatchAnalysis: () => void;
   onOpenAbout: () => void;
+  onOpenDocument?: () => void;
   onOpenFile: (file: File) => void;
   onOpenOgsBrowser: () => void;
   onOpenOgsUrl: () => void;
@@ -27,13 +28,15 @@ type TopToolbarProps = {
   onNewGame: () => void;
   onOpenSettings: () => void;
   onOpenTianshuReport: () => void;
-  onResearchModeChange: (enabled: boolean) => void;
+  onAppModeChange: (mode: AppMode) => void;
   onSaveResearch: () => void;
   onShowVariationNumbersChange: (enabled: boolean) => void;
   onToggleSavedAnalysis: () => void;
   onToggleAnalysis: () => void;
   t: Translator;
 };
+
+export type AppMode = "review" | "research" | "problem-create" | "problem-solve";
 
 const tools = [
   { key: "new", title: "New", icon: <NewIcon /> },
@@ -48,10 +51,10 @@ const tools = [
 ] as const;
 
 export function TopToolbar({
+  appMode,
   boardPixelSize: _boardPixelSize,
   hasSavedAnalysis,
   title,
-  isResearchMode,
   komi,
   ogsDetail,
   ogsSourceLabel,
@@ -64,6 +67,7 @@ export function TopToolbar({
   onOpenAutoAnalysis,
   onOpenBatchAnalysis,
   onOpenAbout,
+  onOpenDocument,
   onOpenFile,
   onOpenOgsBrowser,
   onOpenOgsUrl,
@@ -72,7 +76,7 @@ export function TopToolbar({
   onNewGame,
   onOpenSettings,
   onOpenTianshuReport,
-  onResearchModeChange,
+  onAppModeChange,
   onSaveResearch,
   onShowVariationNumbersChange,
   onToggleSavedAnalysis,
@@ -80,6 +84,7 @@ export function TopToolbar({
   t
 }: TopToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const openDocument = onOpenDocument ?? (() => fileInputRef.current?.click());
   const handleKomiChange = (value: string) => {
     const nextKomi = Number(value);
     if (Number.isFinite(nextKomi)) {
@@ -93,7 +98,7 @@ export function TopToolbar({
         <strong>{title}</strong>
         <Menu label={t("menuFile")} items={[
           { label: t("newBoard"), action: onNewGame },
-          { label: t("openDocument"), action: () => fileInputRef.current?.click() },
+          { label: t("openDocument"), action: openDocument },
           { label: t("saveBrg"), action: onSaveResearch },
           { label: "导出PDF", action: onExportPdf }
         ]} />
@@ -109,7 +114,10 @@ export function TopToolbar({
         ]} />
         <Menu label={t("menuView")} items={[
           { label: showVariationNumbers ? t("hideVariationNumbers") : t("showVariationNumbers"), action: () => onShowVariationNumbersChange(!showVariationNumbers) },
-          { label: isResearchMode ? t("switchToReviewMode") : t("switchToResearchMode"), action: () => onResearchModeChange(!isResearchMode) }
+          { label: t("reviewMode"), action: () => onAppModeChange("review") },
+          { label: t("researchMode"), action: () => onAppModeChange("research") },
+          { label: "出题", action: () => onAppModeChange("problem-create") },
+          { label: "做题", action: () => onAppModeChange("problem-solve") }
         ]} />
         <Menu label={t("menuAnalysis")} items={[
           { label: t("aiAnalyzePause"), action: onToggleAnalysis },
@@ -137,7 +145,7 @@ export function TopToolbar({
               className={`tool-button ${"icon" in tool ? "tool-button-icon" : ""}`}
               onClick={
                 tool.key === "open"
-                  ? () => fileInputRef.current?.click()
+                  ? openDocument
                   : tool.key === "new"
                     ? onNewGame
                     : tool.key === "save"
@@ -177,22 +185,15 @@ export function TopToolbar({
           <button type="button" className="toolbar-toggle" onClick={onOpenTianshuReport}>
             {t("tianshuReport")}
           </button>
-          <div className="mode-switch" aria-label={t("menuView")}>
-            <button
-              type="button"
-              className={!isResearchMode ? "active" : ""}
-              onClick={() => onResearchModeChange(false)}
-            >
-              {t("reviewMode")}
-            </button>
-            <button
-              type="button"
-              className={isResearchMode ? "active" : ""}
-              onClick={() => onResearchModeChange(true)}
-            >
-              {t("researchMode")}
-            </button>
-          </div>
+          <label className="mode-select-label">
+            模式
+            <select value={appMode} onChange={(event) => onAppModeChange(event.target.value as AppMode)}>
+              <option value="review">{t("reviewMode")}</option>
+              <option value="research">{t("researchMode")}</option>
+              <option value="problem-create">出题</option>
+              <option value="problem-solve">做题</option>
+            </select>
+          </label>
           <label><input type="checkbox" defaultChecked /> {t("countStones")}</label>
           <label>{t("aggressiveness")} <input value="0" readOnly /></label>
           <label>{t("breadth")} <input value="0.04" readOnly /></label>
