@@ -33,6 +33,8 @@ import {
   listProblemLibrary,
   probeEngine,
   readTextFile,
+  recordProblemAnswer,
+  recordProblemTag,
   saveProblemToDatabase,
   stopContinuousAnalysis,
   writeTextFile
@@ -130,6 +132,7 @@ type BatchRunReport = {
   skippedFiles: number;
   stopped: boolean;
   targetPlayer: string;
+  databaseSaved: number;
 };
 
 type TianshuReport = AutoAnalysisSummary & {
@@ -177,6 +180,7 @@ const ENGINE_PROFILE_STORAGE_KEY = "tensugo.engineProfile";
 const ENGINE_PROFILES_STORAGE_KEY = "tensugo.engineProfiles";
 const ACTIVE_ENGINE_PROFILE_KEY = "tensugo.activeEngineProfileKey";
 const HIDDEN_ENGINE_PROFILE_KEYS = "tensugo.hiddenEngineProfileKeys";
+const BATCH_COMPLETED_PIPELINES_KEY = "tensugo.completedProblemPipelines";
 const DEFAULT_CANDIDATE_DISPLAY_LIMIT = 5;
 const DEFAULT_CANDIDATE_BUBBLE_LINES: CandidateBubbleLines = 2;
 type ProblemThresholdSettings = {
@@ -265,8 +269,10 @@ export function App() {
   const [problemSolveQueue, setProblemSolveQueue] = useState<ProblemLibraryItem[]>([]);
   const [problemSolveIndex, setProblemSolveIndex] = useState(-1);
   const [problemSolveAnswers, setProblemSolveAnswers] = useState<Record<string, ProblemSolveAnswer>>({});
+  const [problemTaggedTags, setProblemTaggedTags] = useState<Record<string, string[]>>({});
   const [problemSolveType, setProblemSolveType] = useState<SolvableProblemType>("B");
   const [problemSolveMoveName, setProblemSolveMoveName] = useState<string | null>(null);
+  const [problemSolveReviewMode, setProblemSolveReviewMode] = useState(false);
   const [isGameProgressPanelOpen, setIsGameProgressPanelOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
   const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
@@ -1188,6 +1194,7 @@ export function App() {
     if (queue.length === 0) return;
     setProblemSolveQueue(queue);
     setProblemSolveAnswers({});
+    setProblemSolveReviewMode(false);
     setIsProblemLibraryOpen(false);
     // State updates are asynchronous; open the first item directly with the selected range length.
     const first = queue[0];
@@ -1212,7 +1219,8 @@ export function App() {
   };
   const submitProblemAnswer = () => {
     if (!activeProblem) return;
-    const moveName = problemTypeOf(activeProblem) === "A"
+    const problemType = problemTypeOf(activeProblem);
+    const moveName = problemType === "A"
       ? problemSolveMoveName
       : activeProblem.candidateScores.find((candidate) => candidate.rank === previewCandidateRank)?.moveName ?? null;
     if (!moveName) return;
@@ -1220,6 +1228,23 @@ export function App() {
     const result = `${moveName}：${score}/10 分；正确答案 ${activeProblem.fullScoreMove}`;
     setProblemSolveAnswers((answers) => ({ ...answers, [activeProblem.id]: { moveName, score } }));
     setLastAction(`第 ${problemSolveIndex + 1} 题已提交，${result}`);
+    void recordProblemAnswer({ problemId: activeProblem.id, moveName, score, problemType }).catch((error) => {
+      setLastAction(`答案已保留在本次成绩中，但数据库统计失败：${String(error)}`);
+    });
+  };
+  const tagActiveProblem = (tag: string) => {
+    if (!activeProblem || problemTaggedTags[activeProblem.id]?.includes(tag)) return;
+    setProblemTaggedTags((current) => ({
+      ...current,
+      [activeProblem.id]: [...(current[activeProblem.id] ?? []), tag]
+    }));
+    void recordProblemTag(activeProblem.id, tag).catch((error) => {
+      setProblemTaggedTags((current) => ({
+        ...current,
+        [activeProblem.id]: (current[activeProblem.id] ?? []).filter((item) => item !== tag)
+      }));
+      setLastAction(`题目标签保存失败：${String(error)}`);
+    });
   };
   const selectProblemCandidate = (rank: number | null) => {
     setPreviewCandidateRank(rank);
@@ -2679,7 +2704,7 @@ export function App() {
     setBatchJobLogs([]);
     setBatchRunReport(null);
     appendBatchJobLog(
-      `任务启动: mode=${settings.mode}, target=${settings.targetPlayer || "全部棋手"}, range=${settings.startMove}-${settings.endMove}, seconds=${settings.secondsPerMove}, visits=${settings.visitsPerMove || "time"}`
+      `任务启动: mode=${settings.mode}, type=${settings.problemType}, 每谱上限=${settings.maxProblemsPerGame}, 题集=${settings.problemCollection || "未指定"}, 制作者=${settings.problemCreator || "未指定"}, target=${settings.targetPlayer || "全部棋手"}, range=${settings.startMove}-${settings.endMove}, seconds=${settings.secondsPerMove}, visits=${settings.visitsPerMove || "time"}`
     );
     if (!isTauriRuntime()) {
       if (batchBrowserFiles.length === 0) {
@@ -2724,6 +2749,20 @@ export function App() {
       setLastAction("请先选择 TSG 输出目录。");
       return;
     }
+    const strongProfile = (engineProfile.engineMode ?? "normal") === "normal"
+      ? { ...engineProfile, engineMode: "normal" as const }
+      : engineProfiles.find((profile) => (profile.engineMode ?? "normal") === "normal" && isCompleteEngineProfile(profile));
+    if (!strongProfile) {
+      appendBatchJobLog("Desktop: 启动失败，没有正常强 AI 配置");
+      setLastAction("批量流水线需要一个可用的正常强 AI 配置。");
+      return;
+    }
+    const humanProfile = engineProfiles.find((profile) => Boolean(profile.humanModelPath?.trim() && profile.humanConfigPath?.trim()));
+    if (settings.mode !== "analysis" && settings.problemType === "B" && !humanProfile) {
+      appendBatchJobLog("Desktop: 启动失败，B 型出题缺少拟人引擎配置");
+      setLastAction("B 型批量出题需要 Human Model 和 Human Config。");
+      return;
+    }
 
     batchAnalysisStopRef.current = false;
     batchAnalysisPauseRef.current = false;
@@ -2739,6 +2778,8 @@ export function App() {
     let skipped = 0;
     let totalAnalyzedMoves = 0;
     let totalProblemCount = 0;
+    let totalDatabaseSaved = 0;
+    const completedPipelineKeys = loadCompletedBatchPipelineKeys();
     try {
       for (const [fileIndex, path] of batchFilePaths.entries()) {
         if (batchAnalysisStopRef.current) {
@@ -2749,27 +2790,35 @@ export function App() {
         appendBatchJobLog(`Desktop: 开始 ${fileIndex + 1}/${batchFilePaths.length} ${fileName}`);
         setEngineStatus(`批量任务 ${fileIndex + 1} / ${batchFilePaths.length}: ${fileName}`);
         setLastAction(`正在批量处理：${fileName}`);
-        const existingOutputCompletion = await readExistingTsgAnalysisCompletion(outputPath);
-        if (existingOutputCompletion?.complete) {
-          appendBatchJobLog(
-            `Desktop: 跳过 ${fileName}，输出 TSG 已完整自动分析 ${existingOutputCompletion.startMove}-${existingOutputCompletion.endMove}/${existingOutputCompletion.totalMoves}: ${outputPath}`
-          );
-          setLastAction(`已跳过：${fileName} 的输出 TSG 已有完整自动分析标记。`);
-          skipped += 1;
-          continue;
-        }
         const content = await readTextFile(path);
-        const completion = readTsgAnalysisCompletion(content);
-        if (completion?.complete) {
-          appendBatchJobLog(
-            `Desktop: 跳过 ${fileName}，TSG 已完整自动分析 ${completion.startMove}-${completion.endMove}/${completion.totalMoves}，完成时间 ${completion.completedAt}`
-          );
-          setLastAction(`已跳过：${fileName} 已有完整自动分析标记。`);
+        const parsed = parseGameRecord(content, fileName);
+        const sourceHash = hashGameMovePrefix(parsed);
+        const pipelineKey = batchPipelineKey(settings, sourceHash, strongProfile, humanProfile);
+        const completedPipelineKey = `${sourceHash}:${pipelineKey}`;
+        if (completedPipelineKeys.has(completedPipelineKey)) {
+          appendBatchJobLog(`Desktop: 跳过 ${fileName}，棋步哈希与流水线参数已在本机完成`);
           skipped += 1;
           continue;
         }
-        const parsed = parseGameRecord(content, fileName);
-        appendBatchJobLog(`Desktop: 已读取 ${fileName}, ${parsed.moves.length} 手`);
+        const existingOutputCompletion = await readExistingTsgAnalysisCompletion(outputPath);
+        if (existingOutputCompletion?.complete && existingOutputCompletion.sourceHash === sourceHash && existingOutputCompletion.pipelineKey === pipelineKey && existingOutputCompletion.pipelineComplete) {
+          appendBatchJobLog(
+            `Desktop: 跳过 ${fileName}，来源哈希和流水线参数均已完成：${outputPath}`
+          );
+          setLastAction(`已跳过：${fileName} 已完成相同参数的分析、出题和入库流水线。`);
+          skipped += 1;
+          continue;
+        }
+        const completion = readTsgAnalysisCompletion(content);
+        if (completion?.complete && completion.sourceHash === sourceHash && completion.pipelineKey === pipelineKey && completion.pipelineComplete) {
+          appendBatchJobLog(
+            `Desktop: 跳过 ${fileName}，输入 TSG 已完成相同来源和参数的流水线，完成时间 ${completion.completedAt}`
+          );
+          setLastAction(`已跳过：${fileName} 已有匹配的流水线完成标记。`);
+          skipped += 1;
+          continue;
+        }
+        appendBatchJobLog(`Desktop: 已读取 ${fileName}, ${parsed.moves.length} 手，棋步哈希 ${sourceHash}`);
         const parsedSelectedNodeId = findMainLineEndNodeId(parsed.gameTree);
         const parsedPathNodeIds = moveNodeIdsToNode(parsed.gameTree, parsedSelectedNodeId);
         setBoardSize(parsed.boardSize);
@@ -2793,8 +2842,12 @@ export function App() {
           parsed,
           sourceContent: content,
           sourceFileName: fileName,
+          sourceHash,
+          pipelineKey,
           settings,
-          profile: engineProfile,
+          profile: strongProfile,
+          humanProfile,
+          problemSettings: { ...problemThresholdSettings, problemType: settings.problemType },
           shouldStop: batchAnalysisStopRef,
           shouldPause: batchAnalysisPauseRef,
           onProgress: ({ candidates, moveNumber, point, status }) => {
@@ -2808,18 +2861,70 @@ export function App() {
             }
             setEngineStatus(`批量分析 ${fileIndex + 1}/${batchFilePaths.length} · 第 ${moveNumber}/${parsed.moves.length} 手 · ${status}`);
             setLastAction(`正在分析 ${fileName} 第 ${moveNumber} 手：${status}`);
-            if (status.startsWith("正在启动")) {
+            if (status.startsWith("正在启动") || status.startsWith("标记") || status.startsWith("出题") || status.startsWith("题目") || status.startsWith("A 型") || status.startsWith("B 型") || status.startsWith("实战手")) {
               appendBatchJobLog(`Desktop: ${fileName} 第 ${moveNumber} 手，${status}`);
             }
           }
         });
-        await writeTextFile(outputPath, JSON.stringify(toBrgDocument(result.document, parsed.gameTree)));
-        setResearchDocument(result.document);
-        setShowSavedAnalysis(documentHasSavedAnalysis(result.document));
+        let databaseSaved = 0;
+        let databaseDuplicates = 0;
+        for (const [problemIndex, problem] of result.problems.entries()) {
+          if (batchAnalysisStopRef.current) break;
+          appendBatchJobLog(`Desktop: ${fileName} DB保存 ${problemIndex + 1}/${result.problems.length} ${problem.id}`);
+          setEngineStatus(`数据库保存 ${fileIndex + 1}/${batchFilePaths.length} · 题目 ${problemIndex + 1}/${result.problems.length}`);
+          try {
+            if (problem.positionHash) {
+              const duplicate = await findProblemByPositionHash(problem.positionHash);
+              if (duplicate.found) {
+                appendBatchJobLog(`Desktop: ${fileName} DB跳过重复局面，已有 ${duplicate.id ?? "题目"}`);
+                databaseDuplicates += 1;
+                continue;
+              }
+            }
+            await saveProblemToDatabase({
+              ...problem,
+              source: {
+                fileName,
+                blackName: parsed.blackName,
+                whiteName: parsed.whiteName,
+                gameDate: parsed.gameDate ?? null,
+                boardSize: parsed.boardSize,
+                komi: parsed.komi,
+                rules: parsed.rules,
+                movesBeforeProblem: problem.positionMoves ?? [],
+                actualMove: parsed.moves[problem.moveNumber - 1] ?? null
+              }
+            });
+            databaseSaved += 1;
+            totalDatabaseSaved += 1;
+            appendBatchJobLog(`Desktop: ${fileName} DB成功 ${problem.id}`);
+          } catch (error) {
+            appendBatchJobLog(`Desktop: ${fileName} DB失败 ${problem.id}: ${String(error)}`);
+          }
+        }
+        const databaseHandled = databaseSaved + databaseDuplicates;
+        const finalDocument: ResearchDocument = {
+          ...result.document,
+          analysisCompletion: result.document.analysisCompletion ? {
+            ...result.document.analysisCompletion,
+            pipelineComplete: !batchAnalysisStopRef.current && result.problemFailureCount === 0 && result.problemCount === result.selectedProblemCount && databaseHandled === result.problemCount,
+            generatedProblems: result.problemCount,
+            databaseHandledProblems: databaseHandled,
+            completedAt: new Date().toISOString()
+          } : result.document.analysisCompletion
+        };
+        await writeTextFile(outputPath, JSON.stringify(toBrgDocument(finalDocument, parsed.gameTree)));
+        setResearchDocument(finalDocument);
+        setShowSavedAnalysis(documentHasSavedAnalysis(finalDocument));
         completed += 1;
         totalAnalyzedMoves += result.analyzed;
         totalProblemCount += result.problemCount;
-        appendBatchJobLog(`Desktop: 已保存 ${outputPath} 分析=${result.analyzed} 题目=${result.problemCount}`);
+        const pipelineComplete = result.problemFailureCount === 0 && result.problemCount === result.selectedProblemCount && databaseHandled === result.problemCount;
+        if (pipelineComplete) {
+          completedPipelineKeys.add(completedPipelineKey);
+          saveCompletedBatchPipelineKeys(completedPipelineKeys);
+        }
+        appendBatchJobLog(`Desktop: 已完成 ${outputPath} 分析=${result.analyzed} 选题=${result.selectedProblemCount} 成功=${result.problemCount} 失败=${result.problemFailureCount} DB新增=${databaseSaved} 重复=${databaseDuplicates} 完成标记=${pipelineComplete ? "是" : "否"}`);
         setLastAction(`已保存：${outputPath}（分析 ${result.analyzed} 手，题目 ${result.problemCount} 题）`);
       }
       appendBatchJobLog(batchAnalysisStopRef.current ? `Desktop: 已停止，完成 ${completed}/${batchFilePaths.length}` : `Desktop: 完成 ${completed}/${batchFilePaths.length}`);
@@ -2833,7 +2938,8 @@ export function App() {
         selectedFiles: batchFilePaths.length,
         skippedFiles: skipped,
         stopped: batchAnalysisStopRef.current,
-        targetPlayer: settings.targetPlayer
+        targetPlayer: settings.targetPlayer,
+        databaseSaved: totalDatabaseSaved
       });
     } catch (error) {
       appendBatchJobLog(`Desktop: 任务失败 ${String(error)}`);
@@ -2959,13 +3065,13 @@ export function App() {
       humanCandidates = humanResult.candidates;
       let composed = composeTypeBCandidates({
         actualMoveName,
-        candidateCount: problemThresholdSettings.candidateCount,
-        humanCandidateCount: problemThresholdSettings.humanCandidateCount,
+        candidateCount: 5,
+        humanCandidateCount: 2,
         humanCandidates,
         strongCandidates: boardActiveCandidates
       });
-      if (composed.candidates.length < problemThresholdSettings.candidateCount) {
-        setLastAction(`候选点发生重复，正在提高拟人分析量并向后递补到 ${problemThresholdSettings.candidateCount} 个…`);
+      if (composed.candidates.length < 5) {
+        setLastAction("候选来源发生重复，正在提高拟人分析量；仍严格保留 1 实战 + 2 强 AI + 2 拟人结构…");
         humanResult = await analyzeProblemPosition({
           boardSize, komi, maxVisits: 2000, moves: [...setupStones, ...positionMoves], nextColor,
           profile: { ...profileWithHumanLevel(humanBase, humanLevel), engineMode: "human" }
@@ -2973,14 +3079,14 @@ export function App() {
         if (humanResult.candidates.length > 0) humanCandidates = humanResult.candidates;
         composed = composeTypeBCandidates({
           actualMoveName,
-          candidateCount: problemThresholdSettings.candidateCount,
-          humanCandidateCount: problemThresholdSettings.humanCandidateCount,
+          candidateCount: 5,
+          humanCandidateCount: 2,
           humanCandidates,
           strongCandidates: boardActiveCandidates
         });
       }
-      if (composed.candidates.length < problemThresholdSettings.candidateCount) {
-        setLastAction(`B 型题生成失败：强 AI、实战和拟人候选去重后只有 ${composed.candidates.length} 个，无法补足 ${problemThresholdSettings.candidateCount} 个选项。`);
+      if (composed.candidates.length < 5) {
+        setLastAction(`B 型题生成失败：固定来源配额去重后只有 ${composed.candidates.length}/5 个；不会用额外强 AI 好棋替代拟人坏棋。`);
         return;
       }
       selectedCandidates = composed.candidates;
@@ -3035,7 +3141,14 @@ export function App() {
       candidateSources,
       candidateScoresByMove,
       candidateEvaluationsByMove,
-      scoringAudit
+      scoringAudit,
+      metadata: {
+        gamePlayers: { black: blackName, white: whiteName },
+        gameDate,
+        creator: researchDocument.author || undefined,
+        createdAt: new Date().toISOString(),
+        sourceFileName
+      }
     });
     setResearchDocument((document) => upsertProblemInDocument(document, problem));
     setActiveProblem(problem);
@@ -3467,9 +3580,9 @@ export function App() {
           <BoardPlaceholder
             boardSize={boardSize}
             candidateBubbleLines={candidateBubbleLines}
-            candidates={activeProblem ? (isProblemPreview && problemTypeOf(activeProblem) === "A" ? [] : activeProblem.candidateScores.slice(0, appMode === "problem-solve" ? 5 : isProblemPreview ? problemThresholdSettings.candidateCount : undefined).map((candidate) => ({ ...candidate }))) : activeCandidates}
+            candidates={activeProblem ? (isProblemPreview && problemTypeOf(activeProblem) === "A" && !(appMode === "problem-solve" && problemSolveReviewMode && problemSolveAnswers[activeProblem.id]) ? [] : (appMode === "problem-solve" && problemSolveReviewMode && problemSolveAnswers[activeProblem.id] ? activeProblem.candidateScores : activeProblem.candidateScores.slice(0, appMode === "problem-solve" ? 5 : isProblemPreview ? problemThresholdSettings.candidateCount : undefined)).map((candidate) => ({ ...candidate }))) : activeCandidates}
             suggestedCandidates={appMode === "problem-solve" ? [] : activeProblem ? problemAiCandidates.filter((candidate) => !activeProblem.candidateScores.some((selected) => selected.moveName === candidate.moveName)) : []}
-            answerMode={appMode === "problem-solve"}
+            answerMode={appMode === "problem-solve" && !(problemSolveReviewMode && activeProblem && problemSolveAnswers[activeProblem.id])}
             answerMoveName={appMode === "problem-solve" && activeProblem && problemTypeOf(activeProblem) === "A" ? problemSolveMoveName : null}
             answerColor={activeProblem?.color}
             coordinateLabelsVisible={coordinateLabelsVisible}
@@ -3504,11 +3617,18 @@ export function App() {
               selectedRank={previewCandidateRank}
               selectedMoveName={problemSolveMoveName}
               problemType={problemTypeOf(activeProblem)}
+              reviewMode={problemSolveReviewMode && Boolean(problemSolveAnswers[activeProblem.id])}
               onSelect={(rank) => selectProblemCandidate(rank)}
               onSubmit={submitProblemAnswer}
               onPrevious={() => jumpProblemInQueue(problemSolveIndex - 1)}
               onNext={() => jumpProblemInQueue(problemSolveIndex + 1)}
               onOpenLibrary={() => setIsProblemLibraryOpen(true)}
+              onReview={() => { setProblemSolveReviewMode(true); setPreviewCandidateRank(null); }}
+              onBackToResult={() => setProblemSolveReviewMode(false)}
+              onChooseMore={() => { setActiveProblem(null); setIsProblemLibraryOpen(true); }}
+              onExitSolve={() => changeAppMode("review")}
+              onTag={tagActiveProblem}
+              taggedTags={new Set(problemTaggedTags[activeProblem.id] ?? [])}
             />
           ) : isResearchMode ? (
             <ResearchRightPane
@@ -3801,6 +3921,7 @@ function BatchRunReportDialog({ report, onClose }: { report: BatchRunReport | nu
           <div><dt>跳过棋谱</dt><dd>{report.skippedFiles} 个</dd></div>
           <div><dt>分析回合</dt><dd>{report.analyzedMoves} 手</dd></div>
           <div><dt>出题标记</dt><dd>{report.problemCount} 个</dd></div>
+          <div><dt>写入数据库</dt><dd>{report.databaseSaved} 题</dd></div>
           <div><dt>目标棋手</dt><dd>{report.targetPlayer || "全部棋手"}</dd></div>
         </dl>
         <div className="batch-report-output"><strong>TSG 输出目录</strong><span>{report.outputDirectory}</span></div>
@@ -3878,13 +3999,17 @@ async function analyzeGameForBatch(params: {
   parsed: ReturnType<typeof parseGameRecord>;
   sourceContent: string;
   sourceFileName: string;
+  sourceHash: string;
+  pipelineKey: string;
   settings: BatchAnalysisSettings;
   profile: EngineProfile;
+  humanProfile?: EngineProfile;
+  problemSettings: ProblemThresholdSettings;
   shouldStop: { current: boolean };
   shouldPause: { current: boolean };
   onProgress?: (progress: { candidates: EngineCandidateMove[]; moveNumber: number; point?: ReviewAnalysisPoint; status: string }) => void;
-}): Promise<{ analyzed: number; document: ResearchDocument; problemCount: number }> {
-  const { onProgress, parsed, profile, settings, shouldPause, shouldStop, sourceContent, sourceFileName } = params;
+}): Promise<{ analyzed: number; document: ResearchDocument; problems: ProblemItem[]; problemCount: number; selectedProblemCount: number; problemFailureCount: number }> {
+  const { humanProfile, onProgress, parsed, pipelineKey, problemSettings, profile, settings, shouldPause, shouldStop, sourceContent, sourceFileName, sourceHash } = params;
   const moves = parsed.moves;
   const startMove = Math.max(1, Math.min(moves.length, Math.min(settings.startMove, settings.endMove)));
   const endMove = Math.max(startMove, Math.min(moves.length, Math.max(settings.startMove, settings.endMove)));
@@ -3892,7 +4017,10 @@ async function analyzeGameForBatch(params: {
   const secondsPerMove = settings.visitsPerMove > 0 ? settings.secondsPerMove : Math.max(0.1, settings.secondsPerMove);
   const summary = createEmptyAutoAnalysisSummary();
   const points: ReviewAnalysisPoint[] = [];
+  const opportunities: BatchProblemOpportunity[] = [];
   const problems: ProblemItem[] = [];
+  let selectedProblemCount = 0;
+  let problemFailureCount = 0;
   let document = createResearchDocument({
     blackName: parsed.blackName,
     boardSize: parsed.boardSize,
@@ -3996,8 +4124,48 @@ async function analyzeGameForBatch(params: {
 
     const actualPoint = moveToGtpPoint(actualMove, parsed.boardSize);
     const statisticsCandidates = result.candidates.slice(0, DEFAULT_CANDIDATE_DISPLAY_LIMIT);
-    const actualCandidateIndex = statisticsCandidates.findIndex((candidate) => candidate.moveName === actualPoint);
-    const actualCandidate = actualCandidateIndex >= 0 ? result.candidates[actualCandidateIndex] : null;
+    const actualCandidateIndex = result.candidates.findIndex((candidate) => candidate.moveName === actualPoint);
+    let actualCandidate = actualCandidateIndex >= 0 ? result.candidates[actualCandidateIndex] : null;
+    let problemCandidates = result.candidates;
+    if (!actualCandidate) {
+      const forcedVisits = Math.max(500, result.candidates.reduce((sum, candidate) => sum + Math.max(0, candidate.visits), 0));
+      onProgress?.({
+        candidates: result.candidates,
+        moveNumber,
+        status: `实战手 ${actualPoint} 不在 AI 返回候选中，正在强制落子评分`
+      });
+      const response = await analyzeProblemPosition({
+        boardSize: parsed.boardSize,
+        komi: parsed.komi,
+        maxVisits: forcedVisits,
+        moves: [...moves.slice(0, positionMoveNumber), actualMove],
+        nextColor: actualMove.color === "black" ? "white" : "black",
+        profile: { ...profile, engineMode: "normal" }
+      });
+      const opponentBest = response.candidates[0];
+      if (response.ok && opponentBest) {
+        actualCandidate = {
+          rank: result.candidates.length + 1,
+          moveName: actualPoint,
+          visits: opponentBest.visits,
+          winrate: 100 - opponentBest.winrate,
+          scoreLead: -opponentBest.scoreLead,
+          pv: [actualPoint, ...opponentBest.pv]
+        };
+        problemCandidates = [...result.candidates, actualCandidate];
+        onProgress?.({
+          candidates: problemCandidates,
+          moveNumber,
+          status: `实战手 ${actualPoint} 强制评分完成`
+        });
+      } else {
+        onProgress?.({
+          candidates: result.candidates,
+          moveNumber,
+          status: `实战手 ${actualPoint} 强制评分失败，本手无法计算胜率损失`
+        });
+      }
+    }
     const bestVisits = Math.max(1, ...statisticsCandidates.map((candidate) => candidate.visits));
     const matchScore = actualCandidate ? actualCandidate.visits / bestVisits : 0;
     const winrateLoss = actualCandidate ? Math.max(0, best.winrate - actualCandidate.winrate) : null;
@@ -4031,19 +4199,39 @@ async function analyzeGameForBatch(params: {
 
     const isTargetPlayerMove = targetColor === null || actualMove.color === targetColor;
     if (isTargetPlayerMove && winrateLoss !== null && winrateLoss >= settings.winrateLossThreshold) {
-      problems.push(createProblemItem({
-        actualMoveName: actualPoint,
-        boardSize: parsed.boardSize,
-        candidates: result.candidates,
-        color: actualMove.color,
-        engineName: profile.name,
-        modelName: profile.modelPath ? profile.modelPath.split("/").pop() : undefined,
-        moveNumber,
-        positionMoves: moves.slice(0, positionMoveNumber),
-        threshold: settings.winrateLossThreshold,
-        winrateLoss,
-        candidateLimit: settings.candidateLimit
-      }));
+      opportunities.push({ actualMoveName: actualPoint, candidates: problemCandidates, rootCandidates: result.candidates, color: actualMove.color, moveNumber, positionMoves: moves.slice(0, positionMoveNumber), winrateLoss });
+    }
+  }
+
+  if (settings.mode !== "analysis" && !shouldStop.current) {
+    await stopContinuousAnalysis();
+    const selected = opportunities
+      .sort((left, right) => right.winrateLoss - left.winrateLoss)
+      .slice(0, settings.maxProblemsPerGame)
+      .sort((left, right) => left.moveNumber - right.moveNumber);
+    selectedProblemCount = selected.length;
+    onProgress?.({ candidates: [], moveNumber: 0, status: `标记 ${opportunities.length} 个出题局面，按胜率损失选取 ${selected.length} 个` });
+    for (const [index, opportunity] of selected.entries()) {
+      await waitWhileBatchPaused(shouldPause, shouldStop);
+      if (shouldStop.current) break;
+      onProgress?.({ candidates: opportunity.candidates, moveNumber: opportunity.moveNumber, status: `出题评分 ${index + 1}/${selected.length}，胜率损失 ${opportunity.winrateLoss.toFixed(1)}%` });
+      try {
+        const problem = await createBatchProblem({
+          humanProfile,
+          opportunity,
+          parsed,
+          problemSettings,
+          profile,
+          settings,
+          sourceFileName,
+          onStage: (status) => onProgress?.({ candidates: opportunity.candidates, moveNumber: opportunity.moveNumber, status })
+        });
+        problems.push(problem);
+        onProgress?.({ candidates: problem.candidateScores, moveNumber: opportunity.moveNumber, status: `题目 ${index + 1}/${selected.length} 生成完成，准备写入数据库` });
+      } catch (error) {
+        problemFailureCount += 1;
+        onProgress?.({ candidates: opportunity.candidates, moveNumber: opportunity.moveNumber, status: `题目 ${index + 1}/${selected.length} 失败：${String(error)}` });
+      }
     }
   }
 
@@ -4062,9 +4250,129 @@ async function analyzeGameForBatch(params: {
     settings,
     shouldStop: shouldStop.current,
     sourceFileName,
-    startMove
+    startMove,
+    sourceHash,
+    pipelineKey
   });
-  return { analyzed: summary.analyzed, document, problemCount: problems.length };
+  return { analyzed: summary.analyzed, document, problems, problemCount: problems.length, selectedProblemCount, problemFailureCount };
+}
+
+type BatchProblemOpportunity = {
+  actualMoveName: string;
+  candidates: EngineCandidateMove[];
+  rootCandidates: EngineCandidateMove[];
+  color: "black" | "white";
+  moveNumber: number;
+  positionMoves: ReviewMove[];
+  winrateLoss: number;
+};
+
+async function createBatchProblem(params: {
+  humanProfile?: EngineProfile;
+  opportunity: BatchProblemOpportunity;
+  parsed: ReturnType<typeof parseGameRecord>;
+  problemSettings: ProblemThresholdSettings;
+  profile: EngineProfile;
+  settings: BatchAnalysisSettings;
+  sourceFileName: string;
+  onStage?: (status: string) => void;
+}): Promise<ProblemItem> {
+  const { humanProfile, onStage, opportunity, parsed, problemSettings, profile, settings, sourceFileName } = params;
+  const metadata: ProblemItem["metadata"] = {
+    gamePlayers: { black: parsed.blackName, white: parsed.whiteName },
+    gameDate: parsed.gameDate,
+    creator: settings.problemCreator || undefined,
+    createdAt: new Date().toISOString(),
+    collection: settings.problemCollection || undefined,
+    sourceFileName
+  };
+  if (settings.problemType === "A") {
+    onStage?.("A 型：整理强 AI 前 12 个隐藏判分候选");
+    const problem = createManualProblemItem({
+      boardSize: parsed.boardSize,
+      candidates: opportunity.rootCandidates.slice(0, 12),
+      color: opportunity.color,
+      engineName: profile.name,
+      modelName: profile.modelPath ? profile.modelPath.split("/").pop() : undefined,
+      moveNumber: opportunity.moveNumber,
+      positionMoves: opportunity.positionMoves,
+      sourceNodeId: "root",
+      problemType: "A",
+      fullScoreMove: opportunity.rootCandidates[0]?.moveName,
+      actualMoveName: opportunity.actualMoveName,
+      analysisCandidates: opportunity.rootCandidates,
+      metadata
+    });
+    return { ...problem, trigger: { type: "winrateLoss", threshold: settings.winrateLossThreshold, value: opportunity.winrateLoss } };
+  }
+  if (!humanProfile) throw new Error("B 型自动出题缺少配置完整的拟人引擎");
+  const playerLabel = opportunity.color === "black" ? parsed.blackName : parsed.whiteName;
+  const humanLevel = problemHumanLevel(playerLabel, problemSettings.humanLevelOffset);
+  onStage?.(`B 型：拟人 ${humanLevel.toUpperCase()} 分析候选`);
+  let humanResult = await analyzeProblemPosition({
+    boardSize: parsed.boardSize,
+    komi: parsed.komi,
+    maxVisits: 500,
+    moves: opportunity.positionMoves,
+    nextColor: opportunity.color,
+    profile: { ...profileWithHumanLevel(humanProfile, humanLevel), engineMode: "human" }
+  });
+  let humanCandidates = humanResult.candidates;
+  let composed = composeTypeBCandidates({
+    actualMoveName: opportunity.actualMoveName,
+    candidateCount: 5,
+    humanCandidateCount: 2,
+    humanCandidates,
+    strongCandidates: opportunity.candidates
+  });
+  if (composed.candidates.length < 5) {
+    onStage?.(`B 型：候选冲突，仅 ${composed.candidates.length}/5，提高拟人 Visits 后递补`);
+    humanResult = await analyzeProblemPosition({
+      boardSize: parsed.boardSize, komi: parsed.komi, maxVisits: 2000,
+      moves: opportunity.positionMoves, nextColor: opportunity.color,
+      profile: { ...profileWithHumanLevel(humanProfile, humanLevel), engineMode: "human" }
+    });
+    humanCandidates = humanResult.candidates;
+    composed = composeTypeBCandidates({ actualMoveName: opportunity.actualMoveName, candidateCount: 5, humanCandidateCount: 2, humanCandidates, strongCandidates: opportunity.candidates });
+  }
+  if (composed.candidates.length < 5) throw new Error(`候选去重递补后只有 ${composed.candidates.length}/5 个`);
+  onStage?.("B 型：5 个候选已组成，开始正常强 AI 深度复核");
+  const scored = await auditAndScoreTypeBCandidates({
+    boardSize: parsed.boardSize,
+    komi: parsed.komi,
+    moves: opportunity.positionMoves,
+    nextColor: opportunity.color,
+    profile: { ...profile, engineMode: "normal" },
+    candidates: composed.candidates,
+    sources: composed.sources,
+    originalStrongCandidates: opportunity.rootCandidates,
+    onProgress: (message) => onStage?.(`B 型：${message}`)
+  });
+  if (!scored.ok) throw new Error(scored.error);
+  onStage?.("B 型：强 AI 评分完成，随机排列 A–E 并生成题目");
+  const shuffled = shuffledProblemCandidates(scored.candidates);
+  const problem = createManualProblemItem({
+    boardSize: parsed.boardSize,
+    candidates: shuffled,
+    color: opportunity.color,
+    engineName: profile.name,
+    modelName: profile.modelPath ? profile.modelPath.split("/").pop() : undefined,
+    moveNumber: opportunity.moveNumber,
+    positionMoves: opportunity.positionMoves,
+    sourceNodeId: "root",
+    problemType: "B",
+    fullScoreMove: scored.fullScoreMove,
+    actualMoveName: opportunity.actualMoveName,
+    humanCandidates,
+    humanLevel,
+    analysisCandidates: [...opportunity.candidates, ...humanCandidates],
+    candidateSources: scored.sources,
+    candidateScoresByMove: scored.scores,
+    candidateEvaluationsByMove: scored.evaluations,
+    scoringAudit: scored.audit,
+    metadata
+  });
+  return { ...problem, trigger: { type: "winrateLoss", threshold: settings.winrateLossThreshold, value: opportunity.winrateLoss } };
 }
 
 function GameProgressPanel({
@@ -4940,6 +5248,19 @@ function saveInterfaceSettings(patch: InterfaceSettings): void {
   window.localStorage.setItem(INTERFACE_SETTINGS_KEY, JSON.stringify({ ...loadInterfaceSettings(), ...patch }));
 }
 
+function loadCompletedBatchPipelineKeys(): Set<string> {
+  try {
+    const values = JSON.parse(window.localStorage.getItem(BATCH_COMPLETED_PIPELINES_KEY) ?? "[]");
+    return new Set(Array.isArray(values) ? values.filter((value): value is string => typeof value === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCompletedBatchPipelineKeys(keys: Set<string>): void {
+  window.localStorage.setItem(BATCH_COMPLETED_PIPELINES_KEY, JSON.stringify(Array.from(keys).slice(-2000)));
+}
+
 function loadEngineProfile(): EngineProfile {
   try {
     const value = JSON.parse(window.localStorage.getItem(ENGINE_PROFILE_STORAGE_KEY) ?? "null") as Partial<EngineProfile> | null;
@@ -5131,6 +5452,8 @@ function createAnalysisCompletionMarker(params: {
   shouldStop: boolean;
   sourceFileName: string;
   startMove: number;
+  sourceHash: string;
+  pipelineKey: string;
 }): ResearchAnalysisCompletion | undefined {
   const totalMoves = params.parsed.moves.length;
   const isFullRange =
@@ -5154,7 +5477,10 @@ function createAnalysisCompletionMarker(params: {
     analyzedMoves: params.analyzedMoves,
     engineName: params.profile.name,
     modelName: params.profile.modelPath ? params.profile.modelPath.split("/").pop() : undefined,
-    sourceFileName: params.sourceFileName
+    sourceFileName: params.sourceFileName,
+    sourceHash: params.sourceHash,
+    pipelineKey: params.pipelineKey,
+    pipelineComplete: false
   };
 }
 
@@ -5180,7 +5506,12 @@ function readTsgAnalysisCompletion(content: string): ResearchAnalysisCompletion 
       analyzedMoves: typeof marker.analyzedMoves === "number" ? marker.analyzedMoves : 0,
       engineName: typeof marker.engineName === "string" ? marker.engineName : undefined,
       modelName: typeof marker.modelName === "string" ? marker.modelName : undefined,
-      sourceFileName: typeof marker.sourceFileName === "string" ? marker.sourceFileName : undefined
+      sourceFileName: typeof marker.sourceFileName === "string" ? marker.sourceFileName : undefined,
+      sourceHash: typeof marker.sourceHash === "string" ? marker.sourceHash : undefined,
+      pipelineKey: typeof marker.pipelineKey === "string" ? marker.pipelineKey : undefined,
+      pipelineComplete: marker.pipelineComplete === true,
+      generatedProblems: typeof marker.generatedProblems === "number" ? marker.generatedProblems : undefined,
+      databaseHandledProblems: typeof marker.databaseHandledProblems === "number" ? marker.databaseHandledProblems : undefined
     };
   } catch {
     return null;
@@ -5217,6 +5548,10 @@ function createProblemSet(items: ProblemItem[], settings: BatchAnalysisSettings)
     settings: {
       winrateLossThreshold: settings.winrateLossThreshold,
       candidateLimit: settings.candidateLimit,
+      maxProblemsPerGame: settings.maxProblemsPerGame,
+      problemType: settings.problemType,
+      ...(settings.problemCreator ? { creator: settings.problemCreator } : {}),
+      ...(settings.problemCollection ? { collection: settings.problemCollection } : {}),
       ...(settings.targetPlayer ? { targetPlayer: settings.targetPlayer } : {})
     },
     items
@@ -5296,6 +5631,7 @@ function createManualProblemItem(params: {
   candidateScoresByMove?: Record<string, number>;
   candidateEvaluationsByMove?: Record<string, CandidateScoreEvaluation>;
   scoringAudit?: ProblemScoringAudit;
+  metadata?: ProblemItem["metadata"];
 }): ProblemItem {
   const generatedAt = new Date().toISOString();
   const humanMoveNames = new Set(params.humanCandidates?.map((candidate) => candidate.moveName) ?? []);
@@ -5325,6 +5661,7 @@ function createManualProblemItem(params: {
     positionHash: hashProblemPosition(params.boardSize, params.color, params.positionMoves),
     positionHashAlgorithm: "fnv1a64-board-v1",
     actualMoveName: params.actualMoveName,
+    metadata: params.metadata,
     trigger: { type: "manual" },
     prompt: `第 ${params.moveNumber} 手，${params.color === "black" ? "黑棋" : "白棋"}请选择最佳下法。`,
     fullScoreMove: params.fullScoreMove ?? candidateScores[0]?.moveName ?? "",
@@ -5378,8 +5715,9 @@ async function auditAndScoreTypeBCandidates(params: {
 > {
   const originalBest = params.originalStrongCandidates[0];
   if (!originalBest) return { ok: false, error: "原始强 AI 分析没有一选。" };
-  // KataGo candidate visits are child-node allocations. maxVisits and the requested
-  // "analysis visits" refer to root work, so compare the sum rather than candidate #1.
+  // Candidate visits are only the visible child-node allocations. Their sum is a
+  // conservative baseline for requesting a deeper root search, but not a valid
+  // completion test because KataGo may omit low-visit children from its response.
   const originalAnalysisVisits = params.originalStrongCandidates.reduce((sum, candidate) => sum + Math.max(0, candidate.visits), 0);
   const auditVisits = Math.max(500, originalAnalysisVisits * 2 + 1);
   const rootAudit = await analyzeProblemPosition({
@@ -5391,9 +5729,6 @@ async function auditAndScoreTypeBCandidates(params: {
   }
   const auditedBest = rootAudit.candidates[0];
   const auditedAnalysisVisits = rootAudit.candidates.reduce((sum, candidate) => sum + Math.max(0, candidate.visits), 0);
-  if (auditedAnalysisVisits <= originalAnalysisVisits * 2) {
-    return { ok: false, error: `深度复核累计只有 ${auditedAnalysisVisits} visits，未超过原分析累计 ${originalAnalysisVisits} visits 的两倍（请求 ${auditVisits}）。` };
-  }
   let candidates = [...params.candidates];
   const sources = { ...params.sources };
   let needsManualReview = false;
@@ -5480,7 +5815,8 @@ function composeTypeBCandidates(params: {
       ?? params.humanCandidates.find((candidate) => candidate.moveName === params.actualMoveName)
       ?? { rank: 0, moveName: params.actualMoveName, visits: 0, winrate: 0, scoreLead: 0, pv: [] }
     : undefined;
-  // Ownership priority: strong AI #1 > actual move > strong secondary > human AI.
+  // Fixed pedagogical roles: strong #1, actual move, one strong alternative
+  // starting at #3, and exactly two lower-level human candidates.
   add(params.strongCandidates[0], "strong-ai");
   add(actual, "actual");
   for (const candidate of params.strongCandidates.slice(2)) {
@@ -5491,8 +5827,6 @@ function composeTypeBCandidates(params: {
     if (add(candidate, "human-ai")) humanAdded += 1;
     if (humanAdded >= params.humanCandidateCount) break;
   }
-  for (const candidate of params.strongCandidates.slice(1)) add(candidate, "strong-ai");
-  for (const candidate of params.humanCandidates) add(candidate, "human-ai");
   return { candidates: result.slice(0, params.candidateCount), sources };
 }
 
@@ -5534,6 +5868,49 @@ function hashProblemPosition(
     hash = (hash * prime) & mask;
   }
   return hash.toString(16).padStart(16, "0");
+}
+
+function hashTextContent(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+function hashGameMovePrefix(parsed: ReturnType<typeof parseGameRecord>): string {
+  const actualMoves = parsed.moves.filter((move) => !move.isSetup);
+  const prefixLength = actualMoves.length >= 150 ? 150 : actualMoves.length >= 100 ? 100 : actualMoves.length;
+  const canonicalMoves = actualMoves.slice(0, prefixLength).map((move) =>
+    move.pass ? `${move.color}:pass` : `${move.color}:${move.x},${move.y}`
+  );
+  return hashTextContent(`go-moves-v1;size=${parsed.boardSize};count=${prefixLength};${canonicalMoves.join("|")}`);
+}
+
+function batchPipelineKey(settings: BatchAnalysisSettings, sourceHash: string, strongProfile: EngineProfile, humanProfile?: EngineProfile): string {
+  return hashTextContent(JSON.stringify({
+    sourceHash,
+    mode: settings.mode,
+    problemType: settings.problemType,
+    startMove: settings.startMove,
+    endMove: settings.endMove,
+    secondsPerMove: settings.secondsPerMove,
+    visitsPerMove: settings.visitsPerMove,
+    includeBlack: settings.includeBlack,
+    includeWhite: settings.includeWhite,
+    winrateLossThreshold: settings.winrateLossThreshold,
+    maxProblemsPerGame: settings.maxProblemsPerGame,
+    targetPlayer: settings.targetPlayer,
+    problemCreator: settings.problemCreator,
+    problemCollection: settings.problemCollection,
+    strongModel: strongProfile.modelPath,
+    strongConfig: strongProfile.configPath,
+    humanModel: humanProfile?.humanModelPath ?? "",
+    humanConfig: humanProfile?.humanConfigPath ?? ""
+  }));
 }
 
 function upsertProblemInDocument(document: ResearchDocument, problem: ProblemItem): ResearchDocument {
@@ -5658,9 +6035,9 @@ function loadProblemThresholdSettings(): ProblemThresholdSettings {
       scoreLossThreshold: raw?.scoreLossThreshold == null ? null : Math.max(0, Number(raw.scoreLossThreshold)),
       thresholdCombination: raw?.thresholdCombination === "and" ? "and" : "or",
       problemType: raw?.problemType === "A" ? "A" : "B",
-      candidateCount: Math.max(3, Math.min(12, Number(raw?.candidateCount) || 5)),
+      candidateCount: 5,
       humanLevelOffset: Math.max(-20, Math.min(10, Number.isFinite(Number(raw?.humanLevelOffset)) ? Number(raw.humanLevelOffset) : -5)),
-      humanCandidateCount: Math.max(0, Math.min(5, Number.isFinite(Number(raw?.humanCandidateCount)) ? Number(raw.humanCandidateCount) : 2))
+      humanCandidateCount: 2
     };
   } catch {
     return DEFAULT_PROBLEM_THRESHOLD_SETTINGS;

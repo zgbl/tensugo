@@ -54,6 +54,11 @@ export type ResearchAnalysisCompletion = {
   engineName?: string;
   modelName?: string;
   sourceFileName?: string;
+  sourceHash?: string;
+  pipelineKey?: string;
+  pipelineComplete?: boolean;
+  generatedProblems?: number;
+  databaseHandledProblems?: number;
 };
 
 export type ProblemCandidateScore = {
@@ -81,6 +86,14 @@ export type ProblemItem = {
   positionHash?: string;
   positionHashAlgorithm?: "fnv1a64-board-v1";
   actualMoveName?: string;
+  metadata?: {
+    gamePlayers: { black: string; white: string };
+    gameDate?: string;
+    creator?: string;
+    createdAt: string;
+    collection?: string;
+    sourceFileName?: string;
+  };
   trigger: {
     type: "winrateLoss";
     threshold: number;
@@ -129,6 +142,10 @@ export type ProblemSet = {
     thresholdCombination?: "and" | "or";
     candidateLimit: number;
     targetPlayer?: string;
+    maxProblemsPerGame?: number;
+    problemType?: "A" | "B";
+    creator?: string;
+    collection?: string;
   };
   items: ProblemItem[];
 };

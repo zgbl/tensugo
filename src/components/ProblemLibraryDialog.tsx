@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { ProblemLibraryItem } from "../engine/tauriEngine";
 import type { SolvableProblemType } from "../problems/problemType";
 
@@ -13,16 +14,22 @@ type Props = {
 };
 
 export function ProblemLibraryDialog({ error, loading, open, problems, onClose, onOpenRange, problemType, onProblemTypeChange }: Props) {
-  if (!open) return null;
   const count = problems.length;
+  const [start, setStart] = useState(1);
+  const [end, setEnd] = useState(Math.max(1, count));
+  useEffect(() => {
+    if (!open) return;
+    setStart(1);
+    setEnd(Math.max(1, count));
+  }, [count, open, problemType]);
+  if (!open) return null;
+  const normalizedStart = Math.max(1, Math.min(count || 1, start));
+  const normalizedEnd = Math.max(normalizedStart, Math.min(count || 1, end));
   return (
     <div className="dialog-backdrop" role="presentation">
       <form className="problem-library-dialog" onSubmit={(event) => {
         event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        const start = Math.max(1, Math.min(count, Number(form.get("start")) || 1));
-        const end = Math.max(start, Math.min(count, Number(form.get("end")) || count));
-        onOpenRange(start - 1, end - 1);
+        onOpenRange(normalizedStart - 1, normalizedEnd - 1);
       }}>
         <header className="problem-library-title">
           <div><h2>题库</h2><span>{loading ? "读取中…" : `${count} 道题`}</span></div>
@@ -35,17 +42,34 @@ export function ProblemLibraryDialog({ error, loading, open, problems, onClose, 
         {error ? <p className="problem-library-error">{error}</p> : null}
         <div className="problem-library-list" role="list">
           {problems.map((problem, index) => (
-            <div className="problem-library-row" role="listitem" key={problem.id}>
+            <button
+              className={`problem-library-row ${index + 1 >= normalizedStart && index + 1 <= normalizedEnd ? "selected" : ""}`}
+              type="button"
+              role="listitem"
+              key={problem.id}
+              onClick={(event) => {
+                const row = index + 1;
+                if (event.shiftKey) {
+                  setStart(Math.min(normalizedStart, row));
+                  setEnd(Math.max(normalizedEnd, row));
+                } else {
+                  setStart(row);
+                  setEnd(row);
+                }
+              }}
+            >
               <b>{index + 1}</b><code>{problem.id}</code>
               <span>{problem.sourceFileName || "未命名棋谱"} · 第 {problem.moveNumber} 手</span>
-            </div>
+            </button>
           ))}
           {!loading && count === 0 ? <p>数据库中还没有题目。</p> : null}
         </div>
         <footer className="problem-library-range">
-          <label>从 <input name="start" type="number" min="1" max={Math.max(1, count)} defaultValue="1" /></label>
-          <label>到 <input key={count} name="end" type="number" min="1" max={Math.max(1, count)} defaultValue={Math.max(1, count)} /></label>
-          <button type="submit" disabled={loading || count === 0}>打开范围</button>
+          <span className="problem-library-selection">已选 {count > 0 ? normalizedEnd - normalizedStart + 1 : 0} 题</span>
+          <button type="button" className="secondary" disabled={count === 0} onClick={() => { setStart(1); setEnd(Math.max(1, count)); }}>全部</button>
+          <label>从 <input name="start" type="number" min="1" max={Math.max(1, count)} value={normalizedStart} onChange={(event) => setStart(Number(event.target.value) || 1)} /></label>
+          <label>到 <input name="end" type="number" min={normalizedStart} max={Math.max(1, count)} value={normalizedEnd} onChange={(event) => setEnd(Number(event.target.value) || normalizedStart)} /></label>
+          <button type="submit" disabled={loading || count === 0}>开始做题</button>
         </footer>
       </form>
     </div>

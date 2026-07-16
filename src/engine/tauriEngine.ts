@@ -146,6 +146,24 @@ export async function saveProblemToDatabase(payload: unknown): Promise<void> {
   }
 }
 
+export async function recordProblemAnswer(input: {
+  problemId: string;
+  moveName: string;
+  score: number;
+  problemType: "A" | "B";
+}): Promise<void> {
+  await invoke("record_problem_answer", {
+    problemId: input.problemId,
+    moveName: input.moveName,
+    score: input.score,
+    problemType: input.problemType
+  });
+}
+
+export async function recordProblemTag(problemId: string, tag: string): Promise<void> {
+  await invoke("record_problem_tag", { problemId, tag });
+}
+
 export type ProblemDuplicateMatch = {
   found: boolean;
   id: string | null;

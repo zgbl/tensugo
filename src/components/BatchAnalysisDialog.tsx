@@ -13,6 +13,10 @@ export type BatchAnalysisSettings = {
   visitsPerMove: number;
   winrateLossThreshold: number;
   targetPlayer: string;
+  maxProblemsPerGame: number;
+  problemType: "A" | "B";
+  problemCreator: string;
+  problemCollection: string;
 };
 
 type BatchAnalysisDialogProps = {
@@ -89,7 +93,11 @@ export function BatchAnalysisDialog({
       includeWhite: data.get("includeWhite") === "on",
       winrateLossThreshold: Math.max(0, Number(data.get("winrateLossThreshold")) || 2),
       candidateLimit: Math.max(1, Math.floor(Number(data.get("candidateLimit")) || 8)),
-      targetPlayer: String(data.get("targetPlayer") ?? "").trim()
+      targetPlayer: String(data.get("targetPlayer") ?? "").trim(),
+      maxProblemsPerGame: Math.max(1, Math.floor(Number(data.get("maxProblemsPerGame")) || 10)),
+      problemType: String(data.get("problemType") ?? "B") === "A" ? "A" : "B",
+      problemCreator: String(data.get("problemCreator") ?? "").trim(),
+      problemCollection: String(data.get("problemCollection") ?? "").trim()
     });
   };
 
@@ -190,6 +198,22 @@ export function BatchAnalysisDialog({
           <span>候选评分数</span>
           <input name="candidateLimit" type="number" min="1" max="12" step="1" defaultValue="8" />
         </label>
+        <label>
+          <span>自动出题类型</span>
+          <select name="problemType" defaultValue="B"><option value="B">B 型（5 个候选）</option><option value="A">A 型（自由落子）</option></select>
+        </label>
+        <label>
+          <span>每谱最多出题</span>
+          <input name="maxProblemsPerGame" type="number" min="1" max="100" step="1" defaultValue="10" />
+        </label>
+        <label>
+          <span>题目制作者</span>
+          <input name="problemCreator" type="text" placeholder="例如 tuxy" />
+        </label>
+        <label>
+          <span>所属题集</span>
+          <input name="problemCollection" type="text" placeholder="可选，例如 野狐7D错题集" />
+        </label>
         <label className="checkbox-row">
           <span>分析黑棋</span>
           <input name="includeBlack" type="checkbox" defaultChecked />
@@ -201,7 +225,7 @@ export function BatchAnalysisDialog({
         <p className="dialog-hint batch-picker-status">
           {pickerStatus || "先选择棋谱和输出目录；点击开始批量任务后才会分析并生成 TSG。"}
         </p>
-        <p className="dialog-hint">评分规则：第1候选10分，第2-4候选9/8/7分，其余候选5分，候选外0分。</p>
+        <p className="dialog-hint">出题按胜率损失从大到小截取每谱上限；B 型继续执行拟人候选、强 AI 深度复核及胜率损失评分。</p>
         <section className="batch-job-console" aria-label="Batch job console">
           <div className="batch-job-console-title">Job Console</div>
           <pre ref={consoleRef}>{logs.length > 0 ? logs.join("\n") : "等待开始批量任务..."}</pre>

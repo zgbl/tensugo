@@ -421,6 +421,14 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
     let source_position = source.get("movesBeforeProblem").cloned().unwrap_or_else(|| serde_json::json!([]));
     let actual_move = source.get("actualMove").cloned().unwrap_or(serde_json::Value::Null);
     let candidate_scores = value.get("candidateScores").cloned().unwrap_or_else(|| serde_json::json!([]));
+    let metadata = value.get("metadata").cloned().unwrap_or(serde_json::Value::Null);
+    let players = metadata.get("gamePlayers").cloned().unwrap_or(serde_json::Value::Null);
+    let black_name = players.get("black").and_then(|item| item.as_str()).or_else(|| source.get("blackName").and_then(|item| item.as_str())).unwrap_or("");
+    let white_name = players.get("white").and_then(|item| item.as_str()).or_else(|| source.get("whiteName").and_then(|item| item.as_str())).unwrap_or("");
+    let game_date = metadata.get("gameDate").and_then(|item| item.as_str()).or_else(|| source.get("gameDate").and_then(|item| item.as_str())).unwrap_or("");
+    let problem_creator = metadata.get("creator").and_then(|item| item.as_str()).unwrap_or("");
+    let problem_created_at = metadata.get("createdAt").and_then(|item| item.as_str()).unwrap_or("");
+    let problem_collection = metadata.get("collection").and_then(|item| item.as_str()).unwrap_or("");
     if move_number <= 0 || board_size <= 0 || color.is_empty() || full_score_move.is_empty() || position_hash.is_empty() {
         return SaveProblemResult {
             ok: false,
@@ -439,6 +447,12 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
             source_position JSONB NOT NULL,
             actual_move JSONB,
             candidate_scores JSONB NOT NULL,
+            black_name TEXT,
+            white_name TEXT,
+            game_date TEXT,
+            problem_creator TEXT,
+            problem_created_at TEXT,
+            problem_collection TEXT,
             payload JSONB NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -452,6 +466,12 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
         ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS source_position JSONB;
         ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS actual_move JSONB;
         ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS candidate_scores JSONB;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS black_name TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS white_name TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS game_date TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS problem_creator TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS problem_created_at TEXT;
+        ALTER TABLE go_problems ADD COLUMN IF NOT EXISTS problem_collection TEXT;
         CREATE INDEX IF NOT EXISTS go_problems_source_move_idx ON go_problems(source_file_name, move_number);
         CREATE INDEX IF NOT EXISTS go_problems_position_hash_idx ON go_problems(position_hash);
         CREATE INDEX IF NOT EXISTS go_problems_updated_at_idx ON go_problems(updated_at DESC);
@@ -466,8 +486,8 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
             .batch_execute(sql)
             .map_err(|error| error.to_string())?;
         client.execute(
-            "INSERT INTO go_problems (id, source_file_name, move_number, board_size, color, full_score_move, position_hash, source_position, actual_move, candidate_scores, payload, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) ON CONFLICT (id) DO UPDATE SET source_file_name = EXCLUDED.source_file_name, move_number = EXCLUDED.move_number, board_size = EXCLUDED.board_size, color = EXCLUDED.color, full_score_move = EXCLUDED.full_score_move, position_hash = EXCLUDED.position_hash, source_position = EXCLUDED.source_position, actual_move = EXCLUDED.actual_move, candidate_scores = EXCLUDED.candidate_scores, payload = EXCLUDED.payload, updated_at = NOW()",
-            &[&id, &source_file_name, &move_number, &board_size, &color, &full_score_move, &position_hash, &source_position, &actual_move, &candidate_scores, &value],
+            "INSERT INTO go_problems (id, source_file_name, move_number, board_size, color, full_score_move, position_hash, source_position, actual_move, candidate_scores, black_name, white_name, game_date, problem_creator, problem_created_at, problem_collection, payload, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW()) ON CONFLICT (id) DO UPDATE SET source_file_name = EXCLUDED.source_file_name, move_number = EXCLUDED.move_number, board_size = EXCLUDED.board_size, color = EXCLUDED.color, full_score_move = EXCLUDED.full_score_move, position_hash = EXCLUDED.position_hash, source_position = EXCLUDED.source_position, actual_move = EXCLUDED.actual_move, candidate_scores = EXCLUDED.candidate_scores, black_name = EXCLUDED.black_name, white_name = EXCLUDED.white_name, game_date = EXCLUDED.game_date, problem_creator = EXCLUDED.problem_creator, problem_created_at = EXCLUDED.problem_created_at, problem_collection = EXCLUDED.problem_collection, payload = EXCLUDED.payload, updated_at = NOW()",
+            &[&id, &source_file_name, &move_number, &board_size, &color, &full_score_move, &position_hash, &source_position, &actual_move, &candidate_scores, &black_name, &white_name, &game_date, &problem_creator, &problem_created_at, &problem_collection, &value],
         ).map_err(|error| error.to_string())?;
         Ok(())
     })();
@@ -481,6 +501,64 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
             error: Some(error),
         },
     }
+}
+
+#[tauri::command]
+fn record_problem_answer(problem_id: String, move_name: String, score: f64, problem_type: String) -> Result<(), String> {
+    if problem_id.trim().is_empty() || move_name.trim().is_empty() {
+        return Err("答题统计缺少题目 ID 或落点".to_string());
+    }
+    if problem_type != "A" && problem_type != "B" {
+        return Err("题型必须是 A 或 B".to_string());
+    }
+    let database_url = problem_database_url()?;
+    let mut config = database_url.parse::<postgres::Config>().map_err(|error| error.to_string())?;
+    config.connect_timeout(Duration::from_secs(2));
+    let mut client = config.connect(NoTls).map_err(|error| error.to_string())?;
+    client.batch_execute(r#"
+        CREATE TABLE IF NOT EXISTS problem_answer_stats (
+            problem_id TEXT NOT NULL REFERENCES go_problems(id) ON DELETE CASCADE,
+            move_name TEXT NOT NULL,
+            problem_type TEXT NOT NULL,
+            answer_count BIGINT NOT NULL DEFAULT 0,
+            score_sum DOUBLE PRECISION NOT NULL DEFAULT 0,
+            full_score_count BIGINT NOT NULL DEFAULT 0,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (problem_id, move_name)
+        );
+    "#).map_err(|error| error.to_string())?;
+    let full_score_count: i64 = if score >= 10.0 { 1 } else { 0 };
+    client.execute(
+        "INSERT INTO problem_answer_stats (problem_id, move_name, problem_type, answer_count, score_sum, full_score_count) VALUES ($1, $2, $3, 1, $4, $5) ON CONFLICT (problem_id, move_name) DO UPDATE SET problem_type = EXCLUDED.problem_type, answer_count = problem_answer_stats.answer_count + 1, score_sum = problem_answer_stats.score_sum + EXCLUDED.score_sum, full_score_count = problem_answer_stats.full_score_count + EXCLUDED.full_score_count, updated_at = NOW()",
+        &[&problem_id, &move_name, &problem_type, &score, &full_score_count],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn record_problem_tag(problem_id: String, tag: String) -> Result<(), String> {
+    const ALLOWED_TAGS: [&str; 9] = ["中盘", "定式", "对杀", "死活", "收气", "官子", "打入", "做活", "手筋"];
+    if problem_id.trim().is_empty() || !ALLOWED_TAGS.contains(&tag.as_str()) {
+        return Err("题目 ID 或标签无效".to_string());
+    }
+    let database_url = problem_database_url()?;
+    let mut config = database_url.parse::<postgres::Config>().map_err(|error| error.to_string())?;
+    config.connect_timeout(Duration::from_secs(2));
+    let mut client = config.connect(NoTls).map_err(|error| error.to_string())?;
+    client.batch_execute(r#"
+        CREATE TABLE IF NOT EXISTS problem_tag_stats (
+            problem_id TEXT NOT NULL REFERENCES go_problems(id) ON DELETE CASCADE,
+            tag TEXT NOT NULL,
+            vote_count BIGINT NOT NULL DEFAULT 0,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (problem_id, tag)
+        );
+    "#).map_err(|error| error.to_string())?;
+    client.execute(
+        "INSERT INTO problem_tag_stats (problem_id, tag, vote_count) VALUES ($1, $2, 1) ON CONFLICT (problem_id, tag) DO UPDATE SET vote_count = problem_tag_stats.vote_count + 1, updated_at = NOW()",
+        &[&problem_id, &tag],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2384,6 +2462,8 @@ pub fn run() {
             read_file_bytes,
             write_text_file,
             save_problem_to_database,
+            record_problem_answer,
+            record_problem_tag,
             find_problem_by_position_hash,
             list_problem_library,
             default_engine_profile,

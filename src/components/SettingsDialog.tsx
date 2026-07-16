@@ -271,9 +271,9 @@ function ProblemSettingsPanel({ settings, onChange }: {
     <p>A 型题隐藏候选点并按 AI 排名评分；B 型题显示候选点，并混合实战、强 AI 与拟人 AI 的选点。</p>
     <div className="export-setting-grid">
       <label>默认题型<select value={settings.problemType} onChange={e => onChange({ ...settings, problemType: e.target.value === "A" ? "A" : "B" })}><option value="A">A 型：自由落子</option><option value="B">B 型：显示候选点</option></select></label>
-      <label>B 型候选点数量<input type="number" min="3" max="12" step="1" value={settings.candidateCount} onChange={e => onChange({ ...settings, candidateCount: Math.max(3, Math.min(12, Number(e.target.value) || 5)) })} /></label>
+      <label>B 型候选点数量<input type="number" value={5} disabled /><small>固定：1 实战 + 2 强 AI + 2 拟人。</small></label>
       <label>拟人引擎棋力偏移<input type="number" min="-20" max="10" step="1" value={settings.humanLevelOffset} onChange={e => onChange({ ...settings, humanLevelOffset: Math.max(-20, Math.min(10, Number(e.target.value) || 0)) })} /><small>-5 表示题目级别 7D 时使用拟人 2D。</small></label>
-      <label>拟人候选数量<input type="number" min="0" max="5" step="1" value={settings.humanCandidateCount} onChange={e => onChange({ ...settings, humanCandidateCount: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} /></label>
+      <label>拟人候选数量<input type="number" value={2} disabled /><small>固定为两个坏棋候选。</small></label>
     </div>
   </section>;
 }
