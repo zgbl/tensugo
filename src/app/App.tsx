@@ -4,30 +4,41 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { BoardPlaceholder, type CandidateBubbleLines, type MoveNumberDisplayMode } from "../board/BoardPlaceholder";
 import { AutoAnalysisDialog, type AutoAnalysisSettings } from "../components/AutoAnalysisDialog";
 import { BatchAnalysisDialog, type BatchAnalysisSettings } from "../components/BatchAnalysisDialog";
-import { BottomToolbar } from "../components/BottomToolbar";
+import { BoardNavigationToolbar, BottomToolbar } from "../components/BottomToolbar";
 import { CandidatePanel, ReviewGraph } from "../components/CandidatePanel";
 import { GameInfoPanel } from "../components/GameInfoPanel";
+import { HumanPlayDialog } from "../components/HumanPlayDialog";
+import { ProblemLibraryDialog } from "../components/ProblemLibraryDialog";
+import { ProblemSolvePanel, type ProblemSolveAnswer } from "../components/ProblemSolvePanel";
 import { ResearchDocumentPanel } from "../components/ResearchDocumentPanel";
 import { OgsBrowserDialog } from "../components/OgsBrowserDialog";
 import { OgsDialog } from "../components/OgsDialog";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { TopToolbar, type AppMode } from "../components/TopToolbar";
-import type { EngineAnalysisResult, EngineCandidateMove, EngineProfile, ReviewAnalysisPoint } from "../engine/types";
+import { inferHumanEngineLevel, profileWithHumanLevel } from "../engine/humanEngineLevels";
+import type { EngineAnalysisResult, EngineCandidateMove, EngineMode, EngineProfile, HumanEngineLevel, ReviewAnalysisPoint } from "../engine/types";
+import { appendEngineProfile, replaceEngineProfile } from "../engine/profileList";
 import {
+  analyzeProblemPosition,
   analyzePositionContinuous,
+  cancelGenerateMove,
   chooseGameRecordFiles,
   chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
   discoverEngineProfile,
   findProblemByPositionHash,
+  generateMove,
   getDefaultEngineProfile,
   isTauriRuntime,
+  listProblemLibrary,
   probeEngine,
   readTextFile,
   saveProblemToDatabase,
   stopContinuousAnalysis,
   writeTextFile
 } from "../engine/tauriEngine";
+import type { ProblemLibraryItem } from "../engine/tauriEngine";
+import { problemTypeOf, type SolvableProblemType } from "../problems/problemType";
 import { buildBoardPosition, canPlayMove, getNextColor } from "../game/boardRules";
 import {
   appendMoveToGameTree,
@@ -47,6 +58,20 @@ import {
   type GameTree
 } from "../game/gameTree";
 import type { ReviewMove, ReviewStone } from "../game/sampleGame";
+import type { HumanPlaySession, HumanPlaySettings } from "../play/types";
+import { createFixedHandicapSetupStones, nextHumanPlayColor } from "../play/humanPlayRules";
+import {
+  applyHumanPlayPass,
+  applyHumanPlayPoint,
+  type HumanPlayPosition
+} from "../play/humanPlayTurn";
+import {
+  claimEngineTurn,
+  createEngineTurnGate,
+  engineTurnIsCurrent,
+  releaseEngineTurn,
+  type EngineTurnTicket
+} from "../play/engineTurnGate";
 import { parseGameRecord } from "../sgf/parseSgf";
 import {
   appendBlock,
@@ -147,15 +172,42 @@ type SaveTextFileResult = {
 const LAST_RESEARCH_SAVE_DIR_KEY = "tensugo.lastResearchSaveDir";
 const RESEARCH_EXPORT_SETTINGS_KEY = "tensugo.researchExportSettings";
 const INTERFACE_SETTINGS_KEY = "tensugo.interfaceSettings";
+const PROBLEM_SETTINGS_KEY = "tensugo.problemSettings";
 const ENGINE_PROFILE_STORAGE_KEY = "tensugo.engineProfile";
 const ENGINE_PROFILES_STORAGE_KEY = "tensugo.engineProfiles";
 const ACTIVE_ENGINE_PROFILE_KEY = "tensugo.activeEngineProfileKey";
 const HIDDEN_ENGINE_PROFILE_KEYS = "tensugo.hiddenEngineProfileKeys";
 const DEFAULT_CANDIDATE_DISPLAY_LIMIT = 5;
 const DEFAULT_CANDIDATE_BUBBLE_LINES: CandidateBubbleLines = 2;
+type ProblemThresholdSettings = {
+  winrateLossThreshold: number | null;
+  scoreLossThreshold: number | null;
+  thresholdCombination: "and" | "or";
+  problemType: "A" | "B";
+  candidateCount: number;
+  humanLevelOffset: number;
+  humanCandidateCount: number;
+};
+const DEFAULT_PROBLEM_THRESHOLD_SETTINGS: ProblemThresholdSettings = {
+  winrateLossThreshold: 2,
+  scoreLossThreshold: null,
+  thresholdCombination: "or",
+  problemType: "B",
+  candidateCount: 5,
+  humanLevelOffset: -5,
+  humanCandidateCount: 2
+};
 const INITIAL_GAME_TREE = createEmptyGameTree(19, 7.5);
 const INITIAL_SELECTED_NODE_ID = "root";
 const INITIAL_PATH_NODE_IDS: string[] = [];
+
+function waitForCommittedPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
 
 export function App() {
   const game = useGameStore();
@@ -179,7 +231,11 @@ export function App() {
   const [researchExportSettings, setResearchExportSettings] = useState<ResearchExportSettings>(() => loadResearchExportSettings());
   const [candidateBubbleLines, setCandidateBubbleLines] = useState<CandidateBubbleLines>(() => loadCandidateBubbleLines());
   const [candidateDisplayLimit, setCandidateDisplayLimit] = useState(() => loadCandidateDisplayLimit());
+  const [problemThresholdSettings, setProblemThresholdSettings] = useState<ProblemThresholdSettings>(() => loadProblemThresholdSettings());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHumanPlaySetupOpen, setIsHumanPlaySetupOpen] = useState(false);
+  const [humanPlaySession, setHumanPlaySession] = useState<HumanPlaySession | null>(null);
+  const [isEnginePlayingMove, setIsEnginePlayingMove] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isOgsBrowserOpen, setIsOgsBrowserOpen] = useState(false);
   const [isOgsDialogOpen, setIsOgsDialogOpen] = useState(false);
@@ -201,6 +257,16 @@ export function App() {
   const [isSavingProblem, setIsSavingProblem] = useState(false);
   const [problemSaveStatus, setProblemSaveStatus] = useState("");
   const [problemAiCandidates, setProblemAiCandidates] = useState<EngineCandidateMove[]>([]);
+  const [isProblemPreview, setIsProblemPreview] = useState(false);
+  const [problemLibrary, setProblemLibrary] = useState<ProblemLibraryItem[]>([]);
+  const [problemLibraryError, setProblemLibraryError] = useState("");
+  const [problemLibraryLoading, setProblemLibraryLoading] = useState(false);
+  const [isProblemLibraryOpen, setIsProblemLibraryOpen] = useState(false);
+  const [problemSolveQueue, setProblemSolveQueue] = useState<ProblemLibraryItem[]>([]);
+  const [problemSolveIndex, setProblemSolveIndex] = useState(-1);
+  const [problemSolveAnswers, setProblemSolveAnswers] = useState<Record<string, ProblemSolveAnswer>>({});
+  const [problemSolveType, setProblemSolveType] = useState<SolvableProblemType>("B");
+  const [problemSolveMoveName, setProblemSolveMoveName] = useState<string | null>(null);
   const [isGameProgressPanelOpen, setIsGameProgressPanelOpen] = useState(false);
   const [isAutoAnalyzing, setIsAutoAnalyzing] = useState(false);
   const [autoAnalysisResume, setAutoAnalysisResume] = useState<AutoAnalysisSettings | null>(null);
@@ -231,8 +297,11 @@ export function App() {
     height: window.innerHeight,
     width: window.innerWidth
   }));
+  const boardStageRef = useRef<HTMLElement | null>(null);
+  const [boardStageSize, setBoardStageSize] = useState({ height: 0, width: 0 });
   const [analysisTrigger, setAnalysisTrigger] = useState(0);
   const [moves, setMoves] = useState<ReviewMove[]>([]);
+  const [setupStones, setSetupStones] = useState<ReviewMove[]>([]);
   const [sourceMainLineMoves, setSourceMainLineMoves] = useState<ReviewMove[]>([]);
   const [gameTree, setGameTree] = useState(() => INITIAL_GAME_TREE);
   const [selectedGameNodeId, setSelectedGameNodeId] = useState(() => INITIAL_SELECTED_NODE_ID);
@@ -277,16 +346,19 @@ export function App() {
   const ogsConnectorRef = useRef<OGSConnector | null>(null);
   const applyOgsMoveUpdateRef = useRef<(update: OgsMoveUpdate) => void>(() => undefined);
   const processedAnalysisTriggerRef = useRef(-1);
+  const humanPlaySessionRef = useRef<HumanPlaySession | null>(null);
+  const humanPlayPositionRef = useRef<HumanPlayPosition | null>(null);
+  const humanPlayEngineTurnGateRef = useRef(createEngineTurnGate());
   const [currentMoveNumber, setCurrentMoveNumber] = useState(totalMoves);
   const isAnalysisEnabledRef = useRef(isAnalysisEnabled);
   const position = useMemo(
-    () => buildBoardPosition(moves, boardSize, currentMoveNumber),
-    [moves, boardSize, currentMoveNumber]
+    () => buildBoardPosition([...setupStones, ...moves], boardSize, currentMoveNumber),
+    [moves, setupStones, boardSize, currentMoveNumber]
   );
   const stones = position.stones;
   const currentPositionKey = useMemo(
-    () => candidatePositionKey(boardSize, komi, moves.slice(0, currentMoveNumber)),
-    [boardSize, currentMoveNumber, komi, moves]
+    () => candidatePositionKey(boardSize, komi, [...setupStones, ...moves.slice(0, currentMoveNumber)]),
+    [boardSize, currentMoveNumber, komi, moves, setupStones]
   );
   const currentSnapshot = useMemo(
     () =>
@@ -326,7 +398,7 @@ export function App() {
   }, [activeProblem, currentMoveNumber, moves, sourceMainLineMoves]);
   const displayedScoreLead = bestCandidate?.scoreLead ?? -3.4;
   const displayedVisits = bestCandidate?.visits ?? 137000;
-  const engineLabel = isShowingSavedAnalysis ? "TSG 静态分析" : engineProfile?.name ?? "未配置";
+  const engineLabel = isShowingSavedAnalysis ? "TSG 静态分析" : engineProfile ? `${engineProfile.name} · ${(engineProfile.engineMode ?? "normal") === "human" ? `拟人 ${(engineProfile.humanLevel ?? inferHumanEngineLevel(engineProfile.humanConfigPath)).toUpperCase()}` : "正常"}` : "未配置";
   const displayedVariationBaseMoveNumber = showVariationNumbers
     ? researchBaseMoveNumber ?? inferVariationBaseMoveNumber(moves, sourceMainLineMoves)
     : null;
@@ -344,13 +416,12 @@ export function App() {
         autoAnalysisSummary.topMatches / autoAnalysisSummary.analyzed
       )}`
     : "未统计";
-  const coordinateLabelInset = coordinateLabelsVisible ? 48 : 0;
   const boardPixelSize = Math.max(
-    180,
+    120,
     Math.floor(
       Math.min(
-        viewportSize.height - 104,
-        viewportSize.width - leftPaneWidth - rightPaneWidth - 34 + coordinateLabelInset
+        (boardStageSize.height || viewportSize.height - 160) - 56,
+        (boardStageSize.width || viewportSize.width - leftPaneWidth - rightPaneWidth - 34) - 4
       )
     )
   );
@@ -732,21 +803,65 @@ export function App() {
     setEngineProfile(profile);
     window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(profile));
   };
+  const changeEngineMode = (mode: EngineMode) => {
+    if (!engineProfile) {
+      setEngineStatus("没有可切换的引擎配置");
+      return;
+    }
+    if (mode === "human" && (!engineProfile.humanModelPath?.trim() || !engineProfile.humanConfigPath?.trim())) {
+      setEngineStatus("拟人引擎尚未配置 Human Model 和 Human 配置");
+      return;
+    }
+    const nextProfile = { ...engineProfile, engineMode: mode };
+    updateEngineProfile(nextProfile);
+    setEngineStatus(mode === "human" ? "已切换到拟人引擎；下次分析将加载普通模型和 Human SL 模型" : "已切换到正常分析引擎");
+  };
+  const changeHumanEngineLevel = (level: HumanEngineLevel) => {
+    if (!engineProfile) {
+      setEngineStatus("没有可切换棋力的引擎配置");
+      return;
+    }
+    const nextProfile = profileWithHumanLevel(engineProfile, level);
+    updateEngineProfile(nextProfile);
+    if (nextProfile.profileId) {
+      const nextProfiles = engineProfiles.map((item) => item.profileId === nextProfile.profileId ? nextProfile : item);
+      setEngineProfiles(nextProfiles);
+      saveEngineProfiles(nextProfiles);
+    }
+    setEngineStatus(`拟人棋力已切换为 ${level.toUpperCase()}；下次分析或对弈将重启对应配置`);
+  };
   const appendEngineDebug = (message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setEngineDiagnostics((previous) => `[${timestamp}] ${message}\n${previous}`.slice(0, 12000));
   };
-  const saveCurrentEngineProfile = () => {
+  const createEngineProfile = () => {
     if (!engineProfile) {
       setEngineStatus("没有可保存的引擎配置");
       return;
     }
-    const nextProfiles = mergeEngineProfiles(engineProfiles, [{ ...engineProfile, source: engineProfile.source ?? "用户配置" }]);
-    setEngineProfiles(nextProfiles);
-    saveEngineProfiles(nextProfiles);
-    setSelectedEngineProfileIndex(nextProfiles.findIndex((profile) => engineProfileKey(profile) === engineProfileKey(engineProfile)));
-    window.localStorage.setItem(ENGINE_PROFILE_STORAGE_KEY, JSON.stringify(engineProfile));
-    setEngineStatus(`已添加/更新引擎：${engineProfile.name}`);
+    const change = appendEngineProfile(engineProfiles, engineProfile, createLocalId("engine-profile"));
+    setEngineProfiles(change.profiles);
+    saveEngineProfiles(change.profiles);
+    setSelectedEngineProfileIndex(change.index);
+    updateEngineProfile(change.profile);
+    setEngineStatus(`已另存为新配置：${change.profile.name}`);
+  };
+  const updateSelectedEngineProfile = (profileIndex: number) => {
+    const selected = engineProfiles[profileIndex];
+    const change = engineProfile ? replaceEngineProfile(engineProfiles, profileIndex, engineProfile) : null;
+    if (!selected || !change) {
+      setEngineStatus("没有可更新的已选配置");
+      return;
+    }
+    const previousKey = engineProfileKey(selected);
+    setEngineProfiles(change.profiles);
+    saveEngineProfiles(change.profiles);
+    setSelectedEngineProfileIndex(change.index);
+    updateEngineProfile(change.profile);
+    if (window.localStorage.getItem(ACTIVE_ENGINE_PROFILE_KEY) === previousKey) {
+      window.localStorage.setItem(ACTIVE_ENGINE_PROFILE_KEY, engineProfileKey(change.profile));
+    }
+    setEngineStatus(`已更新当前配置：${change.profile.name}`);
   };
   const addManualEngineProfile = (commandLine: string) => {
     const trimmed = commandLine.trim();
@@ -882,17 +997,28 @@ export function App() {
       setEngineStatus(`自动检测失败: ${String(error)}`);
     }
   };
-  const chooseEngineConfigPath = async (kind: "engine" | "model" | "config") => {
+  const chooseEngineConfigPath = async (kind: "engine" | "model" | "config" | "human-model" | "human-config") => {
     if (!isTauriRuntime()) {
       setEngineStatus("浏览器预览：请手动粘贴路径");
       return;
     }
-    const result = await chooseEnginePath(kind);
+    const pickerKind = kind === "human-model" ? "model" : kind === "human-config" ? "config" : kind;
+    const result = await chooseEnginePath(pickerKind);
     if (result.error) {
       setEngineStatus(result.error);
       return;
     }
     if (!result.selected || !result.path) {
+      return;
+    }
+    if (kind === "human-model" || kind === "human-config") {
+      updateEngineProfile({
+        ...(engineProfile ?? DEFAULT_ENGINE_PROFILE),
+        ...(kind === "human-model" ? { humanModelPath: result.path } : { humanConfigPath: result.path }),
+        name: engineProfile?.name || "用户 KataGo",
+        source: "用户配置"
+      });
+      setEngineStatus(kind === "human-model" ? "已选择 Human SL 模型" : "已选择 Human GTP 配置");
       return;
     }
     if (kind === "engine") {
@@ -1005,6 +1131,114 @@ export function App() {
       setLastAction(`已跳到原棋谱第 ${block.endMoveNumber} 手。`);
     }
   };
+  const refreshProblemLibrary = async () => {
+    if (!isTauriRuntime()) {
+      setProblemLibraryError("题库数据库仅在 Desktop 模式可用。");
+      setProblemLibrary([]);
+      return;
+    }
+    setProblemLibraryLoading(true);
+    setProblemLibraryError("");
+    try {
+      const items = await listProblemLibrary();
+      setProblemLibrary(items);
+    } catch (error) {
+      setProblemLibrary([]);
+      setProblemLibraryError(`读取题库失败：${String(error)}`);
+    } finally {
+      setProblemLibraryLoading(false);
+    }
+  };
+  const visibleProblemLibrary = useMemo(
+    () => problemLibrary.filter((item) => problemTypeOf(item.payload) === problemSolveType),
+    [problemLibrary, problemSolveType]
+  );
+  const openDatabaseProblem = (item: ProblemLibraryItem, queueIndex: number) => {
+    const problem = { ...item.payload, problemType: problemTypeOf(item.payload) };
+    const source = problem.source;
+    const positionMoves = problem.positionMoves ?? source?.movesBeforeProblem ?? [];
+    const nextBoardSize = source?.boardSize ?? item.boardSize ?? 19;
+    const nextKomi = source?.komi ?? komi;
+    const nextTree = createGameTreeFromMoves(positionMoves, nextBoardSize, nextKomi);
+    const selectedNodeId = findMainLineEndNodeId(nextTree);
+    setBoardSize(nextBoardSize);
+    setKomi(nextKomi);
+    if (source?.rules) setRules(source.rules);
+    setSetupStones([]);
+    setMoves(positionMoves);
+    setSourceMainLineMoves(positionMoves);
+    setSourceMainLineMoveCount(positionMoves.length);
+    setGameTree(nextTree);
+    setSelectedGameNodeId(selectedNodeId);
+    setCurrentPathNodeIds(moveNodeIdsToNode(nextTree, selectedNodeId));
+    setCurrentMoveNumber(positionMoves.length);
+    setActiveProblem(problem);
+    setProblemAiCandidates(problem.analysis?.candidates ?? problem.candidateScores);
+    setEngineCandidates(problem.candidateScores.map((candidate) => ({ ...candidate })));
+    const previousAnswer = problemSolveAnswers[item.id];
+    setPreviewCandidateRank(previousAnswer ? problem.candidateScores.find((candidate) => candidate.moveName === previousAnswer.moveName)?.rank ?? null : null);
+    setProblemSolveMoveName(previousAnswer?.moveName ?? null);
+    setIsEditingProblemCandidates(false);
+    setIsProblemPreview(true);
+    setProblemSolveIndex(queueIndex);
+    setLastAction(`做题 ${queueIndex + 1}/${problemSolveQueue.length || 1}：${item.id}`);
+  };
+  const openProblemRange = (startIndex: number, endIndex: number) => {
+    const queue = visibleProblemLibrary.slice(startIndex, endIndex + 1);
+    if (queue.length === 0) return;
+    setProblemSolveQueue(queue);
+    setProblemSolveAnswers({});
+    setIsProblemLibraryOpen(false);
+    // State updates are asynchronous; open the first item directly with the selected range length.
+    const first = queue[0];
+    const problem = { ...first.payload, problemType: problemTypeOf(first.payload) };
+    const source = problem.source;
+    const positionMoves = problem.positionMoves ?? source?.movesBeforeProblem ?? [];
+    const nextBoardSize = source?.boardSize ?? first.boardSize ?? 19;
+    const nextKomi = source?.komi ?? komi;
+    const nextTree = createGameTreeFromMoves(positionMoves, nextBoardSize, nextKomi);
+    const selectedNodeId = findMainLineEndNodeId(nextTree);
+    setBoardSize(nextBoardSize); setKomi(nextKomi); if (source?.rules) setRules(source.rules);
+    setSetupStones([]); setMoves(positionMoves); setSourceMainLineMoves(positionMoves); setSourceMainLineMoveCount(positionMoves.length);
+    setGameTree(nextTree); setSelectedGameNodeId(selectedNodeId); setCurrentPathNodeIds(moveNodeIdsToNode(nextTree, selectedNodeId)); setCurrentMoveNumber(positionMoves.length);
+    setActiveProblem(problem); setProblemAiCandidates(problem.analysis?.candidates ?? problem.candidateScores); setEngineCandidates(problem.candidateScores.map((candidate) => ({ ...candidate })));
+    setPreviewCandidateRank(null); setProblemSolveMoveName(null); setIsEditingProblemCandidates(false); setIsProblemPreview(true); setProblemSolveIndex(0);
+    setLastAction(`已打开题目范围 ${startIndex + 1}–${endIndex + 1}，当前 1/${queue.length}：${first.id}`);
+  };
+  const jumpProblemInQueue = (nextIndex: number) => {
+    const item = problemSolveQueue[nextIndex];
+    if (!item) return;
+    openDatabaseProblem(item, nextIndex);
+  };
+  const submitProblemAnswer = () => {
+    if (!activeProblem) return;
+    const moveName = problemTypeOf(activeProblem) === "A"
+      ? problemSolveMoveName
+      : activeProblem.candidateScores.find((candidate) => candidate.rank === previewCandidateRank)?.moveName ?? null;
+    if (!moveName) return;
+    const score = activeProblem.candidateScores.find((candidate) => candidate.moveName === moveName)?.score ?? 0;
+    const result = `${moveName}：${score}/10 分；正确答案 ${activeProblem.fullScoreMove}`;
+    setProblemSolveAnswers((answers) => ({ ...answers, [activeProblem.id]: { moveName, score } }));
+    setLastAction(`第 ${problemSolveIndex + 1} 题已提交，${result}`);
+  };
+  const selectProblemCandidate = (rank: number | null) => {
+    setPreviewCandidateRank(rank);
+    const candidate = activeProblem?.candidateScores.find((item) => item.rank === rank);
+    setProblemSolveMoveName(candidate?.moveName ?? null);
+  };
+  const answerProblemAtPoint = (x: number, y: number) => {
+    if (appMode !== "problem-solve" || !activeProblem || problemTypeOf(activeProblem) !== "A") {
+      updateProblemCandidateAtPoint(x, y);
+      return;
+    }
+    if (problemSolveAnswers[activeProblem.id]) return;
+    const positionMoves = [...setupStones, ...moves.slice(0, currentMoveNumber)];
+    if (!canPlayMove(positionMoves, boardSize, positionMoves.length, { x, y }, activeProblem.color)) {
+      setLastAction("这个交点不能作为答案：已有棋子、越界、自杀或违反劫规则。");
+      return;
+    }
+    setProblemSolveMoveName(moveToGtpPoint({ color: activeProblem.color, moveNumber: activeProblem.moveNumber, x, y }, boardSize));
+  };
   const changeAppMode = (mode: AppMode) => {
     setAppMode(mode);
     if (mode === "research") {
@@ -1013,11 +1247,26 @@ export function App() {
       setLastAction("已进入写棋评模式：从任意手开始落子时，会自动记录变化图起点。");
     } else if (mode === "problem-create") {
       setShowVariationNumbers(true);
-      setLastAction("已进入出题模式：定位出题局面，打开 AI 分析后创建题目。");
+      let generatedCount = 0;
+      // Rebuild automatic markers on every entry so threshold changes take
+      // effect immediately. Manual/edited problems remain untouched.
+      if (autoAnalysisSummary) {
+        const generated = createProblemsFromAutoAnalysis(researchDocument, autoAnalysisSummary, sourceMainLineMoves, problemThresholdSettings, engineProfile);
+        setResearchDocument(generated);
+        generatedCount = generated.problemSet?.items.length ?? 0;
+      }
+      setLastAction(generatedCount > 0 ? `已进入出题模式，并根据自动分析生成 ${generatedCount} 个出题标记。` : "已进入出题模式：定位出题局面，打开 AI 分析后创建题目。");
     } else if (mode === "problem-solve") {
+      if (isAnalysisEnabled) pauseAnalysis();
       setShowVariationNumbers(true);
       setActiveProblem(null);
-      setLastAction("已进入做题模式：点击棋谱树中的“题”标记选择题目。");
+      setProblemSolveQueue([]);
+      setProblemSolveIndex(-1);
+      setProblemSolveAnswers({});
+      setProblemSolveMoveName(null);
+      setIsProblemLibraryOpen(true);
+      void refreshProblemLibrary();
+      setLastAction("已进入做题模式：正在读取数据库题库。");
     } else {
       setActiveProblem(null);
       setLastAction("已回到复盘模式。");
@@ -1104,6 +1353,7 @@ export function App() {
     setProblemAiCandidates([]);
     setIsEditingProblemCandidates(false);
     setProblemSaveStatus("");
+    setIsProblemPreview(false);
     setPreviewCandidateRank(null);
   };
   const jumpToMove = (moveNumber: number) => {
@@ -1243,10 +1493,73 @@ export function App() {
       return !visible;
     });
   };
-  const playMove = (x: number, y: number) => {
+  const commitHumanPlayPosition = (nextPosition: HumanPlayPosition) => {
+    humanPlayPositionRef.current = nextPosition;
+    setGameTree(nextPosition.gameTree);
+    setMoves(nextPosition.moves);
+    setCurrentPathNodeIds(nextPosition.pathNodeIds);
+    setSelectedGameNodeId(nextPosition.pathNodeIds.at(-1) ?? "root");
+    setCurrentMoveNumber(nextPosition.moves.length);
+    setEngineCandidates([]);
+    setHasAnalysisAttempted(false);
+  };
+  const playHumanPoint = (
+    x: number,
+    y: number,
+    actor: "human" | "engine",
+    expectedTicket?: EngineTurnTicket
+  ): boolean => {
+    const session = humanPlaySessionRef.current;
+    const currentPosition = humanPlayPositionRef.current;
+    if (!session || !currentPosition || session.status !== "playing") {
+      if (actor === "human") setLastAction("对局已经结束，请开始新对局或进入复盘。");
+      return false;
+    }
+    const color = nextHumanPlayColor(session.handicap, currentPosition.moves);
+    if (actor === "human") {
+      if (humanPlayEngineTurnGateRef.current.active) {
+        setLastAction("引擎正在思考，请稍候。");
+        return false;
+      }
+      if (color !== session.humanColor) {
+        setLastAction("现在轮到引擎落子。");
+        return false;
+      }
+      if (currentMoveNumber !== currentPosition.moves.length) {
+        setLastAction("当前正在复盘旧局面，请先回到棋局末尾再继续对弈。");
+        return false;
+      }
+    } else if (!expectedTicket || !engineTurnIsCurrent(
+      humanPlayEngineTurnGateRef.current,
+      expectedTicket,
+      session.id,
+      currentPosition.moves.length,
+      color
+    )) {
+      return false;
+    }
+
+    const result = applyHumanPlayPoint(currentPosition, 19, color, { x, y });
+    if (!result.ok) {
+      setLastAction(`不能在 ${x + 1},${y + 1} 落子：交点已被占用或不合法。`);
+      return false;
+    }
+    commitHumanPlayPosition(result.position);
+    const nextSession = { ...session, consecutivePasses: 0 };
+    humanPlaySessionRef.current = nextSession;
+    setHumanPlaySession(nextSession);
+    setLastAction(`${actor === "engine" ? "引擎" : "你"}已下 ${result.position.moves.length} 手：${moveToGtpPoint(result.position.moves.at(-1)!, 19)}。`);
+    return true;
+  };
+  const playMove = (x: number, y: number, options?: { actor?: "human" | "engine"; color?: "black" | "white" }) => {
     invalidatePendingAnalysis();
     setAutoAnalysisResume(null);
-    if (!canPlayMove(moves, boardSize, currentMoveNumber, { x, y })) {
+    if (humanPlaySessionRef.current) {
+      playHumanPoint(x, y, options?.actor ?? "human");
+      return;
+    }
+    const nextColorToPlay = options?.color ?? getNextColor(currentMoveNumber);
+    if (!canPlayMove([...setupStones, ...moves], boardSize, currentMoveNumber, { x, y }, nextColorToPlay)) {
       setLastAction(`不能在 ${x + 1},${y + 1} 落子：交点已被占用或不合法。`);
       return;
     }
@@ -1258,7 +1571,6 @@ export function App() {
     if (isStartingManualVariation) {
       setResearchBaseMoveNumber(currentMoveNumber);
     }
-    const nextColorToPlay = getNextColor(currentMoveNumber);
     const parentNodeId = currentMoveNumber > 0 ? currentPathNodeIds[currentMoveNumber - 1] ?? "root" : "root";
     const move = {
       color: nextColorToPlay,
@@ -1295,7 +1607,249 @@ export function App() {
     );
     queueAnalysisIfEnabled();
   };
+  const startHumanPlay = async (settings: HumanPlaySettings) => {
+    if ((settings.playMode ?? "human-vs-engine") === "human-vs-engine" && (!engineProfile || !isCompleteEngineProfile(engineProfile))) {
+      setLastAction("当前引擎配置不完整，不能开始人机对弈。");
+      return;
+    }
+    settings = {
+      ...settings,
+      maxTimeSeconds: Number.isFinite(settings.maxTimeSeconds) ? Math.min(600, Math.max(0.1, settings.maxTimeSeconds)) : 5,
+      maxVisits: Number.isFinite(settings.maxVisits) ? Math.min(1_000_000, Math.max(1, Math.round(settings.maxVisits))) : 400
+    };
+    disconnectOgs("已断开 OGS，开始本地人机对弈。");
+    invalidatePendingAnalysis();
+    setIsAnalysisEnabled(false);
+    const handicapStones = createFixedHandicapSetupStones(19, settings.handicap);
+    const playMode = settings.playMode ?? "human-vs-engine";
+    const profileForSide = (id: string | undefined, mode: "normal" | "human" | undefined, level: HumanEngineLevel | undefined) => {
+      const base = engineProfiles.find((profile) => (profile.profileId ?? profile.name) === id) ?? engineProfile;
+      if (!base) return undefined;
+      if (mode !== "human") return { ...base, engineMode: "normal" as const };
+      const humanSource = engineProfiles.find((profile) => profile.humanModelPath?.trim() && profile.humanConfigPath?.trim());
+      const humanBase = {
+        ...base,
+        humanModelPath: base.humanModelPath?.trim() || humanSource?.humanModelPath || "",
+        humanConfigPath: base.humanConfigPath?.trim() || humanSource?.humanConfigPath || ""
+      };
+      return { ...profileWithHumanLevel(humanBase, level ?? inferHumanEngineLevel(humanBase.humanConfigPath)), engineMode: "human" as const };
+    };
+    const blackProfile = playMode === "engine-vs-engine" ? profileForSide(settings.blackProfileId, settings.blackEngineMode, settings.blackHumanLevel) : engineProfile;
+    const whiteProfile = playMode === "engine-vs-engine" ? profileForSide(settings.whiteProfileId, settings.whiteEngineMode, settings.whiteHumanLevel) : engineProfile;
+    if (!blackProfile || !whiteProfile || !isCompleteEngineProfile(blackProfile) || !isCompleteEngineProfile(whiteProfile)) {
+      setLastAction("机机对弈需要黑方和白方都配置完整的引擎。");
+      return;
+    }
+    const nextSession: HumanPlaySession = {
+      ...settings,
+      playMode,
+      blackProfile,
+      whiteProfile,
+      consecutivePasses: 0,
+      id: createLocalId("human-play"),
+      status: "playing"
+    };
+    const nextPosition: HumanPlayPosition = {
+      gameTree: createEmptyGameTree(19, settings.komi),
+      moves: [],
+      pathNodeIds: [],
+      setupStones: handicapStones
+    };
+    if (releaseEngineTurn(humanPlayEngineTurnGateRef.current)) {
+      setIsEnginePlayingMove(false);
+      await cancelGenerateMove();
+    }
+    humanPlaySessionRef.current = nextSession;
+    humanPlayPositionRef.current = nextPosition;
+    setBoardSize(19);
+    setKomi(settings.komi);
+    setRules("日本");
+    setBlackName(playMode === "engine-vs-engine" ? blackProfile.name : settings.humanColor === "black" ? "你" : blackProfile.name);
+    setWhiteName(playMode === "engine-vs-engine" ? whiteProfile.name : settings.humanColor === "white" ? "你" : whiteProfile.name);
+    setSourceFileName("人机对弈");
+    setCurrentTsgPath(null);
+    setGameResult(undefined);
+    setSetupStones(handicapStones);
+    setMoves([]);
+    setSourceMainLineMoves([]);
+    setSourceMainLineMoveCount(0);
+    setGameTree(nextPosition.gameTree);
+    setSelectedGameNodeId("root");
+    setCurrentPathNodeIds([]);
+    setCurrentMoveNumber(0);
+    setEngineCandidates([]);
+    setAnalysisPoints([]);
+    setActiveProblem(null);
+    setIsEditingProblemCandidates(false);
+    setAppMode("review");
+    setHumanPlaySession(nextSession);
+    setIsEnginePlayingMove(false);
+    setIsHumanPlaySetupOpen(false);
+    setLastAction(playMode === "engine-vs-engine" ? `机机对弈开始：${blackProfile.name}（黑）vs ${whiteProfile.name}（白）。` : `人机对弈开始：你执${settings.humanColor === "black" ? "黑" : "白"}${settings.handicap >= 2 ? `，黑棋让 ${settings.handicap} 子，白先` : "，黑先"}。`);
+  };
+  const playHumanPass = (actor: "human" | "engine", expectedTicket?: EngineTurnTicket) => {
+    const session = humanPlaySessionRef.current;
+    const currentPosition = humanPlayPositionRef.current;
+    if (!session || !currentPosition || session.status !== "playing") return;
+    const color = nextHumanPlayColor(session.handicap, currentPosition.moves);
+    if (actor === "human") {
+      if (humanPlayEngineTurnGateRef.current.active || color !== session.humanColor) {
+        setLastAction(humanPlayEngineTurnGateRef.current.active ? "引擎正在思考，请稍候。" : "现在轮到引擎。");
+        return;
+      }
+      if (currentMoveNumber !== currentPosition.moves.length) {
+        setLastAction("当前正在复盘旧局面，请先回到棋局末尾再继续对弈。");
+        return;
+      }
+    } else if (!expectedTicket || !engineTurnIsCurrent(
+      humanPlayEngineTurnGateRef.current,
+      expectedTicket,
+      session.id,
+      currentPosition.moves.length,
+      color
+    )) {
+      return;
+    }
+    const nextPosition = applyHumanPlayPass(currentPosition, color);
+    const consecutivePasses = session.consecutivePasses + 1;
+    commitHumanPlayPosition(nextPosition);
+    if (consecutivePasses >= 2) {
+      const nextSession = { ...session, consecutivePasses, result: "双方连续停一手，进入数子", status: "finished" as const };
+      humanPlaySessionRef.current = nextSession;
+      setHumanPlaySession(nextSession);
+      setGameResult("双方连续停一手");
+      setLastAction("双方连续停一手，对局停止；棋盘保留供复盘和数子。");
+    } else {
+      const nextSession = { ...session, consecutivePasses };
+      humanPlaySessionRef.current = nextSession;
+      setHumanPlaySession(nextSession);
+      setLastAction(`${actor === "engine" ? "引擎" : "你"}选择停一手。`);
+    }
+  };
+  const resignHumanPlay = () => {
+    const session = humanPlaySessionRef.current;
+    if (!session || session.status !== "playing" || !window.confirm("确认认输并结束本局吗？")) return;
+    const winner = session.humanColor === "black" ? "白" : "黑";
+    const result = `${winner}+R`;
+    const nextSession = { ...session, result, status: "finished" as const };
+    humanPlaySessionRef.current = nextSession;
+    setHumanPlaySession(nextSession);
+    setGameResult(result);
+    setLastAction(`你已认输，${winner === "黑" ? "黑棋" : "白棋"}胜。棋盘保留供复盘。`);
+  };
+  const stopHumanPlay = () => {
+    const session = humanPlaySessionRef.current;
+    if (!session) return;
+    const nextSession = { ...session, result: session.result ?? "对局中止", status: "finished" as const };
+    humanPlaySessionRef.current = nextSession;
+    releaseEngineTurn(humanPlayEngineTurnGateRef.current);
+    setIsEnginePlayingMove(false);
+    void cancelGenerateMove();
+    setHumanPlaySession(nextSession);
+    setGameResult(nextSession.result);
+    setLastAction("人机对弈已中止，棋盘保留供复盘。");
+  };
+  const requestHumanEngineMove = async () => {
+    const session = humanPlaySessionRef.current;
+    const currentPosition = humanPlayPositionRef.current;
+    if (!session || !currentPosition || session.status !== "playing") return;
+    const color = nextHumanPlayColor(session.handicap, currentPosition.moves);
+    if (session.playMode !== "engine-vs-engine" && color === session.humanColor) return;
+    const profile = color === "black" ? session.blackProfile : session.whiteProfile;
+    const ticket = claimEngineTurn(humanPlayEngineTurnGateRef.current, session.id, currentPosition.moves.length, color);
+    if (!ticket) return;
+    setIsEnginePlayingMove(true);
+    setEngineStatus(`${profile.name} 正在思考...`);
+    setLastAction("引擎正在思考下一手。");
+    try {
+      // React may run an effect triggered by a click before the browser has
+      // painted that click's state update. Two animation frames guarantee the
+      // human stone and branch row are visible before the blocking engine work.
+      await waitForCommittedPaint();
+      const paintedSession = humanPlaySessionRef.current;
+      const paintedPosition = humanPlayPositionRef.current;
+      if (!paintedSession || !paintedPosition || !engineTurnIsCurrent(
+        humanPlayEngineTurnGateRef.current,
+        ticket,
+        paintedSession.id,
+        paintedPosition.moves.length,
+        nextHumanPlayColor(paintedSession.handicap, paintedPosition.moves)
+      )) return;
+      const result = await generateMove({
+        boardSize: 19,
+        komi: session.komi,
+        maxTimeSeconds: session.maxTimeSeconds,
+        maxVisits: session.maxVisits,
+        moves: [...currentPosition.setupStones, ...currentPosition.moves],
+        nextColor: color,
+        profile,
+        searchLimit: session.searchLimit
+        ,engineSlot: session.playMode === "engine-vs-engine" ? color : undefined
+      });
+      const latestSession = humanPlaySessionRef.current;
+      const latestPosition = humanPlayPositionRef.current;
+      if (!latestSession || !latestPosition || !engineTurnIsCurrent(
+        humanPlayEngineTurnGateRef.current,
+        ticket,
+        latestSession.id,
+        latestPosition.moves.length,
+        nextHumanPlayColor(latestSession.handicap, latestPosition.moves)
+      )) return;
+      if (!result.ok || !result.moveName) {
+        const errorSession = { ...latestSession, result: result.status, status: "error" as const };
+        humanPlaySessionRef.current = errorSession;
+        setHumanPlaySession(errorSession);
+        setEngineDiagnostics(result.diagnostics);
+        setLastAction(`引擎落子失败：${result.status}`);
+        return;
+      }
+      const moveName = result.moveName.toLowerCase();
+      if (moveName === "pass") {
+        playHumanPass("engine", ticket);
+      } else if (moveName === "resign") {
+        const winner = session.humanColor === "black" ? "B" : "W";
+        const gameResultText = `${winner}+R`;
+        const finishedSession = { ...latestSession, result: gameResultText, status: "finished" as const };
+        humanPlaySessionRef.current = finishedSession;
+        setHumanPlaySession(finishedSession);
+        setGameResult(gameResultText);
+        setLastAction("引擎认输，你获胜。棋盘保留供复盘。");
+      } else {
+        const point = gtpPointToBoardPoint(result.moveName, 19);
+        if (!point) {
+          const errorSession = { ...latestSession, result: "引擎返回未知坐标", status: "error" as const };
+          humanPlaySessionRef.current = errorSession;
+          setHumanPlaySession(errorSession);
+          setLastAction(`引擎返回了无法识别的坐标：${result.moveName}`);
+          return;
+        }
+        playHumanPoint(point.x, point.y, "engine", ticket);
+      }
+      setEngineDiagnostics(result.diagnostics);
+      setEngineStatus(`${profile.name} · 对弈中`);
+    } catch (error) {
+      const latestSession = humanPlaySessionRef.current;
+      if (latestSession?.id === session.id && humanPlayEngineTurnGateRef.current.active?.id === ticket.id) {
+        const errorSession = { ...latestSession, result: String(error), status: "error" as const };
+        humanPlaySessionRef.current = errorSession;
+        setHumanPlaySession(errorSession);
+        setEngineDiagnostics(String(error));
+        setLastAction(`引擎落子失败：${String(error)}`);
+      }
+    } finally {
+      if (releaseEngineTurn(humanPlayEngineTurnGateRef.current, ticket)) {
+        setIsEnginePlayingMove(false);
+      }
+    }
+  };
   const openGameFile = async (file: File) => {
+    releaseEngineTurn(humanPlayEngineTurnGateRef.current);
+    humanPlaySessionRef.current = null;
+    humanPlayPositionRef.current = null;
+    setIsEnginePlayingMove(false);
+    void cancelGenerateMove();
+    setHumanPlaySession(null);
+    setSetupStones([]);
     disconnectOgs("已断开 OGS，同步本地棋谱。");
     if (/\.(tsg|brg|brg\.json|json)$/i.test(file.name)) {
       await loadResearchDocument(file);
@@ -1386,6 +1940,13 @@ export function App() {
     setSourceFileName("新棋谱");
     setCurrentTsgPath(null);
     setSgfWarnings([]);
+    releaseEngineTurn(humanPlayEngineTurnGateRef.current);
+    humanPlaySessionRef.current = null;
+    humanPlayPositionRef.current = null;
+    setIsEnginePlayingMove(false);
+    void cancelGenerateMove();
+    setHumanPlaySession(null);
+    setSetupStones([]);
     setMoves([]);
     setSourceMainLineMoves([]);
     setSourceMainLineMoveCount(0);
@@ -1546,7 +2107,7 @@ export function App() {
       setLastAction(message);
     }
   };
-  const nextColor = getNextColor(currentMoveNumber);
+  const nextColor = humanPlaySession ? nextHumanPlayColor(humanPlaySession.handicap, moves.slice(0, currentMoveNumber)) : getNextColor(currentMoveNumber);
   const probeCurrentEngine = async () => {
     if (!isTauriRuntime()) {
       setEngineStatus("浏览器预览：请在 Mac App 中测试引擎");
@@ -1591,7 +2152,7 @@ export function App() {
     const requestId = analysisRequestRef.current + 1;
     analysisRequestRef.current = requestId;
     const requestMoveNumber = currentMoveNumber;
-    const requestMoves = moves.slice(0, currentMoveNumber);
+    const requestMoves = [...setupStones, ...moves.slice(0, currentMoveNumber)];
     const requestPositionKey = candidatePositionKey(boardSize, komi, requestMoves);
     const requestNextColor = nextColor;
     setIsAnalyzing(true);
@@ -2316,6 +2877,18 @@ export function App() {
     setLastAction("AI 分析已开启。");
     queueAnalysisIfEnabled(20);
   };
+  const toggleProblemPreview = () => {
+    if (!activeProblem) return;
+    if (!isProblemPreview && (activeProblem.problemType ?? "B") === "B" && !activeProblem.choicesShuffled) {
+      const shuffledScores = shuffledProblemCandidates(activeProblem.candidateScores)
+        .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+      const shuffledProblem: ProblemItem = { ...activeProblem, choicesShuffled: true, candidateScores: shuffledScores };
+      setActiveProblem(shuffledProblem);
+      setResearchDocument((document) => upsertProblemInDocument(document, shuffledProblem));
+    }
+    setIsProblemPreview((value) => !value);
+    setIsEditingProblemCandidates(false);
+  };
   const createProblemFromCurrentPosition = async () => {
     if (boardActiveCandidates.length === 0) {
       setLastAction("当前局面还没有 AI 候选点。请先开启 AI 分析，收到候选点后再创建题目。");
@@ -2349,22 +2922,129 @@ export function App() {
         setLastAction(`数据库局面查重暂不可用，将继续创建本地题目：${String(error)}`);
       }
     }
+    const actualMove = sourceMainLineMoves[currentMoveNumber];
+    const actualMoveName = actualMove && !actualMove.pass ? moveToGtpPoint(actualMove, boardSize) : undefined;
+    let selectedCandidates = boardActiveCandidates;
+    let candidateSources: Record<string, ProblemCandidateSource> = {};
+    let candidateScoresByMove: Record<string, number> = {};
+    let candidateEvaluationsByMove: Record<string, CandidateScoreEvaluation> = {};
+    let scoringAudit: ProblemScoringAudit | undefined;
+    let fullScoreMove = boardActiveCandidates[0]?.moveName;
+    let humanCandidates: EngineCandidateMove[] = [];
+    let humanLevel: HumanEngineLevel | undefined;
+    if (problemThresholdSettings.problemType === "A") {
+      selectedCandidates = boardActiveCandidates.slice(0, 12);
+    } else {
+      const playerLabel = nextColor === "black" ? blackName : whiteName;
+      humanLevel = problemHumanLevel(playerLabel, problemThresholdSettings.humanLevelOffset);
+      const humanBase = engineProfiles.find((profile) => Boolean(profile.humanModelPath && profile.humanConfigPath));
+      if (!humanBase) {
+        setLastAction("无法生成 B 型题：引擎列表中没有配置完整的拟人引擎（Human Model + Human Config）。");
+        return;
+      }
+      setLastAction(`正在用拟人 ${humanLevel.toUpperCase()} 分析当前局面并生成 B 型题…`);
+      let humanResult = await analyzeProblemPosition({
+        boardSize,
+        komi,
+        maxVisits: 500,
+        moves: [...setupStones, ...positionMoves],
+        nextColor,
+        profile: { ...profileWithHumanLevel(humanBase, humanLevel), engineMode: "human" }
+      });
+      if (!humanResult.ok || humanResult.candidates.length === 0) {
+        setEngineDiagnostics(buildAnalysisDiagnostics(humanResult.rawOutput, humanResult.diagnostics));
+        setLastAction(`B 型题生成失败：拟人 ${humanLevel.toUpperCase()} 没有返回候选点。`);
+        return;
+      }
+      humanCandidates = humanResult.candidates;
+      let composed = composeTypeBCandidates({
+        actualMoveName,
+        candidateCount: problemThresholdSettings.candidateCount,
+        humanCandidateCount: problemThresholdSettings.humanCandidateCount,
+        humanCandidates,
+        strongCandidates: boardActiveCandidates
+      });
+      if (composed.candidates.length < problemThresholdSettings.candidateCount) {
+        setLastAction(`候选点发生重复，正在提高拟人分析量并向后递补到 ${problemThresholdSettings.candidateCount} 个…`);
+        humanResult = await analyzeProblemPosition({
+          boardSize, komi, maxVisits: 2000, moves: [...setupStones, ...positionMoves], nextColor,
+          profile: { ...profileWithHumanLevel(humanBase, humanLevel), engineMode: "human" }
+        });
+        if (humanResult.candidates.length > 0) humanCandidates = humanResult.candidates;
+        composed = composeTypeBCandidates({
+          actualMoveName,
+          candidateCount: problemThresholdSettings.candidateCount,
+          humanCandidateCount: problemThresholdSettings.humanCandidateCount,
+          humanCandidates,
+          strongCandidates: boardActiveCandidates
+        });
+      }
+      if (composed.candidates.length < problemThresholdSettings.candidateCount) {
+        setLastAction(`B 型题生成失败：强 AI、实战和拟人候选去重后只有 ${composed.candidates.length} 个，无法补足 ${problemThresholdSettings.candidateCount} 个选项。`);
+        return;
+      }
+      selectedCandidates = composed.candidates;
+      candidateSources = composed.sources;
+      const strongProfile = (engineProfile && (engineProfile.engineMode ?? "normal") === "normal")
+        ? engineProfile
+        : engineProfiles.find((profile) => (profile.engineMode ?? "normal") === "normal" && isCompleteEngineProfile(profile));
+      if (!strongProfile) {
+        setLastAction("B 型题评分失败：没有可用的正常强 AI 配置。");
+        return;
+      }
+      setLastAction("正在用更高 Visits 的强 AI 复核最佳点，并逐一重评 5 个候选…");
+      const scored = await auditAndScoreTypeBCandidates({
+        boardSize,
+        komi,
+        moves: [...setupStones, ...positionMoves],
+        nextColor,
+        profile: { ...strongProfile, engineMode: "normal" },
+        candidates: selectedCandidates,
+        sources: candidateSources,
+        originalStrongCandidates: boardActiveCandidates,
+        onProgress: (message) => setLastAction(message)
+      });
+      if (!scored.ok) {
+        setEngineDiagnostics(`B 型题强 AI 评分失败\n${scored.error}`);
+        setLastAction(`B 型题评分失败：${scored.error}`);
+        return;
+      }
+      selectedCandidates = scored.candidates;
+      candidateSources = scored.sources;
+      candidateScoresByMove = scored.scores;
+      candidateEvaluationsByMove = scored.evaluations;
+      scoringAudit = scored.audit;
+      fullScoreMove = scored.fullScoreMove;
+      selectedCandidates = shuffledProblemCandidates(selectedCandidates);
+    }
     const problem = createManualProblemItem({
       boardSize,
-      candidates: boardActiveCandidates,
+      candidates: selectedCandidates,
       color: nextColor,
       engineName: engineProfile?.name,
       modelName: engineProfile?.modelPath ? engineProfile.modelPath.split("/").pop() : undefined,
       moveNumber: currentMoveNumber + 1,
       positionMoves,
-      sourceNodeId: selectedGameNodeId
+      sourceNodeId: selectedGameNodeId,
+      problemType: problemThresholdSettings.problemType,
+      fullScoreMove,
+      actualMoveName,
+      humanCandidates,
+      humanLevel,
+      analysisCandidates: [...boardActiveCandidates, ...humanCandidates],
+      candidateSources,
+      candidateScoresByMove,
+      candidateEvaluationsByMove,
+      scoringAudit
     });
     setResearchDocument((document) => upsertProblemInDocument(document, problem));
     setActiveProblem(problem);
     setIsEditingProblemCandidates(true);
-    setProblemAiCandidates(boardActiveCandidates);
+    setProblemAiCandidates([...boardActiveCandidates, ...humanCandidates]);
     setProblemSaveStatus("");
-    setLastAction(`已从第 ${currentMoveNumber} 手局面创建题目草稿；AI 第一候选 ${problem.fullScoreMove} 为正确答案。`);
+    setLastAction(scoringAudit?.needsManualReview
+      ? `已生成 B 型题草稿：深度复核的一选与其他候选冲突，已按规则保留 ${problem.candidateScores.length} 个答案，请人工处理。`
+      : `已生成 ${problem.problemType} 型题草稿：${problem.candidateScores.length} 个候选，满分点 ${problem.fullScoreMove}。`);
   };
   const openProblemReview = (moveNumber: number) => {
     const problem = researchDocument.problemSet?.items.find((item) => item.moveNumber === moveNumber);
@@ -2453,7 +3133,7 @@ export function App() {
     if (!activeProblem) return;
     const normalizedScore = moveName === activeProblem.fullScoreMove
       ? 10
-      : Math.max(0, Math.min(9, Math.round(Number.isFinite(score) ? score : 0)));
+      : Math.max(0, Math.min(9.5, Math.round((Number.isFinite(score) ? score : 0) * 2) / 2));
     const nextProblem = {
       ...activeProblem,
       candidateScores: activeProblem.candidateScores.map((candidate) =>
@@ -2532,6 +3212,20 @@ export function App() {
     setLastAction("AI 分析已暂停。");
   };
   useEffect(() => {
+    const stage = boardStageRef.current;
+    if (!stage) return;
+    const updateStageSize = () => setBoardStageSize({ height: stage.clientHeight, width: stage.clientWidth });
+    updateStageSize();
+    const observer = new ResizeObserver(updateStageSize);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [leftPaneWidth, rightPaneWidth, candidateListVisible, humanPlaySession?.id, appMode]);
+  useEffect(() => {
+    if (!humanPlaySession || humanPlaySession.status !== "playing" || isEnginePlayingMove) return;
+    if (humanPlaySession.playMode !== "engine-vs-engine" && nextHumanPlayColor(humanPlaySession.handicap, moves) === humanPlaySession.humanColor) return;
+    void requestHumanEngineMove();
+  }, [humanPlaySession?.id, humanPlaySession?.status, humanPlaySession?.humanColor, humanPlaySession?.handicap, moves.length, isEnginePlayingMove, engineProfile]);
+  useEffect(() => {
     if (!isAnalysisEnabled || isAnalyzing || processedAnalysisTriggerRef.current === analysisTrigger) {
       return;
     }
@@ -2590,9 +3284,33 @@ export function App() {
         onSaveResearch={saveResearchDocument}
         onExportPdf={exportResearchPdf}
         onToggleAnalysis={toggleAnalysis}
+        isAnalysisEnabled={isAnalysisEnabled}
+        isAutoAnalyzing={isAutoAnalyzing}
+        canResumeAutoAnalysis={Boolean(autoAnalysisResume)}
+        onAutoAnalyze={() => {
+          if (isAutoAnalyzing) {
+            stopAutoAnalysis();
+            return;
+          }
+          if (autoAnalysisResume) {
+            void runAutoAnalysis(autoAnalysisResume, true);
+            return;
+          }
+          setIsAutoAnalysisOpen(true);
+        }}
+        onFinishAutoAnalysis={finishAutoAnalysis}
+        onPromoteBranch={promoteCurrentBranch}
+        onReturnToMainBranch={returnToMainBranch}
+        onDeleteBranch={deleteCurrentBranch}
         onOpenAutoAnalysis={() => setIsAutoAnalysisOpen(true)}
         onOpenBatchAnalysis={() => setIsBatchAnalysisOpen(true)}
         onOpenAbout={() => setIsAboutOpen(true)}
+        engineMode={engineProfile?.engineMode ?? "normal"}
+        humanEngineAvailable={Boolean(engineProfile?.humanModelPath?.trim() && engineProfile?.humanConfigPath?.trim())}
+        humanEngineLevel={engineProfile?.humanLevel ?? inferHumanEngineLevel(engineProfile?.humanConfigPath)}
+        onEngineModeChange={changeEngineMode}
+        onHumanLevelChange={changeHumanEngineLevel}
+        onOpenHumanPlay={() => setIsHumanPlaySetupOpen(true)}
         onAddVariation={insertCurrentVariation}
         onToggleSavedAnalysis={() => {
           if (!hasSavedAnalysis) {
@@ -2609,13 +3327,15 @@ export function App() {
         t={t}
       />
       <section
-        className="workspace"
+        className={`workspace ${appMode === "problem-solve" ? "problem-solve-workspace" : ""}`}
         aria-label="TensuGo analysis workspace"
         style={{
-          gridTemplateColumns: `${leftPaneWidth}px 5px minmax(0, 1fr) 5px ${rightPaneWidth}px`
+          gridTemplateColumns: appMode === "problem-solve"
+            ? "minmax(0, 1fr) 5px 320px"
+            : `${leftPaneWidth}px 5px minmax(0, 1fr) 5px ${rightPaneWidth}px`
         }}
       >
-        <aside className={`side-panel side-panel-left ${isResearchMode ? "research-mode" : ""}`}>
+        {appMode !== "problem-solve" ? <><aside className={`side-panel side-panel-left ${isResearchMode ? "research-mode" : ""}`}>
           <details className="panel-section game-info-details" open>
             <summary>棋谱信息</summary>
             <GameInfoPanel
@@ -2741,26 +3461,31 @@ export function App() {
           className="pane-resizer"
           role="separator"
           onMouseDown={(event) => beginResize("left", event.clientX)}
-        />
+        /></> : null}
 
-        <section className="board-stage" aria-label="Go board">
+      <section ref={boardStageRef} className="board-stage" aria-label="Go board">
           <BoardPlaceholder
             boardSize={boardSize}
             candidateBubbleLines={candidateBubbleLines}
-            candidates={activeProblem ? activeProblem.candidateScores.map((candidate) => ({ ...candidate })) : activeCandidates}
-            suggestedCandidates={activeProblem ? problemAiCandidates.filter((candidate) => !activeProblem.candidateScores.some((selected) => selected.moveName === candidate.moveName)) : []}
+            candidates={activeProblem ? (isProblemPreview && problemTypeOf(activeProblem) === "A" ? [] : activeProblem.candidateScores.slice(0, appMode === "problem-solve" ? 5 : isProblemPreview ? problemThresholdSettings.candidateCount : undefined).map((candidate) => ({ ...candidate }))) : activeCandidates}
+            suggestedCandidates={appMode === "problem-solve" ? [] : activeProblem ? problemAiCandidates.filter((candidate) => !activeProblem.candidateScores.some((selected) => selected.moveName === candidate.moveName)) : []}
+            answerMode={appMode === "problem-solve"}
+            answerMoveName={appMode === "problem-solve" && activeProblem && problemTypeOf(activeProblem) === "A" ? problemSolveMoveName : null}
+            answerColor={activeProblem?.color}
             coordinateLabelsVisible={coordinateLabelsVisible}
             moveNumberDisplay={moveNumberDisplay}
             pixelSize={boardPixelSize}
             stones={stones}
             variationBaseMoveNumber={displayedVariationBaseMoveNumber}
-            actualNextMove={activeProblemActualMove}
+            actualNextMove={isProblemPreview ? null : activeProblemActualMove}
+            candidateLetterLabels={Boolean(isProblemPreview && activeProblem && problemTypeOf(activeProblem) === "B")}
             candidateClickSelectOnly={Boolean(activeProblem)}
             selectedCandidateRank={previewCandidateRank}
             onStoneClick={jumpToMove}
-            onPointClick={updateProblemCandidateAtPoint}
-            onCandidatePreview={setPreviewCandidateRank}
+            onPointClick={answerProblemAtPoint}
+            onCandidatePreview={appMode === "problem-solve" ? selectProblemCandidate : setPreviewCandidateRank}
           />
+          {appMode !== "problem-solve" ? <BoardNavigationToolbar currentMoveNumber={currentMoveNumber} totalMoves={navigationTotalMoves} onJump={jumpToMove} t={t} coordinateLabelsVisible={coordinateLabelsVisible} moveNumberDisplay={moveNumberDisplay} onToggleCoordinates={toggleCoordinateLabels} onToggleMoveNumbers={toggleMoveNumberDisplay} /> : null}
         </section>
         <div
           aria-label="调整右栏宽度"
@@ -2769,8 +3494,23 @@ export function App() {
           onMouseDown={(event) => beginResize("right", event.clientX)}
         />
 
-        <aside className={`side-panel side-panel-right ${candidateListVisible ? "" : "candidate-list-hidden"} ${isResearchMode ? "research-tree-mode" : ""}`}>
-          {isResearchMode ? (
+        <aside className={`side-panel side-panel-right ${candidateListVisible ? "" : "candidate-list-hidden"} ${isResearchMode ? "research-tree-mode" : ""} ${appMode === "problem-solve" ? "problem-answer-side-panel" : ""}`}>
+          {appMode === "problem-solve" && activeProblem ? (
+            <ProblemSolvePanel
+              answers={problemSolveAnswers}
+              currentIndex={problemSolveIndex}
+              problem={activeProblem}
+              queueLength={problemSolveQueue.length}
+              selectedRank={previewCandidateRank}
+              selectedMoveName={problemSolveMoveName}
+              problemType={problemTypeOf(activeProblem)}
+              onSelect={(rank) => selectProblemCandidate(rank)}
+              onSubmit={submitProblemAnswer}
+              onPrevious={() => jumpProblemInQueue(problemSolveIndex - 1)}
+              onNext={() => jumpProblemInQueue(problemSolveIndex + 1)}
+              onOpenLibrary={() => setIsProblemLibraryOpen(true)}
+            />
+          ) : isResearchMode ? (
             <ResearchRightPane
               branchRows={branchRows}
               document={updateDocumentSource(researchDocument, currentSnapshot)}
@@ -2813,12 +3553,14 @@ export function App() {
               onProblemEditorActiveChange={setIsEditingProblemCandidates}
               onProblemSave={() => { if (activeProblem) void saveReviewedProblem(activeProblem); }}
               problemSelectedCandidates={activeProblem?.candidateScores ?? []}
+              problemCandidateLetterLabels={Boolean(isProblemPreview && (activeProblem?.problemType ?? "B") === "B")}
               onProblemCandidateReorder={reorderProblemCandidate}
             />
           )}
         </aside>
       </section>
-      <BottomToolbar
+      <div className="bottom-region">
+      {appMode !== "problem-solve" ? <BottomToolbar
         isAutoAnalyzing={isAutoAnalyzing}
         canResumeAutoAnalysis={Boolean(autoAnalysisResume)}
         coordinateLabelsVisible={coordinateLabelsVisible}
@@ -2849,26 +3591,65 @@ export function App() {
         onToggleCoordinates={toggleCoordinateLabels}
         onToggleMoveNumbers={toggleMoveNumberDisplay}
         t={t}
-      />
-      {appMode !== "problem-create" && activeProblem ? (
+      /> : null}
+      {humanPlaySession ? (
+        <div className="human-play-toolbar" aria-label="人机对弈控制">
+          <strong>人机对弈</strong>
+          <span>你执{humanPlaySession.humanColor === "black" ? "黑" : "白"}</span>
+          <span>{humanPlaySession.handicap >= 2 ? `让 ${humanPlaySession.handicap} 子` : "分先"}</span>
+          <span>{humanPlaySession.searchLimit === "time" ? `${humanPlaySession.maxTimeSeconds} 秒/手` : `${humanPlaySession.maxVisits} Visits/手`}</span>
+          <span className={isEnginePlayingMove ? "thinking" : ""}>
+            {humanPlaySession.status === "playing"
+              ? isEnginePlayingMove
+                ? "引擎思考中…"
+                : nextHumanPlayColor(humanPlaySession.handicap, moves) === humanPlaySession.humanColor ? "轮到你" : "等待引擎"
+              : humanPlaySession.result ?? "对局结束"}
+          </span>
+          <button type="button" disabled={humanPlaySession.status !== "playing" || isEnginePlayingMove || nextHumanPlayColor(humanPlaySession.handicap, moves) !== humanPlaySession.humanColor} onClick={() => playHumanPass("human")}>停一手</button>
+          <button type="button" disabled={humanPlaySession.status !== "playing" || isEnginePlayingMove} onClick={resignHumanPlay}>认输</button>
+          <button type="button" onClick={stopHumanPlay}>结束对弈</button>
+          <button type="button" onClick={() => setIsHumanPlaySetupOpen(true)}>新对局</button>
+        </div>
+      ) : appMode === "problem-create" && activeProblem ? (
+        <div className="problem-review-toolbar" aria-label="出题预览">
+          <strong>{activeProblem.problemType ?? "B"} 型题 · 第 {activeProblem.moveNumber} 手</strong>
+          <span>{isProblemPreview ? "答题人视图" : `编辑视图 · ${activeProblem.candidateScores.length} 个候选`}</span>
+          <button type="button" className={isProblemPreview ? "active" : ""} onClick={toggleProblemPreview}>{isProblemPreview ? "返回编辑" : "预览题目"}</button>
+          <button type="button" disabled={isSavingProblem} onClick={() => void saveReviewedProblem(activeProblem)}>{isSavingProblem ? "保存中…" : "保存题目"}</button>
+        </div>
+      ) : appMode !== "problem-create" && appMode !== "problem-solve" && activeProblem ? (
         <div className="problem-review-toolbar" aria-label="出题操作">
           <strong>出题 REVIEW · 第 {activeProblem.moveNumber} 手</strong>
           <span>{activeProblem.trigger.type === "winrateLoss" ? `胜率损失 ${activeProblem.trigger.value.toFixed(1)}%` : "手工出题"}</span>
           <button type="button" className={isEditingProblemCandidates ? "active" : ""} onClick={() => setIsEditingProblemCandidates((value) => !value)}>
             {isEditingProblemCandidates ? "完成选点" : "修改/增加选点"}
-          </button>
-          <button type="button" disabled={isSavingProblem} onClick={() => void saveReviewedProblem(activeProblem)}>
+          </button><button type="button" disabled={isSavingProblem} onClick={() => void saveReviewedProblem(activeProblem)}>
             {isSavingProblem ? "保存中…" : "保存题目"}
           </button>
           {problemSaveStatus ? <span className={problemSaveStatus.startsWith("保存失败") ? "problem-save-error" : "problem-save-status"}>{problemSaveStatus}</span> : null}
           <button type="button" onClick={() => { setActiveProblem(null); setIsEditingProblemCandidates(false); }}>关闭</button>
         </div>
-      ) : appMode === "problem-solve" ? (
+      ) : appMode === "problem-solve" && !activeProblem ? (
         <div className="problem-review-toolbar" aria-label="做题模式">
           <strong>做题模式</strong>
-          <span>点击右侧棋谱树中的“题”标记选择题目</span>
+          <span>从题库列表选择一个范围开始</span>
+          <button type="button" onClick={() => setIsProblemLibraryOpen(true)}>打开题库</button>
         </div>
       ) : null}
+      </div>
+      {appMode === "problem-solve" ? <button className="problem-library-count" type="button" onClick={() => setIsProblemLibraryOpen(true)}>
+        题库 {problemLibraryLoading ? "…" : `${problemLibrary.length} 题 · ${problemSolveType} 型 ${visibleProblemLibrary.length}`}
+      </button> : null}
+      <ProblemLibraryDialog
+        error={problemLibraryError}
+        loading={problemLibraryLoading}
+        open={isProblemLibraryOpen && appMode === "problem-solve"}
+        problems={visibleProblemLibrary}
+        problemType={problemSolveType}
+        onProblemTypeChange={(type) => { setProblemSolveType(type); setProblemSolveQueue([]); setProblemSolveAnswers({}); setActiveProblem(null); }}
+        onClose={() => setIsProblemLibraryOpen(false)}
+        onOpenRange={openProblemRange}
+      />
       <AutoAnalysisDialog
         currentMoveNumber={currentMoveNumber}
         isRunning={isAutoAnalyzing}
@@ -2923,6 +3704,7 @@ export function App() {
       <SettingsDialog
         candidateBubbleLines={candidateBubbleLines}
         candidateDisplayLimit={candidateDisplayLimit}
+        problemThresholdSettings={problemThresholdSettings}
         engineDiagnostics={engineDiagnostics}
         engineProfiles={engineProfiles}
         engineStatus={engineStatus}
@@ -2935,21 +3717,40 @@ export function App() {
         onAnalyze={analyzeCurrentPosition}
         onCandidateBubbleLinesChange={updateCandidateBubbleLines}
         onCandidateDisplayLimitChange={updateCandidateDisplayLimit}
+        onProblemThresholdSettingsChange={(next) => {
+          setProblemThresholdSettings(next);
+          window.localStorage.setItem(PROBLEM_SETTINGS_KEY, JSON.stringify(next));
+        }}
         onClose={() => setIsSettingsOpen(false)}
         onExportSettingsChange={updateResearchExportSettings}
         onLanguageChange={updateLanguage}
         onAutoDetect={autoDetectEngine}
         onChoosePath={chooseEngineConfigPath}
+        onEngineModeChange={changeEngineMode}
+        onHumanLevelChange={changeHumanEngineLevel}
         onDeleteProfile={deleteEngineProfile}
         onManualProfileAdd={addManualEngineProfile}
         onMoveProfile={moveEngineProfile}
         onProbe={probeCurrentEngine}
         onProfileChange={updateEngineProfile}
         onResetProfile={resetEngineProfile}
-        onSaveProfile={saveCurrentEngineProfile}
+        onCreateProfile={createEngineProfile}
         onSelectProfile={selectEngineProfile}
         onSetDefaultProfile={setCurrentEngineAsDefault}
+        onUpdateProfile={updateSelectedEngineProfile}
         t={t}
+      />
+      <HumanPlayDialog
+        engineAvailable={engineProfiles.some(isCompleteEngineProfile)}
+        engineProfiles={engineProfiles.filter(isCompleteEngineProfile)}
+        engineMode={engineProfile?.engineMode ?? "normal"}
+        engineName={engineProfile?.name ?? "未配置"}
+        humanLevel={engineProfile?.humanLevel ?? inferHumanEngineLevel(engineProfile?.humanConfigPath)}
+        open={isHumanPlaySetupOpen}
+        onClose={() => setIsHumanPlaySetupOpen(false)}
+        onEngineModeChange={changeEngineMode}
+        onHumanLevelChange={changeHumanEngineLevel}
+        onStart={startHumanPlay}
       />
       <OgsDialog
         detail={ogsStatusDetail}
@@ -3646,7 +4447,12 @@ function isCompleteEngineProfile(profile: EngineProfile): boolean {
   if (profile.commandLine.trim()) {
     return true;
   }
-  return Boolean(profile.executablePath.trim() && profile.modelPath.trim() && profile.configPath.trim());
+  const normalReady = Boolean(profile.executablePath.trim() && profile.modelPath.trim() && profile.configPath.trim());
+  if (!normalReady) {
+    return false;
+  }
+  return (profile.engineMode ?? "normal") !== "human"
+    || Boolean(profile.humanModelPath?.trim() && profile.humanConfigPath?.trim());
 }
 
 function documentHasSavedAnalysis(document: ResearchDocument): boolean {
@@ -4146,6 +4952,10 @@ function loadEngineProfile(): EngineProfile {
       executablePath: value.executablePath ?? "",
       modelPath: value.modelPath ?? "",
       configPath: value.configPath ?? "",
+      humanModelPath: value.humanModelPath ?? "",
+      humanConfigPath: value.humanConfigPath ?? "",
+      engineMode: value.engineMode === "human" ? "human" : "normal",
+      humanLevel: value.humanLevel ?? inferHumanEngineLevel(value.humanConfigPath),
       commandLine: value.commandLine ?? ""
     };
   } catch {
@@ -4168,10 +4978,15 @@ function normalizeEngineProfile(value: Partial<EngineProfile>): EngineProfile {
   return {
     ...DEFAULT_ENGINE_PROFILE,
     ...value,
+    profileId: typeof value.profileId === "string" && value.profileId.trim() ? value.profileId : undefined,
     name: value.name || "用户 KataGo",
     executablePath: value.executablePath ?? "",
     modelPath: value.modelPath ?? "",
     configPath: value.configPath ?? "",
+    humanModelPath: value.humanModelPath ?? "",
+    humanConfigPath: value.humanConfigPath ?? "",
+    engineMode: value.engineMode === "human" ? "human" : "normal",
+    humanLevel: value.humanLevel ?? inferHumanEngineLevel(value.humanConfigPath),
     commandLine: value.commandLine ?? "",
     exists: Boolean(value.exists),
     source: value.source
@@ -4218,10 +5033,13 @@ function filterHiddenEngineProfiles(profiles: EngineProfile[]): EngineProfile[] 
 }
 
 function engineProfileKey(profile: EngineProfile): string {
+  if (profile.profileId?.trim()) {
+    return `profile:${profile.profileId.trim()}`;
+  }
   if (profile.commandLine.trim() && !profile.executablePath.trim()) {
     return `manual:${profile.commandLine.trim().toLowerCase()}`;
   }
-  const parts = [normalizeEnginePath(profile.executablePath), normalizeEnginePath(profile.modelPath), normalizeEnginePath(profile.configPath)];
+  const parts = [normalizeEnginePath(profile.executablePath), normalizeEnginePath(profile.modelPath), normalizeEnginePath(profile.configPath), normalizeEnginePath(profile.humanModelPath ?? ""), normalizeEnginePath(profile.humanConfigPath ?? "")];
   return parts.some(Boolean) ? parts.join("|") : "";
 }
 
@@ -4468,40 +5286,234 @@ function createManualProblemItem(params: {
   moveNumber: number;
   positionMoves: ReviewMove[];
   sourceNodeId: string;
+  problemType: "A" | "B";
+  actualMoveName?: string;
+  humanCandidates?: EngineCandidateMove[];
+  humanLevel?: HumanEngineLevel;
+  fullScoreMove?: string;
+  analysisCandidates?: EngineCandidateMove[];
+  candidateSources?: Record<string, ProblemCandidateSource>;
+  candidateScoresByMove?: Record<string, number>;
+  candidateEvaluationsByMove?: Record<string, CandidateScoreEvaluation>;
+  scoringAudit?: ProblemScoringAudit;
 }): ProblemItem {
   const generatedAt = new Date().toISOString();
+  const humanMoveNames = new Set(params.humanCandidates?.map((candidate) => candidate.moveName) ?? []);
   const candidateScores = params.candidates.map((candidate, index) => ({
     moveName: candidate.moveName,
     rank: index + 1,
-    score: defaultProblemCandidateScore(index),
+    score: params.problemType === "A"
+      ? Math.max(5, 10 - index * 0.5)
+      : params.candidateScoresByMove?.[candidate.moveName] ?? (candidate.moveName === params.fullScoreMove ? 10 : 0),
     visits: candidate.visits,
     winrate: candidate.winrate,
     scoreLead: candidate.scoreLead,
-    pv: candidate.pv
+    pv: candidate.pv,
+    source: params.candidateSources?.[candidate.moveName] ?? (candidate.moveName === params.actualMoveName ? "actual" as const : humanMoveNames.has(candidate.moveName) ? "human-ai" as const : "strong-ai" as const),
+    evaluatedWinrate: params.candidateEvaluationsByMove?.[candidate.moveName]?.winrate,
+    winrateLoss: params.candidateEvaluationsByMove?.[candidate.moveName]?.winrateLoss,
+    evaluationVisits: params.candidateEvaluationsByMove?.[candidate.moveName]?.visits
   }));
   return {
     id: createLocalId("problem"),
+    problemType: params.problemType,
+    choicesShuffled: params.problemType === "B",
     moveNumber: params.moveNumber,
     color: params.color,
     sourceNodeId: params.sourceNodeId,
     positionMoves: params.positionMoves,
     positionHash: hashProblemPosition(params.boardSize, params.color, params.positionMoves),
     positionHashAlgorithm: "fnv1a64-board-v1",
+    actualMoveName: params.actualMoveName,
     trigger: { type: "manual" },
     prompt: `第 ${params.moveNumber} 手，${params.color === "black" ? "黑棋" : "白棋"}请选择最佳下法。`,
-    fullScoreMove: candidateScores[0]?.moveName ?? "",
+    fullScoreMove: params.fullScoreMove ?? candidateScores[0]?.moveName ?? "",
     candidateScores,
     analysis: {
       engineName: params.engineName,
       modelName: params.modelName,
       generatedAt,
-      candidates: params.candidates
+      candidates: params.analysisCandidates ?? params.candidates,
+      humanCandidates: params.humanCandidates,
+      humanLevel: params.humanLevel,
+      scoringAudit: params.scoringAudit
     }
   };
 }
 
 function defaultProblemCandidateScore(index: number): number {
-  return index === 0 ? 10 : index === 1 ? 8 : index === 2 ? 6 : index === 3 ? 4 : 2;
+  return Math.max(5, 10 - index * 0.5);
+}
+
+type CandidateScoreEvaluation = { winrate: number; winrateLoss: number; visits: number };
+type ProblemScoringAudit = {
+  originalBestMove: string;
+  auditedBestMove: string;
+  originalBestVisits: number;
+  auditVisits: number;
+  originalAnalysisVisits: number;
+  auditedAnalysisVisits: number;
+  needsManualReview: boolean;
+};
+
+function problemScoreFromWinrateLoss(loss: number): number {
+  const normalized = Math.max(0, loss);
+  if (normalized <= 1) return Math.max(5, 10 - Math.floor((normalized + 1e-9) / 0.2));
+  return Math.max(0, 5 - Math.floor((normalized - 1 + 1e-9) / 0.5));
+}
+
+async function auditAndScoreTypeBCandidates(params: {
+  boardSize: number;
+  komi: number;
+  moves: ReviewMove[];
+  nextColor: "black" | "white";
+  profile: EngineProfile;
+  candidates: EngineCandidateMove[];
+  sources: Record<string, ProblemCandidateSource>;
+  originalStrongCandidates: EngineCandidateMove[];
+  onProgress?: (message: string) => void;
+}): Promise<
+  | { ok: false; error: string }
+  | { ok: true; candidates: EngineCandidateMove[]; sources: Record<string, ProblemCandidateSource>; scores: Record<string, number>; evaluations: Record<string, CandidateScoreEvaluation>; fullScoreMove: string; audit: ProblemScoringAudit }
+> {
+  const originalBest = params.originalStrongCandidates[0];
+  if (!originalBest) return { ok: false, error: "原始强 AI 分析没有一选。" };
+  // KataGo candidate visits are child-node allocations. maxVisits and the requested
+  // "analysis visits" refer to root work, so compare the sum rather than candidate #1.
+  const originalAnalysisVisits = params.originalStrongCandidates.reduce((sum, candidate) => sum + Math.max(0, candidate.visits), 0);
+  const auditVisits = Math.max(500, originalAnalysisVisits * 2 + 1);
+  const rootAudit = await analyzeProblemPosition({
+    boardSize: params.boardSize, komi: params.komi, maxVisits: auditVisits,
+    moves: params.moves, nextColor: params.nextColor, profile: params.profile
+  });
+  if (!rootAudit.ok || rootAudit.candidates.length === 0) {
+    return { ok: false, error: "提高 Visits 后强 AI 没有返回候选点。" };
+  }
+  const auditedBest = rootAudit.candidates[0];
+  const auditedAnalysisVisits = rootAudit.candidates.reduce((sum, candidate) => sum + Math.max(0, candidate.visits), 0);
+  if (auditedAnalysisVisits <= originalAnalysisVisits * 2) {
+    return { ok: false, error: `深度复核累计只有 ${auditedAnalysisVisits} visits，未超过原分析累计 ${originalAnalysisVisits} visits 的两倍（请求 ${auditVisits}）。` };
+  }
+  let candidates = [...params.candidates];
+  const sources = { ...params.sources };
+  let needsManualReview = false;
+  if (auditedBest.moveName !== originalBest.moveName) {
+    const oldBestIndex = candidates.findIndex((candidate) => candidate.moveName === originalBest.moveName);
+    const conflict = candidates.some((candidate, index) => index !== oldBestIndex && candidate.moveName === auditedBest.moveName);
+    if (oldBestIndex >= 0) {
+      if (conflict) {
+        candidates.splice(oldBestIndex, 1);
+        delete sources[originalBest.moveName];
+        needsManualReview = true;
+      } else {
+        candidates[oldBestIndex] = auditedBest;
+        delete sources[originalBest.moveName];
+        sources[auditedBest.moveName] = "strong-ai";
+      }
+    }
+  }
+  const fullScoreMove = auditedBest.moveName;
+  const scores: Record<string, number> = { [fullScoreMove]: 10 };
+  const evaluations: Record<string, CandidateScoreEvaluation> = {
+    [fullScoreMove]: { winrate: auditedBest.winrate, winrateLoss: 0, visits: auditedBest.visits }
+  };
+  const opponent = params.nextColor === "black" ? "white" : "black";
+  for (const [index, candidate] of candidates.entries()) {
+    if (candidate.moveName === fullScoreMove) continue;
+    params.onProgress?.(`强 AI 正在重评候选 ${index + 1}/${candidates.length}：${candidate.moveName}…`);
+    const point = gtpPointToBoardPoint(candidate.moveName, params.boardSize);
+    if (!point) return { ok: false, error: `候选点 ${candidate.moveName} 坐标无效。` };
+    const forcedMove: ReviewMove = {
+      color: params.nextColor,
+      moveNumber: params.moves.filter((move) => !move.isSetup).length + 1,
+      x: point.x,
+      y: point.y
+    };
+    const response = await analyzeProblemPosition({
+      boardSize: params.boardSize, komi: params.komi, maxVisits: auditVisits,
+      moves: [...params.moves, forcedMove], nextColor: opponent, profile: params.profile
+    });
+    if (!response.ok || response.candidates.length === 0) {
+      return { ok: false, error: `强 AI 无法重评候选 ${candidate.moveName}。` };
+    }
+    const evaluatedWinrate = 100 - response.candidates[0].winrate;
+    const winrateLoss = Math.max(0, auditedBest.winrate - evaluatedWinrate);
+    evaluations[candidate.moveName] = { winrate: evaluatedWinrate, winrateLoss, visits: response.candidates[0].visits };
+    const auditedRank = rootAudit.candidates.findIndex((item) => item.moveName === candidate.moveName) + 1;
+    scores[candidate.moveName] = sources[candidate.moveName] === "strong-ai" && auditedRank >= 2 && auditedRank <= 5
+      ? 10 - (auditedRank - 1) * 0.5
+      : problemScoreFromWinrateLoss(winrateLoss);
+  }
+  return {
+    ok: true, candidates, sources, scores, evaluations, fullScoreMove,
+    audit: {
+      originalBestMove: originalBest.moveName,
+      auditedBestMove: auditedBest.moveName,
+      originalBestVisits: originalBest.visits,
+      auditVisits,
+      originalAnalysisVisits,
+      auditedAnalysisVisits,
+      needsManualReview
+    }
+  };
+}
+
+type ProblemCandidateSource = "actual" | "strong-ai" | "human-ai" | "manual";
+
+function composeTypeBCandidates(params: {
+  actualMoveName?: string;
+  candidateCount: number;
+  humanCandidateCount: number;
+  humanCandidates: EngineCandidateMove[];
+  strongCandidates: EngineCandidateMove[];
+}): { candidates: EngineCandidateMove[]; sources: Record<string, ProblemCandidateSource> } {
+  const result: EngineCandidateMove[] = [];
+  const sources: Record<string, ProblemCandidateSource> = {};
+  const add = (candidate: EngineCandidateMove | undefined, source: ProblemCandidateSource) => {
+    if (!candidate || result.some((item) => item.moveName === candidate.moveName) || result.length >= params.candidateCount) return false;
+    result.push(candidate);
+    sources[candidate.moveName] = source;
+    return true;
+  };
+  const actual = params.actualMoveName
+    ? params.strongCandidates.find((candidate) => candidate.moveName === params.actualMoveName)
+      ?? params.humanCandidates.find((candidate) => candidate.moveName === params.actualMoveName)
+      ?? { rank: 0, moveName: params.actualMoveName, visits: 0, winrate: 0, scoreLead: 0, pv: [] }
+    : undefined;
+  // Ownership priority: strong AI #1 > actual move > strong secondary > human AI.
+  add(params.strongCandidates[0], "strong-ai");
+  add(actual, "actual");
+  for (const candidate of params.strongCandidates.slice(2)) {
+    if (add(candidate, "strong-ai")) break;
+  }
+  let humanAdded = 0;
+  for (const candidate of params.humanCandidates) {
+    if (add(candidate, "human-ai")) humanAdded += 1;
+    if (humanAdded >= params.humanCandidateCount) break;
+  }
+  for (const candidate of params.strongCandidates.slice(1)) add(candidate, "strong-ai");
+  for (const candidate of params.humanCandidates) add(candidate, "human-ai");
+  return { candidates: result.slice(0, params.candidateCount), sources };
+}
+
+function shuffledProblemCandidates<T>(candidates: T[]): T[] {
+  const shuffled = [...candidates];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const random = new Uint32Array(1);
+    window.crypto.getRandomValues(random);
+    const swapIndex = random[0]! % (index + 1);
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function problemHumanLevel(playerLabel: string, offset: number): HumanEngineLevel {
+  const match = /(?:^|\s|\()([1-9]|1[0-9]|20)\s*(D|K|段|级)(?:\s|\)|$)/i.exec(playerLabel);
+  const rank = match ? Number(match[1]) : 7;
+  const isDan = !match || /d|段/i.test(match[2]);
+  const strength = isDan ? rank : 1 - rank;
+  const adjusted = Math.max(-19, Math.min(9, strength + offset));
+  return (adjusted >= 1 ? `${adjusted}d` : `${1 - adjusted}k`) as HumanEngineLevel;
 }
 
 function hashProblemPosition(
@@ -4636,6 +5648,63 @@ function createEmptyAutoAnalysisSummary(): AutoAnalysisSummary {
     totalMatchScore: 0,
     totalWinrateLoss: 0
   };
+}
+
+function loadProblemThresholdSettings(): ProblemThresholdSettings {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(PROBLEM_SETTINGS_KEY) ?? "null");
+    return {
+      winrateLossThreshold: raw?.winrateLossThreshold == null ? DEFAULT_PROBLEM_THRESHOLD_SETTINGS.winrateLossThreshold : Math.max(0, Number(raw.winrateLossThreshold)),
+      scoreLossThreshold: raw?.scoreLossThreshold == null ? null : Math.max(0, Number(raw.scoreLossThreshold)),
+      thresholdCombination: raw?.thresholdCombination === "and" ? "and" : "or",
+      problemType: raw?.problemType === "A" ? "A" : "B",
+      candidateCount: Math.max(3, Math.min(12, Number(raw?.candidateCount) || 5)),
+      humanLevelOffset: Math.max(-20, Math.min(10, Number.isFinite(Number(raw?.humanLevelOffset)) ? Number(raw.humanLevelOffset) : -5)),
+      humanCandidateCount: Math.max(0, Math.min(5, Number.isFinite(Number(raw?.humanCandidateCount)) ? Number(raw.humanCandidateCount) : 2))
+    };
+  } catch {
+    return DEFAULT_PROBLEM_THRESHOLD_SETTINGS;
+  }
+}
+
+function createProblemsFromAutoAnalysis(
+  document: ResearchDocument,
+  summary: AutoAnalysisSummary,
+  sourceMoves: ReviewMove[],
+  settings: ProblemThresholdSettings,
+  profile: EngineProfile | null
+): ResearchDocument {
+  // Automatic markers are derived data and must be recalculated when the
+  // threshold changes. Keep manual problems (including reviewed/saved ones).
+  const existing = (document.problemSet?.items ?? []).filter(item => item.trigger.type === "manual");
+  const items = [...existing];
+  const blocks = document.sections.flatMap(section => section.blocks).filter(block => block.type === "candidate_moves");
+  for (const detail of summary.details) {
+    if (items.some(item => item.moveNumber === detail.moveNumber) || detail.rank === null) continue;
+    const winHit = settings.winrateLossThreshold !== null && (detail.winrateLoss ?? 0) >= settings.winrateLossThreshold;
+    const scoreHit = settings.scoreLossThreshold !== null && (detail.scoreLoss ?? 0) >= settings.scoreLossThreshold;
+    const enabled = [settings.winrateLossThreshold !== null, settings.scoreLossThreshold !== null].filter(Boolean).length;
+    const hit = enabled === 0 ? false : enabled === 1 ? (winHit || scoreHit) : settings.thresholdCombination === "and" ? winHit && scoreHit : winHit || scoreHit;
+    if (!hit) continue;
+    const block = blocks.find(candidateBlock => candidateBlock.moveNumber === detail.moveNumber);
+    if (!block || block.type !== "candidate_moves") continue;
+    const actualMove = sourceMoves[detail.moveNumber - 1];
+    if (!actualMove) continue;
+    items.push(createProblemItem({
+      actualMoveName: detail.actualMoveName ?? "",
+      boardSize: document.sourceGame.boardSize,
+      candidateLimit: 5,
+      candidates: block.candidates,
+      color: detail.color,
+      engineName: profile?.name,
+      modelName: profile?.modelPath?.split("/").pop(),
+      moveNumber: detail.moveNumber,
+      positionMoves: sourceMoves.slice(0, detail.moveNumber - 1),
+      threshold: settings.winrateLossThreshold ?? settings.scoreLossThreshold ?? 0,
+      winrateLoss: detail.winrateLoss ?? 0
+    }));
+  }
+  return { ...document, problemSet: { version: 1, generatedAt: document.problemSet?.generatedAt ?? new Date().toISOString(), settings: { winrateLossThreshold: settings.winrateLossThreshold, scoreLossThreshold: settings.scoreLossThreshold, thresholdCombination: settings.thresholdCombination, candidateLimit: 5 }, items } };
 }
 
 function calculateScoreLoss(

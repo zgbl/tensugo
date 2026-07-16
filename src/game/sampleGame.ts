@@ -5,6 +5,8 @@ export type ReviewMove = {
   color: StoneColor;
   x: number;
   y: number;
+  isSetup?: boolean;
+  pass?: boolean;
 };
 
 export type ReviewStone = ReviewMove & {

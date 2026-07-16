@@ -4,6 +4,7 @@ import { buildBoardPosition } from "../game/boardRules";
 import type { BranchTreeRow, StoneColor } from "../game/gameTree";
 import type { ReviewStone } from "../game/sampleGame";
 import type { ProblemCandidateScore } from "../research/types";
+import { starPoints } from "../../../shared/go-board/index.js";
 
 const placeholderRows = [
   { rank: 1, move: "T2", winrate: "72.0", visits: "123k", delta: "90.6", scoreLead: "3.4" },
@@ -48,6 +49,7 @@ type CandidatePanelProps = {
   onProblemSave: () => void;
   problemReviewActive: boolean;
   problemSelectedCandidates: ProblemCandidateScore[];
+  problemCandidateLetterLabels: boolean;
   onProblemCandidateReorder: (fromIndex: number, toIndex: number) => void;
 };
 
@@ -82,6 +84,7 @@ export function CandidatePanel({
   onProblemSave,
   problemReviewActive,
   problemSelectedCandidates,
+  problemCandidateLetterLabels,
   onProblemCandidateReorder
 }: CandidatePanelProps) {
   const branchTreeRef = useRef<HTMLDivElement | null>(null);
@@ -184,7 +187,7 @@ export function CandidatePanel({
                         onProblemCandidateReorder(Number(event.dataTransfer.getData("text/plain")), index);
                       }}
                     >
-                      <b>{index + 1}</b> {candidate.moveName}
+                      <b>{problemCandidateLetterLabels ? String.fromCharCode(65 + index) : index + 1}</b> {candidate.moveName}
                       <label>
                         分数
                         <input
@@ -192,7 +195,7 @@ export function CandidatePanel({
                           type="number"
                           min="0"
                           max="10"
-                          step="1"
+                          step="0.5"
                           value={candidate.score}
                           disabled={candidate.moveName === problemFullScoreMove}
                           onChange={(event) => onProblemCandidateScoreChange(candidate.moveName, Number(event.target.value))}
@@ -264,7 +267,7 @@ export function CandidatePanel({
                     key={candidate.moveName}
                     onClick={() => setSelectedProblemMoveName(candidate.moveName)}
                   >
-                    <b>{index + 1}</b>
+                    <b>{problemCandidateLetterLabels ? String.fromCharCode(65 + index) : index + 1}</b>
                     <strong>{candidate.moveName}</strong>
                     {candidate.moveName === problemFullScoreMove ? <em>正确答案</em> : null}
                     <label onClick={(event) => event.stopPropagation()}>
@@ -274,7 +277,7 @@ export function CandidatePanel({
                         type="number"
                         min="0"
                         max="10"
-                        step="1"
+                        step="0.5"
                         value={candidate.score}
                         disabled={candidate.moveName === problemFullScoreMove}
                         onChange={(event) => onProblemCandidateScoreChange(candidate.moveName, Number(event.target.value))}
@@ -319,6 +322,9 @@ export function CandidatePanel({
             <div className="mini-board-plane">
               {miniLines.map((line) => <span className="mini-grid-line horizontal" key={`mini-h-${line}`} style={{ top: `${(line / (boardSize - 1)) * 100}%` }} />)}
               {miniLines.map((line) => <span className="mini-grid-line vertical" key={`mini-v-${line}`} style={{ left: `${(line / (boardSize - 1)) * 100}%` }} />)}
+              {starPoints(boardSize).flatMap((y) => starPoints(boardSize).map((x) => ({ x, y }))).map(({ x, y }) => (
+                <span key={`mini-star-${x}-${y}`} className="mini-star-point" style={miniPointStyle(x, y)} />
+              ))}
               {pvStones.map((stone) => (
                 <span key={`${stone.moveNumber}-${stone.x}-${stone.y}`} className={`mini-stone ${stone.color} ${stone.isPv ? "pv-stone" : ""}`} style={miniPointStyle(stone.x, stone.y)}>{stone.pvIndex ?? ""}</span>
               ))}

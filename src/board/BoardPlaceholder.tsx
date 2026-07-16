@@ -1,4 +1,5 @@
 import { boardIndexToLabel } from "../game/coordinates";
+import { gtpPointToBoardPoint, starPoints } from "../../../shared/go-board/index.js";
 import type { CSSProperties, MouseEvent } from "react";
 import type { EngineCandidateMove } from "../engine/types";
 import type { ReviewStone } from "../game/sampleGame";
@@ -17,8 +18,12 @@ type BoardPlaceholderProps = {
   onCandidatePreview: (rank: number | null) => void;
   actualNextMove?: ReviewStone | null;
   candidateClickSelectOnly?: boolean;
+  candidateLetterLabels?: boolean;
   selectedCandidateRank?: number | null;
   suggestedCandidates?: EngineCandidateMove[];
+  answerMode?: boolean;
+  answerMoveName?: string | null;
+  answerColor?: "black" | "white";
 };
 
 export type MoveNumberDisplayMode = "all" | "last10" | "last1";
@@ -38,8 +43,12 @@ export function BoardPlaceholder({
   onCandidatePreview,
   actualNextMove = null,
   candidateClickSelectOnly = false,
+  candidateLetterLabels = false,
   selectedCandidateRank = null,
-  suggestedCandidates = []
+  suggestedCandidates = [],
+  answerMode = false,
+  answerMoveName = null,
+  answerColor = "black"
 }: BoardPlaceholderProps) {
   const lines = Array.from({ length: boardSize }, (_, index) => index);
   const displayedCurrentMoveNumber = currentMoveNumber(stones);
@@ -69,7 +78,8 @@ export function BoardPlaceholder({
       if (!item.point || occupiedPoints.has(boardPointKey(item.point.x, item.point.y))) return false;
       return !actualNextMove || item.point.x !== actualNextMove.x || item.point.y !== actualNextMove.y;
     });
-  const starPoints = [3, 9, 15].flatMap((y) => [3, 9, 15].map((x) => ({ y, x })));
+  const answerPoint = answerMoveName ? gtpPointToBoardPoint(answerMoveName, boardSize) : null;
+  const boardStarPoints = starPoints(boardSize).flatMap((y) => starPoints(boardSize).map((x) => ({ y, x })));
   const pointStyle = (x: number, y: number) =>
     ({
       left: `${(x / (boardSize - 1)) * 100}%`,
@@ -122,7 +132,7 @@ export function BoardPlaceholder({
           {lines.map((line) => (
             <span className="grid-line vertical" key={`v-${line}`} style={verticalLineStyle(line)} />
           ))}
-          {starPoints.map((point) => (
+          {boardStarPoints.map((point) => (
             <i
               className="star-point"
               key={`${point.y}-${point.x}`}
@@ -131,34 +141,34 @@ export function BoardPlaceholder({
           ))}
           {stones.map((stone) => (
             <span
-              role="button"
-              tabIndex={0}
+              role={stone.isSetup ? "img" : "button"}
+              tabIndex={stone.isSetup ? -1 : 0}
               className={`stone ${stone.color} ${stone.isLast && !shouldShowStoneLabel(stone, variationBaseMoveNumber, moveNumberDisplay, displayedCurrentMoveNumber)
                   ? "last-move"
                   : ""
                 }`}
-              key={stone.moveNumber}
+              key={`${stone.moveNumber}:${stone.x}:${stone.y}`}
               style={pointStyle(stone.x, stone.y)}
               onClick={(event) => {
                 event.stopPropagation();
-                onStoneClick(stone.moveNumber);
+                if (!stone.isSetup) onStoneClick(stone.moveNumber);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
+                if (!stone.isSetup && (event.key === "Enter" || event.key === " ")) {
                   event.preventDefault();
                   onStoneClick(stone.moveNumber);
                 }
               }}
-              aria-label={`Jump to move ${stone.moveNumber}`}
+              aria-label={stone.isSetup ? "让子" : `Jump to move ${stone.moveNumber}`}
             >
               {stoneLabel(stone, variationBaseMoveNumber, moveNumberDisplay, displayedCurrentMoveNumber)}
             </span>
           ))}
-          {candidatePoints.map(({ candidate, point }) => (
+          {candidatePoints.map(({ candidate, point }, candidateIndex) => (
             <b
               role="button"
               tabIndex={0}
-              className={`candidate-bubble ${candidateBubbleLines === 3 ? "three-lines" : "two-lines"} ${candidate.rank === 1 ? "best" : ""} ${candidate.rank === selectedCandidateRank ? "selected" : ""}`}
+              className={`candidate-bubble ${candidateBubbleLines === 3 ? "three-lines" : "two-lines"} ${candidateLetterLabels ? "letter-label" : ""} ${answerMode ? "answer-choice" : ""} ${!answerMode && candidate.rank === 1 ? "best" : ""} ${candidate.rank === selectedCandidateRank ? "selected" : ""}`}
               key={candidate.moveName}
               style={pointStyle(point.x, point.y)}
               onClick={(event) => {
@@ -169,22 +179,26 @@ export function BoardPlaceholder({
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  onPointClick(point.x, point.y);
+                  if (answerMode) onCandidatePreview(candidate.rank);
+                  else onPointClick(point.x, point.y);
                 }
               }}
-              onMouseEnter={() => onCandidatePreview(candidate.rank)}
+              onMouseEnter={() => { if (!answerMode) onCandidatePreview(candidate.rank); }}
               aria-label={`Play candidate ${candidate.moveName}`}
             >
-              <em>{candidate.rank}</em>
-              <span>{candidate.winrate.toFixed(1)}</span>
-              <span>{formatVisits(candidate.visits)}</span>
-              {candidateBubbleLines === 3 ? (
+              <em>{candidateLetterLabels ? String.fromCharCode(65 + candidateIndex) : candidate.rank}</em>
+              {!answerMode ? <><span>{candidate.winrate.toFixed(1)}</span>
+              <span>{formatVisits(candidate.visits)}</span></> : null}
+              {!answerMode && candidateBubbleLines === 3 ? (
                 <span className="candidate-score-lead" title="当前显示方绝对目差（含贴目）">
                   {candidate.scoreLead.toFixed(1)}
                 </span>
               ) : null}
             </b>
           ))}
+          {answerPoint && !occupiedPoints.has(boardPointKey(answerPoint.x, answerPoint.y)) ? (
+            <span className={`stone ${answerColor} answer-preview-stone`} style={pointStyle(answerPoint.x, answerPoint.y)} aria-label={`作答 ${answerMoveName}`} />
+          ) : null}
           {suggestedPoints.map(({ candidate, point }) => (
             <button
               type="button"
@@ -257,24 +271,6 @@ function currentMoveNumber(stones: ReviewStone[]): number {
 
 function hasVariationLabel(stone: ReviewStone, variationBaseMoveNumber: number | null): variationBaseMoveNumber is number {
   return variationBaseMoveNumber !== null && stone.moveNumber > variationBaseMoveNumber;
-}
-
-function gtpPointToBoardPoint(point: string, boardSize: number): { x: number; y: number } | null {
-  if (!point || point.toLowerCase() === "pass") {
-    return null;
-  }
-  const match = /^([A-HJ-Z])(\d+)$/i.exec(point);
-  if (!match) {
-    return null;
-  }
-  const labels = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
-  const x = labels.indexOf(match[1].toUpperCase());
-  const row = Number(match[2]);
-  const y = boardSize - row;
-  if (x < 0 || x >= boardSize || !Number.isInteger(row) || y < 0 || y >= boardSize) {
-    return null;
-  }
-  return { x, y };
 }
 
 function boardPointKey(x: number, y: number): string {

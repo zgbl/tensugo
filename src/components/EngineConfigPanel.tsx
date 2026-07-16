@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { EngineProfile } from "../engine/types";
+import { HUMAN_ENGINE_LEVELS, inferHumanEngineLevel } from "../engine/humanEngineLevels";
+import type { EngineMode, EngineProfile, HumanEngineLevel } from "../engine/types";
+
+type EnginePathKind = "engine" | "model" | "config" | "human-model" | "human-config";
 
 type EngineConfigPanelProps = {
   diagnostics: string;
@@ -7,14 +10,17 @@ type EngineConfigPanelProps = {
   isAnalyzing: boolean;
   onAnalyze: () => void;
   onAutoDetect: () => void;
-  onChoosePath: (kind: "engine" | "model" | "config") => void;
+  onChoosePath: (kind: EnginePathKind) => void;
+  onEngineModeChange: (mode: EngineMode) => void;
+  onHumanLevelChange: (level: HumanEngineLevel) => void;
   onProfileChange: (profile: EngineProfile) => void;
   onProbe: () => void;
   onDeleteProfile: (profileIndex: number) => void;
   onMoveProfile: (profileIndex: number, direction: "up" | "down") => void;
   onManualProfileAdd: (commandLine: string) => void;
   onResetProfile: () => void;
-  onSaveProfile: () => void;
+  onCreateProfile: () => void;
+  onUpdateProfile: (profileIndex: number) => void;
   onSelectProfile: (profileIndex: number) => void;
   onSetDefaultProfile: () => void;
   profile: EngineProfile | null;
@@ -29,15 +35,18 @@ export function EngineConfigPanel({
   onAnalyze,
   onAutoDetect,
   onChoosePath,
+  onEngineModeChange,
+  onHumanLevelChange,
   onDeleteProfile,
   onManualProfileAdd,
   onMoveProfile,
   onProfileChange,
   onProbe,
   onResetProfile,
-  onSaveProfile,
+  onCreateProfile,
   onSelectProfile,
   onSetDefaultProfile,
+  onUpdateProfile,
   profile,
   profiles,
   selectedProfileIndex
@@ -117,7 +126,7 @@ export function EngineConfigPanel({
             <tbody>
               {profiles.length === 0 ? (
                 <tr>
-                  <td colSpan={4}>尚未保存引擎。Auto Detect 会显示可用候选项，手动配置请保存到列表。</td>
+                  <td colSpan={4}>尚未保存引擎。Auto Detect 会显示可用候选项，手动配置请另存为新配置。</td>
                 </tr>
               ) : (
                 profiles.map((item, index) => {
@@ -134,8 +143,10 @@ export function EngineConfigPanel({
                     >
                       <td>{item.name}</td>
                       <td>{item.source ?? "用户配置"}</td>
-                      <td>{locked ? "内置保底" : item.exists ? "可用" : "待测试"}</td>
-                      <td>{fileName(item.modelPath)}</td>
+                      <td>{locked ? "内置保底" : item.exists ? (item.humanModelPath && item.humanConfigPath ? "双模式" : "可用") : "待测试"}</td>
+                      <td title={[item.modelPath, item.humanModelPath].filter(Boolean).join("\n")}>
+                        {fileName(item.modelPath)}{item.humanModelPath ? ` + ${fileName(item.humanModelPath)}` : ""}
+                      </td>
                     </tr>
                   );
                 })
@@ -149,6 +160,22 @@ export function EngineConfigPanel({
         <strong>{engineStatus}</strong>
         <small>{profile?.source ?? "未配置"}</small>
       </div>
+      <div className="engine-mode-switch" role="group" aria-label="引擎模式">
+        <span>当前引擎</span>
+        <button type="button" className={(profile?.engineMode ?? "normal") === "normal" ? "active" : ""} onClick={() => onEngineModeChange("normal")}>正常分析</button>
+        <button type="button" className={profile?.engineMode === "human" ? "active" : ""} onClick={() => onEngineModeChange("human")} disabled={!profile?.humanModelPath || !profile?.humanConfigPath}>拟人引擎</button>
+      </div>
+      <label>
+        <span>拟人棋力</span>
+        <select
+          className="panel-input"
+          value={profile?.humanLevel ?? inferHumanEngineLevel(profile?.humanConfigPath)}
+          onChange={(event) => onHumanLevelChange(event.target.value as HumanEngineLevel)}
+          disabled={!profile?.humanModelPath}
+        >
+          {HUMAN_ENGINE_LEVELS.map((level) => <option key={level} value={level}>{level.toUpperCase()}</option>)}
+        </select>
+      </label>
       <label>
         <span>名称</span>
         <input
@@ -169,7 +196,7 @@ export function EngineConfigPanel({
         </div>
       </label>
       <label>
-        <span>Model Path</span>
+        <span>普通 Model</span>
         <div className="path-input-row">
           <input
             className="panel-input"
@@ -180,18 +207,22 @@ export function EngineConfigPanel({
         </div>
       </label>
       <label>
-        <span>配置</span>
-        <input
-          className="panel-input"
-          value={profile?.configPath ?? ""}
-          onChange={(event) => updateProfile({ configPath: event.target.value })}
-        />
+        <span>普通配置</span>
+        <div className="path-input-row"><input className="panel-input" value={profile?.configPath ?? ""} onChange={(event) => updateProfile({ configPath: event.target.value })} /><button type="button" onClick={() => onChoosePath("config")}>选择</button></div>
+      </label>
+      <label>
+        <span>Human Model</span>
+        <div className="path-input-row"><input className="panel-input" value={profile?.humanModelPath ?? ""} onChange={(event) => updateProfile({ humanModelPath: event.target.value, source: "用户配置" })} /><button type="button" onClick={() => onChoosePath("human-model")}>选择</button></div>
+      </label>
+      <label>
+        <span>Human 配置</span>
+        <div className="path-input-row"><input className="panel-input" value={profile?.humanConfigPath ?? ""} onChange={(event) => updateProfile({ humanConfigPath: event.target.value, source: "用户配置" })} /><button type="button" onClick={() => onChoosePath("human-config")}>选择</button></div>
       </label>
       <div className="engine-config-actions">
         <button type="button" onClick={onAutoDetect}>Auto Detect</button>
         <button type="button" onClick={onProbe}>Test Engine</button>
-        <button type="button" onClick={() => onChoosePath("config")}>Choose Config</button>
-        <button type="button" onClick={onSaveProfile}>保存到列表</button>
+        <button type="button" onClick={onCreateProfile}>另存为新配置</button>
+        <button type="button" onClick={() => onUpdateProfile(selectedIndex)} disabled={selectedIndex < 0}>更新当前配置</button>
         <button type="button" onClick={onSetDefaultProfile}>设为默认</button>
         <button type="button" onClick={onResetProfile}>Reset to Default</button>
         <button type="button" onClick={onAnalyze} disabled={isAnalyzing}>
@@ -227,7 +258,10 @@ export function EngineConfigPanel({
 }
 
 function engineProfileKey(profile: EngineProfile): string {
-  return [profile.executablePath, profile.modelPath, profile.configPath].join("|");
+  if (profile.profileId) {
+    return `profile:${profile.profileId}`;
+  }
+  return [profile.executablePath, profile.modelPath, profile.configPath, profile.humanModelPath ?? "", profile.humanConfigPath ?? ""].join("|");
 }
 
 function fileName(path: string): string {

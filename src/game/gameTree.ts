@@ -59,7 +59,7 @@ export function createGameTreeFromMoves(moves: ReviewMove[], boardSize = 19, kom
       id: createNodeId(),
       move: {
         color: move.color,
-        point: { col: move.x, row: move.y }
+        point: move.pass ? null : { col: move.x, row: move.y }
       },
       children: []
     };
@@ -127,7 +127,7 @@ export function findPathNodeIds(tree: GameTree, nodeId: string): string[] | null
 export function moveNodeIdsToNode(tree: GameTree, nodeId: string): string[] {
   return (findPathNodeIds(tree, nodeId) ?? [])
     .filter((pathNodeId) => pathNodeId !== tree.root.id)
-    .filter((pathNodeId) => Boolean(findNode(tree.root, pathNodeId)?.move?.point));
+    .filter((pathNodeId) => Boolean(findNode(tree.root, pathNodeId)?.move));
 }
 
 export function pathMovesWithMainContinuation(tree: GameTree, nodeId: string): { moves: ReviewMove[]; nodeIds: string[] } | null {
@@ -140,7 +140,7 @@ export function pathMovesWithMainContinuation(tree: GameTree, nodeId: string): {
   let current = findNode(tree.root, nodeId);
   while (current?.children[0]) {
     current = current.children[0];
-    if (current.move?.point) {
+    if (current.move) {
       nodeIds.push(current.id);
     }
   }
@@ -148,15 +148,10 @@ export function pathMovesWithMainContinuation(tree: GameTree, nodeId: string): {
   const moves: ReviewMove[] = [];
   for (const pathNodeId of nodeIds) {
     const node = findNode(tree.root, pathNodeId);
-    if (!node?.move?.point) {
+    if (!node?.move) {
       continue;
     }
-    moves.push({
-      color: node.move.color,
-      moveNumber: moves.length + 1,
-      x: node.move.point.col,
-      y: node.move.point.row
-    });
+    moves.push(gameNodeToReviewMove(node, moves.length + 1));
   }
 
   return { moves, nodeIds };
@@ -170,7 +165,7 @@ export function childMoveCountAlongMainLine(tree: GameTree, nodeId: string): num
   let count = 0;
   let current = node.children[0];
   while (current) {
-    if (current.move?.point) {
+    if (current.move) {
       count += 1;
     }
     current = current.children[0];
@@ -207,15 +202,10 @@ export function pathMovesToNode(tree: GameTree, nodeId: string): ReviewMove[] | 
   }
   const moves: ReviewMove[] = [];
   for (const node of path) {
-    if (!node.move?.point) {
+    if (!node.move) {
       continue;
     }
-    moves.push({
-        color: node.move.color,
-        moveNumber: moves.length + 1,
-        x: node.move.point.col,
-        y: node.move.point.row
-    });
+    moves.push(gameNodeToReviewMove(node, moves.length + 1));
   }
   return moves;
 }
@@ -224,13 +214,8 @@ export function mainLineMovesFromTree(tree: GameTree): ReviewMove[] {
   const moves: ReviewMove[] = [];
   let current = tree.root.children[0];
   while (current) {
-    if (current.move?.point) {
-      moves.push({
-        color: current.move.color,
-        moveNumber: moves.length + 1,
-        x: current.move.point.col,
-        y: current.move.point.row
-      });
+    if (current.move) {
+      moves.push(gameNodeToReviewMove(current, moves.length + 1));
     }
     current = current.children[0];
   }
@@ -242,7 +227,7 @@ export function nodeIdAtMoveNumber(tree: GameTree, nodeId: string, moveNumber: n
   if (moveNumber <= 0) {
     return "root";
   }
-  const moveNodes = path.filter((node) => node.move?.point);
+  const moveNodes = path.filter((node) => node.move);
   return moveNodes[Math.min(moveNumber, moveNodes.length) - 1]?.id ?? nodeId;
 }
 
@@ -251,25 +236,20 @@ export function flattenBranchTree(tree: GameTree, selectedNodeId: string): Branc
   const rows: BranchTreeRow[] = [];
 
   const visit = (node: GameNode, parentId: string, depth: number, pathMoves: ReviewMove[]) => {
-    const nextPathMoves = node.move?.point
+    const nextPathMoves = node.move
       ? [
           ...pathMoves,
-          {
-            color: node.move.color,
-            moveNumber: pathMoves.length + 1,
-            x: node.move.point.col,
-            y: node.move.point.row
-          }
+          gameNodeToReviewMove(node, pathMoves.length + 1)
         ]
       : pathMoves;
 
-    if (node.move?.point) {
+    if (node.move) {
       rows.push({
         color: node.move.color,
         depth,
         isLeaf: node.children.length === 0,
         isMainLine: depth === 0,
-        label: String(nextPathMoves.length),
+        label: node.move.point ? String(nextPathMoves.length) : `${nextPathMoves.length} 停`,
         moveNumber: nextPathMoves.length,
         nodeId: node.id,
         parentId,
@@ -369,6 +349,19 @@ function isSameMove(left: GameMove | undefined, right: GameMove): boolean {
     return left.point === right.point;
   }
   return left.point.col === right.point.col && left.point.row === right.point.row;
+}
+
+function gameNodeToReviewMove(node: GameNode, moveNumber: number): ReviewMove {
+  if (!node.move) {
+    throw new Error("Cannot convert a node without a move");
+  }
+  return {
+    color: node.move.color,
+    moveNumber,
+    x: node.move.point?.col ?? -1,
+    y: node.move.point?.row ?? -1,
+    pass: node.move.point === null
+  };
 }
 
 function findParentNode(node: GameNode, nodeId: string): GameNode | null {

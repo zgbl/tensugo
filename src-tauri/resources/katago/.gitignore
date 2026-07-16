@@ -3,5 +3,8 @@
 !README.md
 !configs/
 !configs/.gitkeep
+!configs/human/
+!configs/human/*.cfg
 !models/
 !models/.gitkeep
+!models/human/

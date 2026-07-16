@@ -1,4 +1,6 @@
 export type EngineStatus = "not-configured" | "ready" | "running" | "error";
+export type EngineMode = "normal" | "human";
+export type HumanEngineLevel = "20k" | "15k" | "10k" | "9k" | "8k" | "7k" | "6k" | "5k" | "4k" | "3k" | "2k" | "1k" | "1d" | "2d" | "3d" | "4d" | "5d" | "6d" | "7d" | "8d" | "9d";
 
 export type EngineDiagnostic = {
   level: "info" | "warning" | "error";
@@ -6,10 +8,15 @@ export type EngineDiagnostic = {
 };
 
 export type EngineProfile = {
+  profileId?: string;
   name: string;
   executablePath: string;
   modelPath: string;
   configPath: string;
+  humanModelPath?: string;
+  humanConfigPath?: string;
+  engineMode?: EngineMode;
+  humanLevel?: HumanEngineLevel;
   commandLine: string;
   exists: boolean;
   source?: string;
@@ -43,6 +50,13 @@ export type EngineAnalysisResult = {
   status: string;
   candidates: EngineCandidateMove[];
   rawOutput: string;
+  diagnostics: string;
+};
+
+export type EngineGeneratedMoveResult = {
+  ok: boolean;
+  status: string;
+  moveName: string | null;
   diagnostics: string;
 };
 

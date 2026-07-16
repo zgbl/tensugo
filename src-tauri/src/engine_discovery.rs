@@ -12,6 +12,12 @@ pub struct EngineProfile {
     pub model_path: String,
     pub config_path: String,
     #[serde(default)]
+    pub human_model_path: String,
+    #[serde(default)]
+    pub human_config_path: String,
+    #[serde(default = "default_engine_mode")]
+    pub engine_mode: String,
+    #[serde(default)]
     pub command_line: String,
 }
 
@@ -21,6 +27,9 @@ pub struct EngineProfileCandidate {
     pub executable_path: String,
     pub model_path: String,
     pub config_path: String,
+    pub human_model_path: String,
+    pub human_config_path: String,
+    pub engine_mode: String,
     pub command_line: String,
     pub exists: bool,
     pub source: String,
@@ -42,9 +51,16 @@ impl From<EngineProfileCandidate> for EngineProfile {
             executable_path: candidate.executable_path,
             model_path: candidate.model_path,
             config_path: candidate.config_path,
+            human_model_path: candidate.human_model_path,
+            human_config_path: candidate.human_config_path,
+            engine_mode: candidate.engine_mode,
             command_line: candidate.command_line,
         }
     }
+}
+
+fn default_engine_mode() -> String {
+    "normal".to_string()
 }
 
 pub fn discover_engine(
@@ -79,6 +95,16 @@ pub fn discover_engine(
     candidates.extend(dev_candidates());
     candidates = dedupe_candidates(candidates);
 
+    let bundled_human = bundled_human_assets(app);
+    for candidate in &mut candidates {
+        if candidate.human_model_path.trim().is_empty() {
+            candidate.human_model_path = bundled_human.0.clone();
+        }
+        if candidate.human_config_path.trim().is_empty() {
+            candidate.human_config_path = bundled_human.1.clone();
+        }
+    }
+
     for candidate in &mut candidates {
         candidate.exists = profile_files_exist(candidate);
         candidate.command_line = command_line(candidate);
@@ -110,6 +136,19 @@ pub fn discover_engine(
     }
 }
 
+fn bundled_human_assets(app: &AppHandle) -> (String, String) {
+    let Some(resource_dir) = platform::resource_dir(app) else {
+        return (String::new(), String::new());
+    };
+    let root = resource_dir.join("katago");
+    let model = root.join("models").join("human").join("b18c384nbt-humanv0.bin.gz");
+    let config = root.join("configs").join("human").join("gtp_human9d_search_example.cfg");
+    (
+        if model.exists() { model.display().to_string() } else { String::new() },
+        if config.exists() { config.display().to_string() } else { String::new() },
+    )
+}
+
 fn profile_has_paths(profile: &EngineProfile) -> bool {
     if !profile.command_line.trim().is_empty() && profile.executable_path.trim().is_empty() {
         return true;
@@ -117,6 +156,8 @@ fn profile_has_paths(profile: &EngineProfile) -> bool {
     !profile.executable_path.trim().is_empty()
         || !profile.model_path.trim().is_empty()
         || !profile.config_path.trim().is_empty()
+        || !profile.human_model_path.trim().is_empty()
+        || !profile.human_config_path.trim().is_empty()
 }
 
 fn candidate_from_profile(profile: EngineProfile, source: &str) -> EngineProfileCandidate {
@@ -130,6 +171,9 @@ fn candidate_from_profile(profile: EngineProfile, source: &str) -> EngineProfile
             executable_path: profile.executable_path,
             model_path: profile.model_path,
             config_path: profile.config_path,
+            human_model_path: profile.human_model_path,
+            human_config_path: profile.human_config_path,
+            engine_mode: profile.engine_mode,
             command_line: profile.command_line,
             exists: false,
             source: source.to_string(),
@@ -161,6 +205,9 @@ fn candidate_from_profile(profile: EngineProfile, source: &str) -> EngineProfile
         executable_path: executable.display().to_string(),
         model_path: model.display().to_string(),
         config_path: config.display().to_string(),
+        human_model_path: profile.human_model_path,
+        human_config_path: profile.human_config_path,
+        engine_mode: profile.engine_mode,
         command_line: String::new(),
         exists: false,
         source: source.to_string(),
@@ -551,6 +598,9 @@ fn candidate_from_parts(
         executable_path: executable.display().to_string(),
         model_path: model.display().to_string(),
         config_path: config.display().to_string(),
+        human_model_path: String::new(),
+        human_config_path: String::new(),
+        engine_mode: default_engine_mode(),
         command_line: String::new(),
         exists: false,
         source: source.to_string(),
@@ -558,20 +608,32 @@ fn candidate_from_parts(
 }
 
 fn profile_files_exist(candidate: &EngineProfileCandidate) -> bool {
-    Path::new(&candidate.executable_path).exists()
+    let normal_ready = Path::new(&candidate.executable_path).exists()
         && Path::new(&candidate.model_path).exists()
         && Path::new(&candidate.config_path).exists()
-        && is_gtp_config(Path::new(&candidate.config_path))
+        && is_gtp_config(Path::new(&candidate.config_path));
+    normal_ready
+        && (candidate.engine_mode != "human"
+            || (Path::new(&candidate.human_model_path).exists()
+                && Path::new(&candidate.human_config_path).exists()
+                && is_gtp_config(Path::new(&candidate.human_config_path))))
 }
 
 fn command_line(candidate: &EngineProfileCandidate) -> String {
     if candidate.executable_path.is_empty() {
         return String::new();
     }
-    format!(
-        "\"{}\" gtp -model \"{}\" -config \"{}\"",
-        candidate.executable_path, candidate.model_path, candidate.config_path
-    )
+    if candidate.engine_mode == "human" {
+        format!(
+            "\"{}\" gtp -model \"{}\" -human-model \"{}\" -config \"{}\"",
+            candidate.executable_path, candidate.model_path, candidate.human_model_path, candidate.human_config_path
+        )
+    } else {
+        format!(
+            "\"{}\" gtp -model \"{}\" -config \"{}\"",
+            candidate.executable_path, candidate.model_path, candidate.config_path
+        )
+    }
 }
 
 fn dedupe_candidates(candidates: Vec<EngineProfileCandidate>) -> Vec<EngineProfileCandidate> {
@@ -579,8 +641,9 @@ fn dedupe_candidates(candidates: Vec<EngineProfileCandidate>) -> Vec<EngineProfi
     let mut result = Vec::new();
     for candidate in candidates {
         let key = format!(
-            "{}|{}|{}",
-            candidate.executable_path, candidate.model_path, candidate.config_path
+            "{}|{}|{}|{}|{}",
+            candidate.executable_path, candidate.model_path, candidate.config_path,
+            candidate.human_model_path, candidate.human_config_path
         );
         if seen.insert(key) {
             result.push(candidate);
@@ -595,6 +658,9 @@ fn empty_candidate(name: &str, source: &str) -> EngineProfileCandidate {
         executable_path: String::new(),
         model_path: String::new(),
         config_path: String::new(),
+        human_model_path: String::new(),
+        human_config_path: String::new(),
+        engine_mode: default_engine_mode(),
         command_line: String::new(),
         exists: false,
         source: source.to_string(),

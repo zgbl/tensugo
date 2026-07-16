@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { EngineAnalysisResult, EngineDiscoveryResult, EngineProbeResult, EngineProfile } from "./types";
+import type { EngineAnalysisResult, EngineDiscoveryResult, EngineGeneratedMoveResult, EngineProbeResult, EngineProfile } from "./types";
 import type { ReviewMove } from "../game/sampleGame";
+import type { ProblemItem } from "../research/types";
 import { platform } from "../platform";
+import { inferHumanEngineLevel } from "./humanEngineLevels";
 
 export const DEFAULT_ENGINE_PROFILE: EngineProfile = platform.defaultEngineProfile;
 
@@ -10,6 +12,9 @@ type TauriEngineProfile = {
   executable_path: string;
   model_path: string;
   config_path: string;
+  human_model_path: string;
+  human_config_path: string;
+  engine_mode: "normal" | "human";
   command_line: string;
   exists: boolean;
   source?: string;
@@ -66,6 +71,13 @@ type TauriAnalysisResult = {
   status: string;
   candidates: TauriCandidateMove[];
   raw_output: string;
+  diagnostics: string;
+};
+
+type TauriGeneratedMoveResult = {
+  ok: boolean;
+  status: string;
+  move_name: string | null;
   diagnostics: string;
 };
 
@@ -156,6 +168,28 @@ export async function findProblemByPositionHash(positionHash: string): Promise<P
   };
 }
 
+export type ProblemLibraryItem = {
+  id: string;
+  sourceFileName: string;
+  moveNumber: number;
+  boardSize: number;
+  color: "black" | "white";
+  updatedAt: string;
+  payload: ProblemItem & {
+    source?: {
+      fileName?: string;
+      boardSize?: number;
+      komi?: number;
+      rules?: string;
+      movesBeforeProblem?: ReviewMove[];
+    };
+  };
+};
+
+export async function listProblemLibrary(): Promise<ProblemLibraryItem[]> {
+  return invoke<ProblemLibraryItem[]>("list_problem_library");
+}
+
 export async function probeEngine(profile: EngineProfile): Promise<EngineProbeResult> {
   return invoke<EngineProbeResult>("probe_engine", { profile: toTauriProfile(profile) });
 }
@@ -197,6 +231,65 @@ export async function analyzePosition(params: {
     rawOutput: result.raw_output,
     diagnostics: result.diagnostics
   };
+}
+
+export async function analyzeProblemPosition(params: {
+  boardSize: number;
+  komi: number;
+  maxVisits: number;
+  moves: ReviewMove[];
+  nextColor: "black" | "white";
+  profile: EngineProfile;
+}): Promise<EngineAnalysisResult> {
+  const result = await invoke<TauriAnalysisResult>("analyze_problem_position", {
+    request: {
+      profile: toTauriProfile(params.profile), board_size: params.boardSize, komi: params.komi,
+      moves: params.moves.map((move) => ({ color: move.color, x: move.x, y: move.y })),
+      next_color: params.nextColor, max_visits: params.maxVisits
+    }
+  });
+  return {
+    ok: result.ok, status: result.status,
+    candidates: result.candidates.map((candidate) => ({ rank: candidate.rank, moveName: candidate.move_name, visits: candidate.visits, winrate: candidate.winrate, scoreLead: candidate.score_lead, pv: candidate.pv })),
+    rawOutput: result.raw_output, diagnostics: result.diagnostics
+  };
+}
+
+export async function generateMove(params: {
+  boardSize: number;
+  komi: number;
+  maxTimeSeconds: number;
+  maxVisits: number;
+  moves: ReviewMove[];
+  nextColor: "black" | "white";
+  profile: EngineProfile;
+  searchLimit: "time" | "visits";
+  engineSlot?: "black" | "white";
+}): Promise<EngineGeneratedMoveResult> {
+  const result = await invoke<TauriGeneratedMoveResult>("generate_move", {
+    request: {
+      profile: toTauriProfile(params.profile),
+      board_size: params.boardSize,
+      komi: params.komi,
+      max_time_seconds: params.maxTimeSeconds,
+      max_visits: params.maxVisits,
+      moves: params.moves.map((move) => ({ color: move.color, x: move.pass ? -1 : move.x, y: move.pass ? -1 : move.y })),
+      next_color: params.nextColor,
+      search_limit: params.searchLimit
+      ,engine_slot: params.engineSlot
+    }
+  });
+  return {
+    ok: result.ok,
+    status: result.status,
+    moveName: result.move_name,
+    diagnostics: result.diagnostics
+  };
+}
+
+export async function cancelGenerateMove(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("cancel_generate_move");
 }
 
 export async function analyzePositionContinuous(params: {
@@ -247,6 +340,10 @@ function fromTauriProfile(profile: TauriEngineProfile): EngineProfile {
     executablePath: profile.executable_path,
     modelPath: profile.model_path,
     configPath: profile.config_path,
+    humanModelPath: profile.human_model_path ?? "",
+    humanConfigPath: profile.human_config_path ?? "",
+    engineMode: profile.engine_mode === "human" ? "human" : "normal",
+    humanLevel: inferHumanEngineLevel(profile.human_config_path),
     commandLine: profile.command_line,
     exists: profile.exists,
     source: profile.source
@@ -259,6 +356,9 @@ function toTauriProfile(profile: EngineProfile): Omit<TauriEngineProfile, "exist
     executable_path: profile.executablePath,
     model_path: profile.modelPath,
     config_path: profile.configPath,
+    human_model_path: profile.humanModelPath ?? "",
+    human_config_path: profile.humanConfigPath ?? "",
+    engine_mode: profile.engineMode ?? "normal",
     command_line: profile.commandLine
   };
 }

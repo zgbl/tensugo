@@ -1,5 +1,5 @@
 const SGF_LETTERS = "abcdefghijklmnopqrstuvwxyz";
-const BOARD_LETTERS = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+import { boardIndexToLabel as sharedBoardIndexToLabel } from "../../../shared/go-board/index.js";
 
 export type BoardPoint = {
   row: number;
@@ -7,7 +7,7 @@ export type BoardPoint = {
 };
 
 export function boardIndexToLabel(index: number): string {
-  return BOARD_LETTERS[index] ?? "?";
+  return sharedBoardIndexToLabel(index);
 }
 
 export function pointToSgf(point: BoardPoint): string {
@@ -28,4 +28,3 @@ export function sgfToPoint(value: string): BoardPoint | null {
 
   return { row, col };
 }
-

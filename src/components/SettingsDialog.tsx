@@ -1,6 +1,6 @@
 import { useRef, useState, type CSSProperties } from "react";
 import { EngineConfigPanel } from "./EngineConfigPanel";
-import type { EngineProfile } from "../engine/types";
+import type { EngineMode, EngineProfile, HumanEngineLevel } from "../engine/types";
 import { LANGUAGE_OPTIONS, type AppLanguage, type Translator } from "../i18n";
 import type { ResearchExportSettings } from "../research/renderHtml";
 import type { CandidateBubbleLines } from "../board/BoardPlaceholder";
@@ -10,6 +10,15 @@ type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 type SettingsDialogProps = {
   candidateBubbleLines: CandidateBubbleLines;
   candidateDisplayLimit: number;
+  problemThresholdSettings: {
+    winrateLossThreshold: number | null;
+    scoreLossThreshold: number | null;
+    thresholdCombination: "and" | "or";
+    problemType: "A" | "B";
+    candidateCount: number;
+    humanLevelOffset: number;
+    humanCandidateCount: number;
+  };
   engineDiagnostics: string;
   engineProfiles: EngineProfile[];
   engineStatus: string;
@@ -21,17 +30,21 @@ type SettingsDialogProps = {
   onClose: () => void;
   onCandidateBubbleLinesChange: (value: CandidateBubbleLines) => void;
   onCandidateDisplayLimitChange: (value: number) => void;
+  onProblemThresholdSettingsChange: (value: SettingsDialogProps["problemThresholdSettings"]) => void;
   onExportSettingsChange: (patch: Partial<ResearchExportSettings>) => void;
   onLanguageChange: (language: AppLanguage) => void;
   onAutoDetect: () => void;
-  onChoosePath: (kind: "engine" | "model" | "config") => void;
+  onChoosePath: (kind: "engine" | "model" | "config" | "human-model" | "human-config") => void;
+  onEngineModeChange: (mode: EngineMode) => void;
+  onHumanLevelChange: (level: HumanEngineLevel) => void;
   onDeleteProfile: (profileIndex: number) => void;
   onManualProfileAdd: (commandLine: string) => void;
   onMoveProfile: (profileIndex: number, direction: "up" | "down") => void;
   onProbe: () => void;
   onProfileChange: (profile: EngineProfile) => void;
   onResetProfile: () => void;
-  onSaveProfile: () => void;
+  onCreateProfile: () => void;
+  onUpdateProfile: (profileIndex: number) => void;
   onSelectProfile: (profileIndex: number) => void;
   onSetDefaultProfile: () => void;
   open: boolean;
@@ -42,6 +55,7 @@ type SettingsDialogProps = {
 export function SettingsDialog({
   candidateBubbleLines,
   candidateDisplayLimit,
+  problemThresholdSettings,
   engineDiagnostics,
   engineProfiles,
   engineStatus,
@@ -53,24 +67,28 @@ export function SettingsDialog({
   onClose,
   onCandidateBubbleLinesChange,
   onCandidateDisplayLimitChange,
+  onProblemThresholdSettingsChange,
   onExportSettingsChange,
   onLanguageChange,
   onAutoDetect,
   onChoosePath,
+  onEngineModeChange,
+  onHumanLevelChange,
   onDeleteProfile,
   onManualProfileAdd,
   onMoveProfile,
   onProbe,
   onProfileChange,
   onResetProfile,
-  onSaveProfile,
+  onCreateProfile,
   onSelectProfile,
   onSetDefaultProfile,
+  onUpdateProfile,
   open,
   profile,
   t
 }: SettingsDialogProps) {
-  const [activeTab, setActiveTab] = useState<"engine" | "export" | "interface" | "language">("engine");
+  const [activeTab, setActiveTab] = useState<"engine" | "export" | "interface" | "analysis" | "problem" | "language">("engine");
   const [dialogOffset, setDialogOffset] = useState({ x: 0, y: 0 });
   const [dialogSize, setDialogSize] = useState({ height: 780, width: 980 });
   const dragStartRef = useRef<{ pointerX: number; pointerY: number; x: number; y: number } | null>(null);
@@ -183,7 +201,8 @@ export function SettingsDialog({
             <button type="button" className={activeTab === "export" ? "active" : ""} onClick={() => setActiveTab("export")}>{t("exportSettings")}</button>
             <button type="button" className={activeTab === "interface" ? "active" : ""} onClick={() => setActiveTab("interface")}>{t("interface")}</button>
             <button type="button" className={activeTab === "language" ? "active" : ""} onClick={() => setActiveTab("language")}>{t("language")}</button>
-            <button type="button" disabled>{t("menuAnalysis")}</button>
+            <button type="button" className={activeTab === "analysis" ? "active" : ""} onClick={() => setActiveTab("analysis")}>{t("menuAnalysis")}</button>
+            <button type="button" className={activeTab === "problem" ? "active" : ""} onClick={() => setActiveTab("problem")}>出题</button>
             <button type="button" disabled>{t("gameRecord")}</button>
           </nav>
           {activeTab === "engine" ? (
@@ -197,15 +216,18 @@ export function SettingsDialog({
               onAnalyze={onAnalyze}
               onAutoDetect={onAutoDetect}
               onChoosePath={onChoosePath}
+              onEngineModeChange={onEngineModeChange}
+              onHumanLevelChange={onHumanLevelChange}
               onDeleteProfile={onDeleteProfile}
               onManualProfileAdd={onManualProfileAdd}
               onMoveProfile={onMoveProfile}
               onProbe={onProbe}
               onProfileChange={onProfileChange}
               onResetProfile={onResetProfile}
-              onSaveProfile={onSaveProfile}
+              onCreateProfile={onCreateProfile}
               onSelectProfile={onSelectProfile}
               onSetDefaultProfile={onSetDefaultProfile}
+              onUpdateProfile={onUpdateProfile}
             />
           ) : activeTab === "export" ? (
             <ExportSettingsPanel settings={exportSettings} onChange={onExportSettingsChange} t={t} />
@@ -218,6 +240,10 @@ export function SettingsDialog({
               onCandidateDisplayLimitChange={onCandidateDisplayLimitChange}
               onExportSettingsChange={onExportSettingsChange}
             />
+          ) : activeTab === "analysis" ? (
+            <AnalysisSettingsPanel settings={problemThresholdSettings} onChange={onProblemThresholdSettingsChange} />
+          ) : activeTab === "problem" ? (
+            <ProblemSettingsPanel settings={problemThresholdSettings} onChange={onProblemThresholdSettingsChange} />
           ) : (
             <LanguageSettingsPanel language={language} onChange={onLanguageChange} t={t} />
           )}
@@ -234,6 +260,37 @@ export function SettingsDialog({
       </section>
     </div>
   );
+}
+
+function ProblemSettingsPanel({ settings, onChange }: {
+  settings: SettingsDialogProps["problemThresholdSettings"];
+  onChange: SettingsDialogProps["onProblemThresholdSettingsChange"];
+}) {
+  return <section className="export-settings-panel">
+    <h2>出题</h2>
+    <p>A 型题隐藏候选点并按 AI 排名评分；B 型题显示候选点，并混合实战、强 AI 与拟人 AI 的选点。</p>
+    <div className="export-setting-grid">
+      <label>默认题型<select value={settings.problemType} onChange={e => onChange({ ...settings, problemType: e.target.value === "A" ? "A" : "B" })}><option value="A">A 型：自由落子</option><option value="B">B 型：显示候选点</option></select></label>
+      <label>B 型候选点数量<input type="number" min="3" max="12" step="1" value={settings.candidateCount} onChange={e => onChange({ ...settings, candidateCount: Math.max(3, Math.min(12, Number(e.target.value) || 5)) })} /></label>
+      <label>拟人引擎棋力偏移<input type="number" min="-20" max="10" step="1" value={settings.humanLevelOffset} onChange={e => onChange({ ...settings, humanLevelOffset: Math.max(-20, Math.min(10, Number(e.target.value) || 0)) })} /><small>-5 表示题目级别 7D 时使用拟人 2D。</small></label>
+      <label>拟人候选数量<input type="number" min="0" max="5" step="1" value={settings.humanCandidateCount} onChange={e => onChange({ ...settings, humanCandidateCount: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} /></label>
+    </div>
+  </section>;
+}
+
+function AnalysisSettingsPanel({ settings, onChange }: {
+  settings: SettingsDialogProps["problemThresholdSettings"];
+  onChange: SettingsDialogProps["onProblemThresholdSettingsChange"];
+}) {
+  return <section className="export-settings-panel">
+    <h2>分析</h2>
+    <p>自动分析完成后，切换到“出题”模式会按以下条件生成缺失的出题标记。留空表示不启用该条件。</p>
+    <div className="export-setting-grid">
+      <label>胜率损失阈值（%）<input type="number" min="0" step="0.1" value={settings.winrateLossThreshold ?? ""} onChange={e => onChange({ ...settings, winrateLossThreshold: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })} /></label>
+      <label>目差损失阈值（目）<input type="number" min="0" step="0.1" value={settings.scoreLossThreshold ?? ""} onChange={e => onChange({ ...settings, scoreLossThreshold: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })} /></label>
+      <label>多个条件的关系<select value={settings.thresholdCombination} onChange={e => onChange({ ...settings, thresholdCombination: e.target.value === "and" ? "and" : "or" })}><option value="or">OR：满足任一条件</option><option value="and">AND：同时满足</option></select></label>
+    </div>
+  </section>;
 }
 
 function clamp(value: number, min: number, max: number): number {

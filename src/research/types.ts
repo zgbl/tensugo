@@ -64,10 +64,16 @@ export type ProblemCandidateScore = {
   winrate: number;
   scoreLead: number;
   pv: string[];
+  source?: "actual" | "strong-ai" | "human-ai" | "manual";
+  evaluatedWinrate?: number;
+  winrateLoss?: number;
+  evaluationVisits?: number;
 };
 
 export type ProblemItem = {
   id: string;
+  problemType?: "A" | "B";
+  choicesShuffled?: boolean;
   moveNumber: number;
   color: "black" | "white";
   sourceNodeId?: string;
@@ -80,6 +86,16 @@ export type ProblemItem = {
     threshold: number;
     value: number;
   } | {
+    type: "scoreLoss";
+    threshold: number;
+    value: number;
+  } | {
+    type: "winrateAndScoreLoss" | "winrateOrScoreLoss";
+    winrateThreshold: number;
+    winrateValue: number;
+    scoreThreshold: number;
+    scoreValue: number;
+  } | {
     type: "manual";
   };
   prompt: string;
@@ -90,6 +106,17 @@ export type ProblemItem = {
     modelName?: string;
     generatedAt: string;
     candidates: EngineCandidateMove[];
+    humanCandidates?: EngineCandidateMove[];
+    humanLevel?: string;
+    scoringAudit?: {
+      originalBestMove: string;
+      auditedBestMove: string;
+      originalBestVisits: number;
+      auditVisits: number;
+      originalAnalysisVisits?: number;
+      auditedAnalysisVisits?: number;
+      needsManualReview: boolean;
+    };
   };
 };
 
@@ -97,7 +124,9 @@ export type ProblemSet = {
   version: 1;
   generatedAt: string;
   settings: {
-    winrateLossThreshold: number;
+    winrateLossThreshold: number | null;
+    scoreLossThreshold?: number | null;
+    thresholdCombination?: "and" | "or";
     candidateLimit: number;
     targetPlayer?: string;
   };

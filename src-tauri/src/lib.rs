@@ -8,21 +8,26 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 const ANALYSIS_COLLECT_MIN_MS: u64 = 120;
-const ANALYSIS_COLLECT_MAX_MS: u64 = 500;
+const ANALYSIS_COLLECT_MAX_MS: u64 = 15_000;
 const CONTINUOUS_ANALYSIS_INTERVAL_CS: usize = 30;
 const ANALYSIS_BOOT_WAIT_MS: u64 = 300_000;
 const ENGINE_TEST_BOOT_WAIT_MS: u64 = 180_000;
 const PDF_EXPORT_TIMEOUT_MS: u64 = 45_000;
 const ENGINE_MEMORY_SOFT_LIMIT_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+const GENMOVE_VISITS_TIMEOUT_MS: u64 = 600_000;
 
 struct EngineState {
-    session: Mutex<Option<EngineSession>>,
+    cancel_generation: Arc<AtomicBool>,
+    session: Arc<Mutex<Option<EngineSession>>>,
+    machine_sessions: Arc<Mutex<Vec<Option<EngineSession>>>>,
+    problem_session: Arc<Mutex<Option<EngineSession>>>,
 }
 
 struct EngineSession {
@@ -51,8 +56,8 @@ impl Drop for EngineSession {
 #[derive(Debug, Deserialize)]
 struct AnalyzeMove {
     color: String,
-    x: usize,
-    y: usize,
+    x: isize,
+    y: isize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +68,20 @@ struct AnalyzeRequest {
     moves: Vec<AnalyzeMove>,
     next_color: String,
     max_visits: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerateMoveRequest {
+    profile: EngineProfile,
+    board_size: usize,
+    komi: f64,
+    max_time_seconds: f64,
+    max_visits: usize,
+    moves: Vec<AnalyzeMove>,
+    next_color: String,
+    search_limit: String,
+    #[serde(default)]
+    engine_slot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +119,14 @@ struct AnalysisResult {
     status: String,
     candidates: Vec<CandidateMove>,
     raw_output: String,
+    diagnostics: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GenerateMoveResult {
+    ok: bool,
+    status: String,
+    move_name: Option<String>,
     diagnostics: String,
 }
 
@@ -168,6 +195,18 @@ struct WriteTextFileResult {
 struct SaveProblemResult {
     ok: bool,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProblemLibraryItem {
+    id: String,
+    source_file_name: String,
+    move_number: i32,
+    board_size: i32,
+    color: String,
+    updated_at: String,
+    payload: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -352,9 +391,10 @@ fn read_file_bytes(path: String) -> ReadFileBytesResult {
 
 #[tauri::command]
 fn save_problem_to_database(payload: String) -> SaveProblemResult {
-    let database_url = std::env::var("TENSUGO_PROBLEM_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://tensugo:tensugo_dev@127.0.0.1:5432/tensugo_forum".to_string()
-    });
+    let database_url = match problem_database_url() {
+        Ok(value) => value,
+        Err(error) => return SaveProblemResult { ok: false, error: Some(error) },
+    };
     let value: serde_json::Value = match serde_json::from_str(&payload) {
         Ok(value) => value,
         Err(error) => {
@@ -445,9 +485,7 @@ fn save_problem_to_database(payload: String) -> SaveProblemResult {
 
 #[tauri::command]
 fn find_problem_by_position_hash(position_hash: String) -> Result<ProblemDuplicateResult, String> {
-    let database_url = std::env::var("TENSUGO_PROBLEM_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://tensugo:tensugo_dev@127.0.0.1:5432/tensugo_forum".to_string()
-    });
+    let database_url = problem_database_url()?;
     let mut config = database_url.parse::<postgres::Config>().map_err(|error| error.to_string())?;
     config.connect_timeout(Duration::from_secs(2));
     let mut client = config.connect(NoTls).map_err(|error| error.to_string())?;
@@ -471,6 +509,73 @@ fn find_problem_by_position_hash(position_hash: String) -> Result<ProblemDuplica
             move_number: None,
         },
     })
+}
+
+#[tauri::command]
+fn list_problem_library() -> Result<Vec<ProblemLibraryItem>, String> {
+    let database_url = problem_database_url()?;
+    let mut config = database_url.parse::<postgres::Config>().map_err(|error| error.to_string())?;
+    config.connect_timeout(Duration::from_secs(2));
+    let mut client = config.connect(NoTls).map_err(|error| error.to_string())?;
+    let rows = client.query(
+        "SELECT id, source_file_name, move_number, board_size, color, updated_at::text, payload FROM go_problems ORDER BY created_at ASC, id ASC",
+        &[],
+    ).map_err(|error| error.to_string())?;
+    Ok(rows.into_iter().map(|row| ProblemLibraryItem {
+        id: row.get(0),
+        source_file_name: row.get(1),
+        move_number: row.get(2),
+        board_size: row.get(3),
+        color: row.get(4),
+        updated_at: row.get(5),
+        payload: row.get(6),
+    }).collect())
+}
+
+fn problem_database_url() -> Result<String, String> {
+    for key in ["TENSUGO_PROBLEM_DATABASE_URL", "DATABASE_URL"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.trim().is_empty() {
+                return validate_problem_database_url(value, key);
+            }
+        }
+    }
+    let mut roots = Vec::new();
+    if let Ok(current) = std::env::current_dir() {
+        roots.push(current);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    for root in roots {
+        for directory in root.ancestors().take(8) {
+            let path = directory.join(".env");
+            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            for wanted_key in ["TENSUGO_PROBLEM_DATABASE_URL", "DATABASE_URL"] {
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') { continue; }
+                    let Some((key, value)) = line.split_once('=') else { continue };
+                    if key.trim() == wanted_key && !value.trim().is_empty() {
+                        return validate_problem_database_url(value.trim().trim_matches(['\'', '"']).to_string(), wanted_key);
+                    }
+                }
+            }
+        }
+    }
+    Err("数据库连接未配置；Desktop 未能从 TENSUGO_PROBLEM_DATABASE_URL、DATABASE_URL 或项目 .env 读取连接".to_string())
+}
+
+fn validate_problem_database_url(value: String, source: &str) -> Result<String, String> {
+    let without_query = value.split('?').next().unwrap_or(&value).trim_end_matches('/');
+    let database = without_query.rsplit('/').next().unwrap_or("");
+    if !value.contains("://") || database.is_empty() || database.contains(':') {
+        return Err(format!("{} 缺少数据库名；连接必须以 /tensugo_forum 之类的数据库名结尾", source));
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -501,11 +606,16 @@ fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
         return run_engine_start_test(&app, &profile, diagnostics);
     }
 
-    for (label, path) in [
+    let mut required_paths = vec![
         ("katago", profile.executable_path.as_str()),
-        ("model", profile.model_path.as_str()),
-        ("config", profile.config_path.as_str()),
-    ] {
+        ("normal model", profile.model_path.as_str()),
+        ("normal config", profile.config_path.as_str()),
+    ];
+    if is_human_engine_mode(&profile) {
+        required_paths.push(("human model", profile.human_model_path.as_str()));
+        required_paths.push(("human config", profile.human_config_path.as_str()));
+    }
+    for (label, path) in required_paths {
         if std::path::Path::new(path).exists() {
             diagnostics.push(format!("OK {}: {}", label, path));
         } else {
@@ -521,12 +631,16 @@ fn probe_engine(app: AppHandle, profile: EngineProfile) -> EngineProbeResult {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             diagnostics.push(stdout.clone());
 
-            if !std::path::Path::new(&profile.model_path).exists()
+            if gtp_arguments(&profile).is_err()
+                || !std::path::Path::new(&profile.model_path).exists()
                 || !std::path::Path::new(&profile.config_path).exists()
+                || (is_human_engine_mode(&profile)
+                    && (!std::path::Path::new(&profile.human_model_path).exists()
+                        || !std::path::Path::new(&profile.human_config_path).exists()))
             {
                 return EngineProbeResult {
                     ok: false,
-                    summary: "模型或配置文件不存在".to_string(),
+                    summary: "当前模式所需的模型或配置文件不存在".to_string(),
                     diagnostics: diagnostics.join("\n"),
                 };
             }
@@ -718,13 +832,23 @@ fn engine_status_report(profile: &EngineProfile, exit_status: Option<&str>) -> S
         std::path::Path::new(&profile.executable_path).exists(),
     ));
     lines.push(status_line(
-        "Model found",
+        "Normal model found",
         std::path::Path::new(&profile.model_path).exists(),
     ));
     lines.push(status_line(
-        "Config found",
+        "Normal config found",
         std::path::Path::new(&profile.config_path).exists(),
     ));
+    if is_human_engine_mode(profile) {
+        lines.push(status_line(
+            "Human model found",
+            std::path::Path::new(&profile.human_model_path).exists(),
+        ));
+        lines.push(status_line(
+            "Human config found",
+            std::path::Path::new(&profile.human_config_path).exists(),
+        ));
+    }
     lines.push(status_line("Profile", true));
 
     if let Some(status) = exit_status {
@@ -809,7 +933,7 @@ fn windows_exit_code_info(code: &str) -> Option<WindowsExitCodeInfo> {
 #[tauri::command]
 fn analyze_position(
     app: AppHandle,
-    state: tauri::State<EngineState>,
+    state: tauri::State<'_, EngineState>,
     request: AnalyzeRequest,
 ) -> AnalysisResult {
     let mut guard = match state.session.lock() {
@@ -870,7 +994,288 @@ fn analyze_position(
     }
     session.current_position_key = position_key;
 
-    collect_analysis(session, request.max_visits)
+    let result = collect_analysis(session, request.max_visits);
+    stop_search_session(session);
+    result
+}
+
+#[tauri::command]
+async fn analyze_problem_position(
+    app: AppHandle,
+    state: tauri::State<'_, EngineState>,
+    request: AnalyzeRequest,
+) -> Result<AnalysisResult, String> {
+    let session_state = Arc::clone(&state.problem_session);
+    tauri::async_runtime::spawn_blocking(move || analyze_problem_position_blocking(app, session_state, request))
+        .await
+        .map_err(|error| format!("拟人出题分析任务异常: {}", error))
+}
+
+fn analyze_problem_position_blocking(
+    app: AppHandle,
+    session_state: Arc<Mutex<Option<EngineSession>>>,
+    request: AnalyzeRequest,
+) -> AnalysisResult {
+    let mut guard = match session_state.lock() {
+        Ok(guard) => guard,
+        Err(error) => return analysis_error("engine-state-lock-failed", error.to_string()),
+    };
+    let profile_key = profile_key(&request.profile);
+    if guard.as_ref().map(|session| session.profile_key.as_str()) != Some(profile_key.as_str()) {
+        *guard = match start_engine_session(&app, &request.profile, &profile_key) {
+            Ok(session) => Some(session),
+            Err(result) => return result,
+        };
+    }
+    let session = match guard.as_mut() {
+        Some(session) => session,
+        None => return analysis_error("engine-session-missing", "拟人出题引擎会话不存在".to_string()),
+    };
+    drain_receiver(&session.stdout_rx);
+    drain_receiver(&session.stderr_rx);
+    if let Err(error) = write_position_commands(session, &request) {
+        *guard = None;
+        return analysis_error("engine-command-failed", error);
+    }
+    session.current_position_key = request_position_key(&request);
+    let result = collect_analysis(session, request.max_visits);
+    stop_search_session(session);
+    result
+}
+
+fn analysis_error(status: &str, diagnostics: String) -> AnalysisResult {
+    AnalysisResult { ok: false, status: status.to_string(), candidates: Vec::new(), raw_output: String::new(), diagnostics }
+}
+
+#[tauri::command]
+async fn generate_move(
+    app: AppHandle,
+    state: tauri::State<'_, EngineState>,
+    request: GenerateMoveRequest,
+) -> Result<GenerateMoveResult, String> {
+    let session_state = Arc::clone(&state.session);
+    let machine_sessions = Arc::clone(&state.machine_sessions);
+    let cancel_generation = Arc::clone(&state.cancel_generation);
+    tauri::async_runtime::spawn_blocking(move || {
+        generate_move_blocking(app, session_state, machine_sessions, cancel_generation, request)
+    })
+    .await
+    .map_err(|error| format!("KataGo 落子任务异常: {}", error))
+}
+
+fn generate_move_blocking(
+    app: AppHandle,
+    session_state: Arc<Mutex<Option<EngineSession>>>,
+    machine_sessions: Arc<Mutex<Vec<Option<EngineSession>>>>,
+    cancel_generation: Arc<AtomicBool>,
+    request: GenerateMoveRequest,
+) -> GenerateMoveResult {
+    if let Some(slot_name) = request.engine_slot.as_deref() {
+        let slot_index = if slot_name == "white" { 1 } else { 0 };
+        let mut pool = match machine_sessions.lock() {
+            Ok(pool) => pool,
+            Err(error) => return generate_move_error("engine-state-lock-failed", error.to_string()),
+        };
+        let mut slot = pool.get_mut(slot_index).and_then(Option::take);
+        let result = generate_move_on_slot(&app, &cancel_generation, &request, &mut slot);
+        if pool.len() < 2 { pool.resize_with(2, || None); }
+        pool[slot_index] = slot;
+        return result;
+    }
+    let mut guard = match session_state.lock() {
+        Ok(guard) => guard,
+        Err(error) => return generate_move_error("engine-state-lock-failed", error.to_string()),
+    };
+    cancel_generation.store(false, Ordering::SeqCst);
+    let profile_key = profile_key(&request.profile);
+    if guard.as_ref().map(|session| session.profile_key.as_str()) != Some(profile_key.as_str()) {
+        *guard = match start_engine_session(&app, &request.profile, &profile_key) {
+            Ok(session) => Some(session),
+            Err(result) => return generate_move_error(&result.status, result.diagnostics),
+        };
+    }
+    if let Some(result) = restart_engine_if_memory_limit_exceeded(
+        &app,
+        &request.profile,
+        &profile_key,
+        &mut guard,
+    ) {
+        return generate_move_error(&result.status, result.diagnostics);
+    }
+    let session = match guard.as_mut() {
+        Some(session) => session,
+        None => return generate_move_error("engine-session-missing", "KataGo session missing after startup.".to_string()),
+    };
+    stop_continuous_session(session);
+    drain_receiver(&session.stdout_rx);
+    drain_receiver(&session.stderr_rx);
+    if let Err(error) = writeln!(session.stdin, "{}", generate_move_limits_command(&request))
+        .map_err(|error| error.to_string())
+    {
+        *guard = None;
+        return generate_move_error("engine-command-failed", error);
+    }
+    if let Err(error) = write_board_position(
+        session,
+        request.board_size,
+        request.komi,
+        &request.moves,
+    ) {
+        *guard = None;
+        return generate_move_error("engine-command-failed", error);
+    }
+    let color = if request.next_color == "black" { "B" } else { "W" };
+    if let Err(error) = writeln!(session.stdin, "genmove {}", color)
+        .map_err(|error| error.to_string())
+        .and_then(|_| session.stdin.flush().map_err(|error| error.to_string()))
+    {
+        *guard = None;
+        return generate_move_error("engine-command-failed", error);
+    }
+    session.current_position_key = generate_move_position_key(&request);
+    let result = collect_generated_move(
+        session,
+        &cancel_generation,
+        generate_move_timeout_ms(&request),
+    );
+    if result.ok {
+        stop_search_session(session);
+    }
+    result
+}
+
+fn generate_move_on_slot(
+    app: &AppHandle,
+    cancel_generation: &AtomicBool,
+    request: &GenerateMoveRequest,
+    slot: &mut Option<EngineSession>,
+) -> GenerateMoveResult {
+    cancel_generation.store(false, Ordering::SeqCst);
+    let profile_key = profile_key(&request.profile);
+    if slot.as_ref().map(|session| session.profile_key.as_str()) != Some(profile_key.as_str()) {
+        *slot = match start_engine_session(app, &request.profile, &profile_key) {
+            Ok(session) => Some(session),
+            Err(result) => return generate_move_error(&result.status, result.diagnostics),
+        };
+    }
+    let session = match slot.as_mut() {
+        Some(session) => session,
+        None => return generate_move_error("engine-session-missing", "KataGo session missing after startup.".to_string()),
+    };
+    stop_continuous_session(session);
+    drain_receiver(&session.stdout_rx);
+    drain_receiver(&session.stderr_rx);
+    if let Err(error) = writeln!(session.stdin, "{}", generate_move_limits_command(request))
+        .map_err(|error| error.to_string())
+        .and_then(|_| write_board_position(session, request.board_size, request.komi, &request.moves))
+        .and_then(|_| writeln!(session.stdin, "genmove {}", if request.next_color == "black" { "B" } else { "W" }).map_err(|error| error.to_string()))
+        .and_then(|_| session.stdin.flush().map_err(|error| error.to_string()))
+    {
+        *slot = None;
+        return generate_move_error("engine-command-failed", error);
+    }
+    session.current_position_key = generate_move_position_key(request);
+    let result = collect_generated_move(session, cancel_generation, generate_move_timeout_ms(request));
+    if result.ok { stop_search_session(session); }
+    result
+}
+
+#[tauri::command]
+fn cancel_generate_move(state: tauri::State<EngineState>) {
+    state.cancel_generation.store(true, Ordering::SeqCst);
+}
+
+fn generate_move_error(status: &str, diagnostics: String) -> GenerateMoveResult {
+    GenerateMoveResult {
+        ok: false,
+        status: status.to_string(),
+        move_name: None,
+        diagnostics,
+    }
+}
+
+fn collect_generated_move(
+    session: &mut EngineSession,
+    cancel_generation: &AtomicBool,
+    timeout_ms: u64,
+) -> GenerateMoveResult {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut stdout_lines = Vec::new();
+    let mut stderr_lines = Vec::new();
+    while Instant::now() < deadline {
+        if cancel_generation.load(Ordering::SeqCst) {
+            stop_search_session(session);
+            return generate_move_error("genmove-cancelled", "KataGo 落子已取消。".to_string());
+        }
+        stdout_lines.extend(drain_receiver(&session.stdout_rx));
+        stderr_lines.extend(drain_receiver(&session.stderr_rx));
+        if let Some(move_name) = parse_gtp_move_response(&stdout_lines) {
+            return GenerateMoveResult {
+                ok: true,
+                status: "generated".to_string(),
+                move_name: Some(move_name),
+                diagnostics: stderr_lines.join("\n"),
+            };
+        }
+        if let Some(error_line) = stdout_lines.iter().find(|line| line.trim_start().starts_with('?')) {
+            return generate_move_error("gtp-error", format!("{}\n{}", error_line, stderr_lines.join("\n")));
+        }
+        match session.child.try_wait() {
+            Ok(Some(status)) => {
+                return generate_move_error(
+                    "engine-exited-during-genmove",
+                    format!("KataGo 生成落子期间退出: {}\n{}", status, stderr_lines.join("\n")),
+                );
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(error) => return generate_move_error("engine-status-failed", error.to_string()),
+        }
+    }
+    generate_move_error(
+        "genmove-timeout",
+        format!("KataGo 在 {} 秒内没有返回落子。\n{}", timeout_ms / 1000, stderr_lines.join("\n")),
+    )
+}
+
+fn generate_move_limits_command(request: &GenerateMoveRequest) -> String {
+    let max_playouts = 1_000_000_000usize;
+    let (max_visits, max_time) = if request.search_limit == "visits" {
+        (request.max_visits.clamp(1, 1_000_000), 1_000_000_000.0)
+    } else {
+        let max_time = if request.max_time_seconds.is_finite() {
+            request.max_time_seconds.clamp(0.1, 600.0)
+        } else {
+            5.0
+        };
+        (1_000_000_000, max_time)
+    };
+    format!(
+        "kata-set-params {{\"maxVisits\":{},\"maxPlayouts\":{},\"maxTime\":{}}}",
+        max_visits, max_playouts, max_time
+    )
+}
+
+fn generate_move_timeout_ms(request: &GenerateMoveRequest) -> u64 {
+    if request.search_limit == "visits" {
+        GENMOVE_VISITS_TIMEOUT_MS
+    } else {
+        let seconds = if request.max_time_seconds.is_finite() {
+            request.max_time_seconds.clamp(0.1, 600.0)
+        } else {
+            5.0
+        };
+        ((seconds * 1000.0) as u64 + 30_000).clamp(30_000, 630_000)
+    }
+}
+
+fn parse_gtp_move_response(lines: &[String]) -> Option<String> {
+    lines.iter().find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('=') {
+            return None;
+        }
+        trimmed.trim_start_matches('=').trim().split_whitespace().next().map(str::to_string)
+    })
 }
 
 #[tauri::command]
@@ -994,10 +1399,14 @@ fn restart_engine_if_memory_limit_exceeded(
 }
 
 fn stop_continuous_session(session: &mut EngineSession) {
+    stop_search_session(session);
+    session.continuous_analysis = None;
+}
+
+fn stop_search_session(session: &mut EngineSession) {
     let _ = writeln!(session.stdin, "stop");
     let _ = session.stdin.flush();
     wait_after_stop(session);
-    session.continuous_analysis = None;
     drain_receiver(&session.stdout_rx);
     drain_receiver(&session.stderr_rx);
 }
@@ -1187,27 +1596,16 @@ fn write_position_commands_with_visits(
     request: &AnalyzeRequest,
     max_visits: usize,
 ) -> Result<(), String> {
-    writeln!(session.stdin, "boardsize {}", request.board_size)
-        .map_err(|error| error.to_string())?;
-    writeln!(session.stdin, "komi {}", request.komi).map_err(|error| error.to_string())?;
-    writeln!(session.stdin, "clear_board").map_err(|error| error.to_string())?;
-    for game_move in &request.moves {
-        let color = if game_move.color == "black" { "B" } else { "W" };
-        writeln!(
-            session.stdin,
-            "play {} {}",
-            color,
-            to_gtp_point(game_move.x, game_move.y, request.board_size)
-        )
-        .map_err(|error| error.to_string())?;
-    }
+    write_board_position(session, request.board_size, request.komi, &request.moves)?;
     let next_color = if request.next_color == "black" {
         "B"
     } else {
         "W"
     };
-    let max_visits = max_visits.clamp(1, 10000);
-    writeln!(session.stdin, "kata-analyze {} {}", next_color, max_visits)
+    let max_visits = max_visits.clamp(1, 100000);
+    writeln!(session.stdin, "kata-set-params {{\"maxVisits\":{}}}", max_visits)
+        .map_err(|error| error.to_string())?;
+    writeln!(session.stdin, "kata-analyze {} {}", next_color, CONTINUOUS_ANALYSIS_INTERVAL_CS)
         .map_err(|error| error.to_string())?;
     session.stdin.flush().map_err(|error| error.to_string())
 }
@@ -1216,28 +1614,48 @@ fn write_continuous_position_commands(
     session: &mut EngineSession,
     request: &AnalyzeRequest,
 ) -> Result<(), String> {
-    writeln!(session.stdin, "boardsize {}", request.board_size)
-        .map_err(|error| error.to_string())?;
-    writeln!(session.stdin, "komi {}", request.komi).map_err(|error| error.to_string())?;
-    writeln!(session.stdin, "clear_board").map_err(|error| error.to_string())?;
-    for game_move in &request.moves {
-        let color = if game_move.color == "black" { "B" } else { "W" };
-        writeln!(
-            session.stdin,
-            "play {} {}",
-            color,
-            to_gtp_point(game_move.x, game_move.y, request.board_size)
-        )
-        .map_err(|error| error.to_string())?;
-    }
+    write_board_position(session, request.board_size, request.komi, &request.moves)?;
     let next_color = if request.next_color == "black" {
         "B"
     } else {
         "W"
     };
+    writeln!(session.stdin, "kata-set-params {{\"maxVisits\":1000000000}}")
+        .map_err(|error| error.to_string())?;
     writeln!(session.stdin, "{}", continuous_analysis_command(next_color))
         .map_err(|error| error.to_string())?;
     session.stdin.flush().map_err(|error| error.to_string())
+}
+
+fn write_board_position(
+    session: &mut EngineSession,
+    board_size: usize,
+    komi: f64,
+    moves: &[AnalyzeMove],
+) -> Result<(), String> {
+    writeln!(session.stdin, "boardsize {}", board_size)
+        .map_err(|error| error.to_string())?;
+    writeln!(session.stdin, "komi {}", komi).map_err(|error| error.to_string())?;
+    writeln!(session.stdin, "clear_board").map_err(|error| error.to_string())?;
+    for game_move in moves {
+        let color = if game_move.color == "black" { "B" } else { "W" };
+        writeln!(
+            session.stdin,
+            "play {} {}",
+            color,
+            analyze_move_to_gtp_point(game_move, board_size)
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    session.stdin.flush().map_err(|error| error.to_string())
+}
+
+fn analyze_move_to_gtp_point(game_move: &AnalyzeMove, board_size: usize) -> String {
+    if game_move.x < 0 || game_move.y < 0 {
+        "pass".to_string()
+    } else {
+        to_gtp_point(game_move.x as usize, game_move.y as usize, board_size)
+    }
 }
 
 fn continuous_analysis_command(next_color: &str) -> String {
@@ -1326,7 +1744,7 @@ fn collect_continuous_analysis_snapshot(session: &mut EngineSession) -> Analysis
 
 fn collect_analysis(session: &mut EngineSession, max_visits: usize) -> AnalysisResult {
     let collect_ms = (max_visits as u64)
-        .saturating_mul(6)
+        .saturating_mul(20)
         .clamp(ANALYSIS_COLLECT_MIN_MS, ANALYSIS_COLLECT_MAX_MS);
     let deadline = Instant::now() + Duration::from_millis(collect_ms);
     let mut stdout_lines = Vec::new();
@@ -1362,9 +1780,13 @@ fn collect_analysis(session: &mut EngineSession, max_visits: usize) -> AnalysisR
             }
         }
         if stdout_lines.iter().any(|line| line.contains("info move")) {
-            thread::sleep(Duration::from_millis(25));
-            stdout_lines.extend(drain_receiver(&session.stdout_rx));
-            break;
+            let snapshot = parse_analysis_output(&stdout_lines.join("\n"), WinrateScale::KataAnalyzeProbability);
+            let collected_visits = snapshot.iter().map(|candidate| candidate.visits).sum::<usize>();
+            if collected_visits >= max_visits.saturating_mul(9) / 10 {
+                thread::sleep(Duration::from_millis(25));
+                stdout_lines.extend(drain_receiver(&session.stdout_rx));
+                break;
+            }
         }
         thread::sleep(Duration::from_millis(15));
     }
@@ -1444,14 +1866,48 @@ fn gtp_command(profile: &EngineProfile) -> Result<Command, String> {
     }
 
     let mut command = Command::new(&profile.executable_path);
-    command.args([
-        "gtp",
-        "-model",
-        &profile.model_path,
-        "-config",
-        &profile.config_path,
-    ]);
+    command.args(gtp_arguments(profile)?);
     Ok(command)
+}
+
+fn gtp_arguments(profile: &EngineProfile) -> Result<Vec<String>, String> {
+    if profile.executable_path.trim().is_empty() {
+        return Err("KataGo Engine Path 为空".to_string());
+    }
+    if profile.model_path.trim().is_empty() {
+        return Err("普通 Model 为空；拟人模式仍需要普通模型作为 -model".to_string());
+    }
+    if is_human_engine_mode(profile) {
+        if profile.human_model_path.trim().is_empty() {
+            return Err("拟人模式缺少 Human Model（-human-model）".to_string());
+        }
+        if profile.human_config_path.trim().is_empty() {
+            return Err("拟人模式缺少 Human 配置".to_string());
+        }
+        return Ok(vec![
+            "gtp".to_string(),
+            "-model".to_string(),
+            profile.model_path.clone(),
+            "-human-model".to_string(),
+            profile.human_model_path.clone(),
+            "-config".to_string(),
+            profile.human_config_path.clone(),
+        ]);
+    }
+    if profile.config_path.trim().is_empty() {
+        return Err("普通模式缺少普通配置".to_string());
+    }
+    Ok(vec![
+        "gtp".to_string(),
+        "-model".to_string(),
+        profile.model_path.clone(),
+        "-config".to_string(),
+        profile.config_path.clone(),
+    ])
+}
+
+fn is_human_engine_mode(profile: &EngineProfile) -> bool {
+    profile.engine_mode.eq_ignore_ascii_case("human")
 }
 
 fn is_manual_command_profile(profile: &EngineProfile) -> bool {
@@ -1504,8 +1960,13 @@ fn profile_key(profile: &EngineProfile) -> String {
         return format!("manual:{}", profile.command_line.trim());
     }
     format!(
-        "{}|{}|{}",
-        profile.executable_path, profile.model_path, profile.config_path
+        "{}|{}|{}|{}|{}|{}",
+        profile.executable_path,
+        profile.model_path,
+        profile.config_path,
+        profile.human_model_path,
+        profile.human_config_path,
+        profile.engine_mode
     )
 }
 
@@ -1518,6 +1979,19 @@ fn request_position_key(request: &AnalyzeRequest) -> String {
         .join("|");
     format!(
         "{}:{}:{}:{}",
+        request.board_size, request.komi, request.next_color, moves
+    )
+}
+
+fn generate_move_position_key(request: &GenerateMoveRequest) -> String {
+    let moves = request
+        .moves
+        .iter()
+        .map(|game_move| format!("{}:{}:{}", game_move.color, game_move.x, game_move.y))
+        .collect::<Vec<_>>()
+        .join("|");
+    format!(
+        "genmove:{}:{}:{}:{}",
         request.board_size, request.komi, request.next_color, moves
     )
 }
@@ -1748,6 +2222,85 @@ fn tokens_after_until_keyword(line: &str, key: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn engine_profile(mode: &str) -> EngineProfile {
+        EngineProfile {
+            name: "test".to_string(),
+            executable_path: "/opt/homebrew/bin/katago".to_string(),
+            model_path: "/models/strong.bin.gz".to_string(),
+            config_path: "/configs/normal.cfg".to_string(),
+            human_model_path: "/models/human.bin.gz".to_string(),
+            human_config_path: "/configs/human.cfg".to_string(),
+            engine_mode: mode.to_string(),
+            command_line: String::new(),
+        }
+    }
+
+    fn generate_request(search_limit: &str, max_time_seconds: f64, max_visits: usize) -> GenerateMoveRequest {
+        GenerateMoveRequest {
+            profile: engine_profile("human"),
+            board_size: 19,
+            komi: 7.5,
+            max_time_seconds,
+            max_visits,
+            moves: Vec::new(),
+            next_color: "black".to_string(),
+            search_limit: search_limit.to_string(),
+        }
+    }
+
+    #[test]
+    fn normal_engine_uses_normal_model_and_config() {
+        assert_eq!(
+            gtp_arguments(&engine_profile("normal")).unwrap(),
+            vec!["gtp", "-model", "/models/strong.bin.gz", "-config", "/configs/normal.cfg"]
+        );
+    }
+
+    #[test]
+    fn human_engine_loads_strong_and_human_models_together() {
+        assert_eq!(
+            gtp_arguments(&engine_profile("human")).unwrap(),
+            vec![
+                "gtp",
+                "-model",
+                "/models/strong.bin.gz",
+                "-human-model",
+                "/models/human.bin.gz",
+                "-config",
+                "/configs/human.cfg",
+            ]
+        );
+    }
+
+    #[test]
+    fn gtp_move_response_parses_move_pass_and_resign() {
+        assert_eq!(parse_gtp_move_response(&["= Q16".to_string()]), Some("Q16".to_string()));
+        assert_eq!(parse_gtp_move_response(&["= pass".to_string()]), Some("pass".to_string()));
+        assert_eq!(parse_gtp_move_response(&["= resign".to_string()]), Some("resign".to_string()));
+    }
+
+    #[test]
+    fn pass_move_is_written_as_gtp_pass() {
+        let game_move = AnalyzeMove { color: "white".to_string(), x: -1, y: -1 };
+        assert_eq!(analyze_move_to_gtp_point(&game_move, 19), "pass");
+    }
+
+    #[test]
+    fn genmove_time_limit_disables_other_search_caps() {
+        assert_eq!(
+            generate_move_limits_command(&generate_request("time", 5.0, 400)),
+            "kata-set-params {\"maxVisits\":1000000000,\"maxPlayouts\":1000000000,\"maxTime\":5}"
+        );
+    }
+
+    #[test]
+    fn genmove_visit_limit_disables_time_cap() {
+        assert_eq!(
+            generate_move_limits_command(&generate_request("visits", 5.0, 800)),
+            "kata-set-params {\"maxVisits\":800,\"maxPlayouts\":1000000000,\"maxTime\":1000000000}"
+        );
+    }
+
     #[test]
     fn lz_analyze_winrate_uses_centipercent_scale_below_one_percent() {
         let output = "info move G16 visits 53 winrate 53 scoreLead -120.5 pv G16 H16";
@@ -1815,7 +2368,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineState {
-            session: Mutex::new(None),
+            cancel_generation: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(None)),
+            machine_sessions: Arc::new(Mutex::new(vec![None, None])),
+            problem_session: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             app_name,
@@ -1829,12 +2385,16 @@ pub fn run() {
             write_text_file,
             save_problem_to_database,
             find_problem_by_position_hash,
+            list_problem_library,
             default_engine_profile,
             discover_engine_profile,
             choose_engine_path,
             probe_engine,
             analyze_position,
+            analyze_problem_position,
             analyze_position_continuous,
+            generate_move,
+            cancel_generate_move,
             stop_continuous_analysis
         ])
         .run(tauri::generate_context!())
