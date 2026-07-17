@@ -1191,8 +1191,7 @@ export function App() {
     setProblemSolveIndex(queueIndex);
     setLastAction(`做题 ${queueIndex + 1}/${problemSolveQueue.length || 1}：${item.id}`);
   };
-  const openProblemRange = (startIndex: number, endIndex: number) => {
-    const queue = visibleProblemLibrary.slice(startIndex, endIndex + 1);
+  const openProblemQueue = (queue: ProblemLibraryItem[], description: string) => {
     if (queue.length === 0) return;
     setProblemSolveQueue(queue);
     setProblemSolveAnswers({});
@@ -1212,7 +1211,16 @@ export function App() {
     setGameTree(nextTree); setSelectedGameNodeId(selectedNodeId); setCurrentPathNodeIds(moveNodeIdsToNode(nextTree, selectedNodeId)); setCurrentMoveNumber(positionMoves.length);
     setActiveProblem(problem); setProblemAiCandidates(problem.analysis?.candidates ?? problem.candidateScores); setEngineCandidates(problem.candidateScores.map((candidate) => ({ ...candidate })));
     setPreviewCandidateRank(null); setProblemSolveMoveName(null); setIsEditingProblemCandidates(false); setIsProblemPreview(true); setProblemSolveIndex(0);
-    setLastAction(`已打开题目范围 ${startIndex + 1}–${endIndex + 1}，当前 1/${queue.length}：${first.id}`);
+    setLastAction(`${description}，当前 1/${queue.length}：${first.id}`);
+  };
+  const openProblemRange = (startIndex: number, endIndex: number) => {
+    const queue = visibleProblemLibrary.slice(startIndex, endIndex + 1);
+    openProblemQueue(queue, `已打开题目范围 ${startIndex + 1}–${endIndex + 1}`);
+  };
+  const openRandomProblems = (requestedCount: number) => {
+    const count = Math.min(Math.max(1, requestedCount), visibleProblemLibrary.length);
+    const queue = shuffledProblemCandidates(visibleProblemLibrary).slice(0, count);
+    openProblemQueue(queue, `已从 ${visibleProblemLibrary.length} 道 ${problemSolveType} 型题中无放回随机抽取 ${queue.length} 题`);
   };
   const jumpProblemInQueue = (nextIndex: number) => {
     const item = problemSolveQueue[nextIndex];
@@ -1632,6 +1640,40 @@ export function App() {
         ? `已从第 ${currentMoveNumber} 手开始摆变化，当前变化第 1 手。`
         : `已落第 ${nextMoves.length} 手（${nextColorToPlay === "black" ? "黑棋" : "白棋"}）。`
     );
+    queueAnalysisIfEnabled();
+  };
+  const playPass = () => {
+    invalidatePendingAnalysis();
+    setAutoAnalysisResume(null);
+    if (humanPlaySessionRef.current) {
+      playHumanPass("human");
+      return;
+    }
+    if (appMode === "problem-solve") {
+      setLastAction("做题模式不能用 Pass 作答。");
+      return;
+    }
+    clearProblemDraftForNavigation();
+    const color = getNextColor(currentMoveNumber);
+    const nextMoveNumber = currentMoveNumber + 1;
+    const parentNodeId = currentMoveNumber > 0 ? currentPathNodeIds[currentMoveNumber - 1] ?? "root" : "root";
+    const treeMove = { color, point: null };
+    const existingChildNodeId = findChildNodeIdByMove(gameTree, parentNodeId, treeMove);
+    const { tree: nextTree, nodeId } = appendMoveToGameTree(gameTree, parentNodeId, treeMove);
+    const nextMoves = [
+      ...moves.slice(0, currentMoveNumber),
+      { moveNumber: nextMoveNumber, color, x: -1, y: -1, pass: true }
+    ];
+    setGameTree(nextTree);
+    setSelectedGameNodeId(nodeId);
+    setMoves(nextMoves);
+    setCurrentPathNodeIds([...currentPathNodeIds.slice(0, currentMoveNumber), nodeId]);
+    setCurrentMoveNumber(nextMoves.length);
+    setEngineCandidates([]);
+    setHasAnalysisAttempted(false);
+    setLastAction(existingChildNodeId
+      ? `已切换到已有 Pass 分支，当前第 ${nextMoves.length} 手。`
+      : `第 ${nextMoves.length} 手${color === "black" ? "黑棋" : "白棋"} Pass，现在轮到${color === "black" ? "白棋" : "黑棋"}。`);
     queueAnalysisIfEnabled();
   };
   const startHumanPlay = async (settings: HumanPlaySettings) => {
@@ -3430,6 +3472,7 @@ export function App() {
         onPromoteBranch={promoteCurrentBranch}
         onReturnToMainBranch={returnToMainBranch}
         onDeleteBranch={deleteCurrentBranch}
+        onPass={playPass}
         onOpenAutoAnalysis={() => setIsAutoAnalysisOpen(true)}
         onOpenBatchAnalysis={() => setIsBatchAnalysisOpen(true)}
         onOpenAbout={() => setIsAboutOpen(true)}
@@ -3784,6 +3827,7 @@ export function App() {
         onProblemTypeChange={(type) => { setProblemSolveType(type); setProblemSolveQueue([]); setProblemSolveAnswers({}); setActiveProblem(null); }}
         onClose={() => setIsProblemLibraryOpen(false)}
         onOpenRange={openProblemRange}
+        onOpenRandom={openRandomProblems}
       />
       <AutoAnalysisDialog
         currentMoveNumber={currentMoveNumber}

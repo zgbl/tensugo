@@ -49,6 +49,7 @@ type TopToolbarProps = {
   onPromoteBranch: () => void;
   onReturnToMainBranch: () => void;
   onDeleteBranch: () => void;
+  onPass: () => void;
   t: Translator;
 };
 
@@ -111,6 +112,7 @@ export function TopToolbar({
   onPromoteBranch,
   onReturnToMainBranch,
   onDeleteBranch,
+  onPass,
   t
 }: TopToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -160,7 +162,8 @@ export function TopToolbar({
           { label: "人机对弈...", action: onOpenHumanPlay }
         ]} />
         <Menu label={t("menuEdit")} items={[
-          { label: t("insertVariation"), action: onAddVariation }
+          { label: t("insertVariation"), action: onAddVariation },
+          { label: "停一手（Pass）", action: onPass }
         ]} />
         <Menu label={t("menuSettings")} items={[
           { label: t("preferences"), action: onOpenSettings }
@@ -215,6 +218,7 @@ export function TopToolbar({
             <CompactAction icon="★" label={t("setMainBranch")} onClick={onPromoteBranch} />
             <CompactAction icon="↩" label={t("returnMainBranch")} onClick={onReturnToMainBranch} />
             <CompactAction icon="⌫" label={t("delete")} onClick={onDeleteBranch} />
+            <CompactAction icon="P" label="停一手（Pass）" onClick={onPass} />
             <CompactAction icon="⌖" label={t("jump")} />
           </div>
           <label>{t("komi")} <input type="number" step="0.5" value={komi} onChange={(event) => handleKomiChange(event.target.value)} /></label>

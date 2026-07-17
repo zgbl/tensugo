@@ -2904,6 +2904,9 @@ button:hover {
 .problem-library-range input { width: 64px; }
 .problem-library-range button { background: #237d76; border: 0; border-radius: 5px; color: #fff; cursor: pointer; font-weight: 700; padding: 7px 14px; }
 .problem-library-range button.secondary { background: #e7efed; border: 1px solid #aebfbb; color: #29433f; }
+.problem-library-range button.random { background: #9a5b18; }
+.problem-library-random-label { border-left: 1px solid #c8d4d1; margin-left: 3px; padding-left: 12px; }
+.problem-library-range input.problem-library-random-count { width: 58px; }
 .problem-library-selection { color: #356d65; font-weight: 700; margin-right: auto; }
 .problem-library-error { color: #a62525; margin: 0; }
 .problem-library-type { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }

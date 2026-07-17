@@ -9,18 +9,21 @@ type Props = {
   problems: ProblemLibraryItem[];
   onClose: () => void;
   onOpenRange: (startIndex: number, endIndex: number) => void;
+  onOpenRandom: (count: number) => void;
   problemType: SolvableProblemType;
   onProblemTypeChange: (problemType: SolvableProblemType) => void;
 };
 
-export function ProblemLibraryDialog({ error, loading, open, problems, onClose, onOpenRange, problemType, onProblemTypeChange }: Props) {
+export function ProblemLibraryDialog({ error, loading, open, problems, onClose, onOpenRange, onOpenRandom, problemType, onProblemTypeChange }: Props) {
   const count = problems.length;
   const [start, setStart] = useState(1);
   const [end, setEnd] = useState(Math.max(1, count));
+  const [randomCount, setRandomCount] = useState(Math.min(30, Math.max(1, count)));
   useEffect(() => {
     if (!open) return;
     setStart(1);
     setEnd(Math.max(1, count));
+    setRandomCount(Math.min(30, Math.max(1, count)));
   }, [count, open, problemType]);
   if (!open) return null;
   const normalizedStart = Math.max(1, Math.min(count || 1, start));
@@ -70,6 +73,9 @@ export function ProblemLibraryDialog({ error, loading, open, problems, onClose, 
           <label>从 <input name="start" type="number" min="1" max={Math.max(1, count)} value={normalizedStart} onChange={(event) => setStart(Number(event.target.value) || 1)} /></label>
           <label>到 <input name="end" type="number" min={normalizedStart} max={Math.max(1, count)} value={normalizedEnd} onChange={(event) => setEnd(Number(event.target.value) || normalizedStart)} /></label>
           <button type="submit" disabled={loading || count === 0}>开始做题</button>
+          <span className="problem-library-random-label">随机抽取</span>
+          <input aria-label="随机抽题数量" className="problem-library-random-count" type="number" min="1" max={Math.max(1, count)} value={Math.min(Math.max(1, randomCount), Math.max(1, count))} onChange={(event) => setRandomCount(Number(event.target.value) || 1)} />
+          <button className="random" type="button" disabled={loading || count === 0} onClick={() => onOpenRandom(Math.min(Math.max(1, randomCount), count))}>随机开始</button>
         </footer>
       </form>
     </div>
