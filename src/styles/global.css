@@ -928,6 +928,18 @@ button:hover {
   gap: 3px;
 }
 
+.human-play-form .human-play-mode-field {
+  grid-column: 1;
+}
+
+.human-play-form .human-play-black-engine-field {
+  grid-column: 1;
+}
+
+.human-play-form .human-play-engine-mode-field {
+  grid-column: 1;
+}
+
 .human-play-form select,
 .human-play-form input {
   background: #fff;

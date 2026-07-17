@@ -37,6 +37,7 @@ type TopToolbarProps = {
   onEngineModeChange: (mode: EngineMode) => void;
   onHumanLevelChange: (level: HumanEngineLevel) => void;
   onOpenHumanPlay: () => void;
+  onOpenEngineMatch: () => void;
   onSaveResearch: () => void;
   onShowVariationNumbersChange: (enabled: boolean) => void;
   onToggleSavedAnalysis: () => void;
@@ -100,6 +101,7 @@ export function TopToolbar({
   onEngineModeChange,
   onHumanLevelChange,
   onOpenHumanPlay,
+  onOpenEngineMatch,
   onSaveResearch,
   onShowVariationNumbersChange,
   onToggleSavedAnalysis,
@@ -159,7 +161,8 @@ export function TopToolbar({
           { label: t("engineSettings"), action: onOpenSettings }
         ]} />
         <Menu label="对弈" items={[
-          { label: "人机对弈...", action: onOpenHumanPlay }
+          { label: "人机对弈...", action: onOpenHumanPlay },
+          { label: "机机对弈...", action: onOpenEngineMatch }
         ]} />
         <Menu label={t("menuEdit")} items={[
           { label: t("insertVariation"), action: onAddVariation },

@@ -62,7 +62,7 @@ import {
   type GameTree
 } from "../game/gameTree";
 import type { ReviewMove, ReviewStone } from "../game/sampleGame";
-import type { HumanPlaySession, HumanPlaySettings } from "../play/types";
+import type { HumanPlaySession, HumanPlaySettings, PlayMode } from "../play/types";
 import { createFixedHandicapSetupStones, nextHumanPlayColor } from "../play/humanPlayRules";
 import {
   applyHumanPlayPass,
@@ -240,6 +240,7 @@ export function App() {
   const [problemThresholdSettings, setProblemThresholdSettings] = useState<ProblemThresholdSettings>(() => loadProblemThresholdSettings());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHumanPlaySetupOpen, setIsHumanPlaySetupOpen] = useState(false);
+  const [playSetupMode, setPlaySetupMode] = useState<PlayMode>("human-vs-engine");
   const [humanPlaySession, setHumanPlaySession] = useState<HumanPlaySession | null>(null);
   const [isEnginePlayingMove, setIsEnginePlayingMove] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
@@ -3483,7 +3484,14 @@ export function App() {
         humanEngineLevel={engineProfile?.humanLevel ?? inferHumanEngineLevel(engineProfile?.humanConfigPath)}
         onEngineModeChange={changeEngineMode}
         onHumanLevelChange={changeHumanEngineLevel}
-        onOpenHumanPlay={() => setIsHumanPlaySetupOpen(true)}
+        onOpenHumanPlay={() => {
+          setPlaySetupMode("human-vs-engine");
+          setIsHumanPlaySetupOpen(true);
+        }}
+        onOpenEngineMatch={() => {
+          setPlaySetupMode("engine-vs-engine");
+          setIsHumanPlaySetupOpen(true);
+        }}
         onAddVariation={insertCurrentVariation}
         onToggleSavedAnalysis={() => {
           if (!hasSavedAnalysis) {
@@ -3773,22 +3781,31 @@ export function App() {
         t={t}
       /> : null}
       {humanPlaySession ? (
-        <div className="human-play-toolbar" aria-label="人机对弈控制">
-          <strong>人机对弈</strong>
-          <span>你执{humanPlaySession.humanColor === "black" ? "黑" : "白"}</span>
+        <div className="human-play-toolbar" aria-label={humanPlaySession.playMode === "engine-vs-engine" ? "机机对弈控制" : "人机对弈控制"}>
+          <strong>{humanPlaySession.playMode === "engine-vs-engine" ? "机机对弈" : "人机对弈"}</strong>
+          {humanPlaySession.playMode !== "engine-vs-engine" ? <span>你执{humanPlaySession.humanColor === "black" ? "黑" : "白"}</span> : null}
           <span>{humanPlaySession.handicap >= 2 ? `让 ${humanPlaySession.handicap} 子` : "分先"}</span>
           <span>{humanPlaySession.searchLimit === "time" ? `${humanPlaySession.maxTimeSeconds} 秒/手` : `${humanPlaySession.maxVisits} Visits/手`}</span>
           <span className={isEnginePlayingMove ? "thinking" : ""}>
             {humanPlaySession.status === "playing"
               ? isEnginePlayingMove
                 ? "引擎思考中…"
-                : nextHumanPlayColor(humanPlaySession.handicap, moves) === humanPlaySession.humanColor ? "轮到你" : "等待引擎"
+                : humanPlaySession.playMode === "engine-vs-engine"
+                  ? "等待下一方引擎"
+                  : nextHumanPlayColor(humanPlaySession.handicap, moves) === humanPlaySession.humanColor ? "轮到你" : "等待引擎"
               : humanPlaySession.result ?? "对局结束"}
           </span>
-          <button type="button" disabled={humanPlaySession.status !== "playing" || isEnginePlayingMove || nextHumanPlayColor(humanPlaySession.handicap, moves) !== humanPlaySession.humanColor} onClick={() => playHumanPass("human")}>停一手</button>
-          <button type="button" disabled={humanPlaySession.status !== "playing" || isEnginePlayingMove} onClick={resignHumanPlay}>认输</button>
+          {humanPlaySession.playMode !== "engine-vs-engine" ? (
+            <>
+              <button type="button" disabled={humanPlaySession.status !== "playing" || isEnginePlayingMove || nextHumanPlayColor(humanPlaySession.handicap, moves) !== humanPlaySession.humanColor} onClick={() => playHumanPass("human")}>停一手</button>
+              <button type="button" disabled={humanPlaySession.status !== "playing" || isEnginePlayingMove} onClick={resignHumanPlay}>认输</button>
+            </>
+          ) : null}
           <button type="button" onClick={stopHumanPlay}>结束对弈</button>
-          <button type="button" onClick={() => setIsHumanPlaySetupOpen(true)}>新对局</button>
+          <button type="button" onClick={() => {
+            setPlaySetupMode(humanPlaySession.playMode ?? "human-vs-engine");
+            setIsHumanPlaySetupOpen(true);
+          }}>新对局</button>
         </div>
       ) : appMode === "problem-create" && activeProblem ? (
         <div className="problem-review-toolbar" aria-label="出题预览">
@@ -3927,6 +3944,7 @@ export function App() {
         engineMode={engineProfile?.engineMode ?? "normal"}
         engineName={engineProfile?.name ?? "未配置"}
         humanLevel={engineProfile?.humanLevel ?? inferHumanEngineLevel(engineProfile?.humanConfigPath)}
+        initialPlayMode={playSetupMode}
         open={isHumanPlaySetupOpen}
         onClose={() => setIsHumanPlaySetupOpen(false)}
         onEngineModeChange={changeEngineMode}
