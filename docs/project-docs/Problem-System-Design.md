@@ -158,7 +158,7 @@ Desktop 数据库连接优先读取可选覆盖变量 `TENSUGO_PROBLEM_DATABASE_
 - `board.css`：棋盘、棋子、最后一手和候选点视觉变量。
 - `index.test.js`：跨端规则回归测试。
 
-Desktop 保留 `desktop/src/game/boardRules.ts` 作为兼容导出层，`BoardPlaceholder.tsx` 直接使用共享坐标和星位。Forum 通过 `/shared/go-board.js` 加载同一个模块。任何新页面不得自行实现气、棋块、提子、自杀、劫、坐标或星位算法；需求变化必须先修改共享模块并增加测试。
+Desktop 保留 `desktop/src/game/boardRules.ts` 作为兼容导出层，`BoardPlaceholder.tsx` 直接使用共享坐标和星位。Forum 通过 `/shared/go-board.js` 加载同一个模块。任何新页面不得自行实现气、棋块、提子、自杀、劫、坐标或星位算法；需求变化必须先修改共享模块并增加测试。Desktop Git 仓库边界不包含父目录，因此在 `desktop/shared/go-board/` 保存受控的发布镜像，Desktop 只从该仓库内路径导入，保证 Windows 独立 clone 可编译；该目录是共享源的发布副本，不得演变为另一套页面逻辑。
 
 Forum 是浏览器应用，不直接扫描磁盘或启动 KataGo。Desktop/Tauri 继续负责本机引擎发现和实时分析；Forum 消费题目创建时持久化的 `candidateScores` 和 AI 分析快照。若未来 Web 需要实时本机 KataGo，应通过仅监听 `127.0.0.1` 的独立 Local Engine Bridge 接入，而不是赋予网页任意文件或进程权限。
 

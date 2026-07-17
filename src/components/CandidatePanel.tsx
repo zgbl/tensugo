@@ -4,7 +4,7 @@ import { buildBoardPosition } from "../game/boardRules";
 import type { BranchTreeRow, StoneColor } from "../game/gameTree";
 import type { ReviewStone } from "../game/sampleGame";
 import type { ProblemCandidateScore } from "../research/types";
-import { starPoints } from "../../../shared/go-board/index.js";
+import { starPoints } from "../../shared/go-board/index.js";
 
 const placeholderRows = [
   { rank: 1, move: "T2", winrate: "72.0", visits: "123k", delta: "90.6", scoreLead: "3.4" },

@@ -5,4 +5,4 @@ export {
   fixedHandicapPoints,
   getNextColor,
   getNextColorAfterMoves,
-} from "../../../shared/go-board/index.js";
+} from "../../shared/go-board/index.js";

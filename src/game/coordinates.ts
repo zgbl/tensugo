@@ -1,5 +1,5 @@
 const SGF_LETTERS = "abcdefghijklmnopqrstuvwxyz";
-import { boardIndexToLabel as sharedBoardIndexToLabel } from "../../../shared/go-board/index.js";
+import { boardIndexToLabel as sharedBoardIndexToLabel } from "../../shared/go-board/index.js";
 
 export type BoardPoint = {
   row: number;

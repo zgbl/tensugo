@@ -1,5 +1,5 @@
 import { boardIndexToLabel } from "../game/coordinates";
-import { gtpPointToBoardPoint, starPoints } from "../../../shared/go-board/index.js";
+import { gtpPointToBoardPoint, starPoints } from "../../shared/go-board/index.js";
 import type { CSSProperties, MouseEvent } from "react";
 import type { EngineCandidateMove } from "../engine/types";
 import type { ReviewStone } from "../game/sampleGame";

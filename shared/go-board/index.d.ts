@@ -1,0 +1,15 @@
+export type StoneColor = "black" | "white";
+export type BoardPoint = { x: number; y: number };
+export type BoardInputMove = BoardPoint & { color: StoneColor | "B" | "W"; moveNumber: number; isLast?: boolean; isSetup?: boolean; pass?: boolean };
+export type BoardMove = BoardPoint & { color: StoneColor; moveNumber: number; isLast: boolean; isSetup?: boolean; pass?: boolean };
+export type BoardPosition = { stones: BoardMove[]; capturedBlack: number; capturedWhite: number; invalidMoves: BoardMove[] };
+export const BOARD_LETTERS: string;
+export function boardIndexToLabel(index: number): string;
+export function boardPointToGtp(point: BoardPoint, boardSize: number): string;
+export function gtpPointToBoardPoint(value: string, boardSize: number): BoardPoint | null;
+export function starPoints(boardSize: number): number[];
+export function getNextColor(currentMoveNumber: number): StoneColor;
+export function getNextColorAfterMoves(moves: unknown[], firstColor?: StoneColor): StoneColor;
+export function fixedHandicapPoints(boardSize: number, handicap: number): BoardPoint[];
+export function buildBoardPosition(moves: BoardInputMove[], boardSize: number, currentMoveNumber?: number): BoardPosition;
+export function canPlayMove(moves: BoardInputMove[], boardSize: number, currentMoveNumber: number, point: BoardPoint, color?: StoneColor): boolean;

@@ -1,0 +1,10 @@
+:root {
+  --go-board-wood: #d9aa67;
+  --go-board-line: rgba(83, 57, 29, 0.78);
+  --go-board-edge: #94652e;
+  --go-board-black: radial-gradient(circle at 32% 26%, #3f4b4b, #050708 68%);
+  --go-board-white: radial-gradient(circle at 35% 28%, #fff, #dbe5e1 72%);
+  --go-board-last-move: #f05d68;
+  --go-board-candidate: rgba(219, 124, 82, 0.82);
+  --go-board-candidate-best: rgba(59, 195, 214, 0.8);
+}

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { humanConfigPathForLevel, inferHumanEngineLevel } from "../src/engine/humanEngineLevels.ts";
-import { fixedHandicapPoints, getNextColorAfterMoves } from "../../shared/go-board/index.js";
+import { fixedHandicapPoints, getNextColorAfterMoves } from "../shared/go-board/index.js";
 
 test("human engine level maps to the matching sibling config", () => {
   const source = "/Users/tuxy/Codes/KataGo/Weight/Human/gtp_human9d_search_example.cfg";
