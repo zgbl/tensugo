@@ -22,12 +22,14 @@ const ENGINE_TEST_BOOT_WAIT_MS: u64 = 180_000;
 const PDF_EXPORT_TIMEOUT_MS: u64 = 45_000;
 const ENGINE_MEMORY_SOFT_LIMIT_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 const GENMOVE_VISITS_TIMEOUT_MS: u64 = 600_000;
+const ANALYSIS_STOP_TIMEOUT_MS: u64 = 15_000;
 
 struct EngineState {
     cancel_generation: Arc<AtomicBool>,
     session: Arc<Mutex<Option<EngineSession>>>,
     machine_sessions: Arc<Mutex<Vec<Option<EngineSession>>>>,
     problem_session: Arc<Mutex<Option<EngineSession>>>,
+    batch_keep_awake: Mutex<Option<Child>>,
 }
 
 struct EngineSession {
@@ -1055,7 +1057,13 @@ fn analyze_position(
 
     let position_key = request_position_key(&request);
     if session.continuous_analysis.is_some() {
-        stop_continuous_session(session);
+        if !stop_continuous_session(session) {
+            *guard = None;
+            return analysis_error(
+                "engine-stop-timeout",
+                format!("KataGo 在 {} 秒内没有确认停止上一局面，已废弃会话，下次调用将重启引擎", ANALYSIS_STOP_TIMEOUT_MS / 1000),
+            );
+        }
     }
     drain_receiver(&session.stdout_rx);
     drain_receiver(&session.stderr_rx);
@@ -1123,6 +1131,38 @@ fn analyze_problem_position_blocking(
 
 fn analysis_error(status: &str, diagnostics: String) -> AnalysisResult {
     AnalysisResult { ok: false, status: status.to_string(), candidates: Vec::new(), raw_output: String::new(), diagnostics }
+}
+
+#[tauri::command]
+fn begin_batch_keep_awake(state: tauri::State<'_, EngineState>) -> Result<String, String> {
+    let mut guard = state.batch_keep_awake.lock().map_err(|error| error.to_string())?;
+    if guard.as_mut().is_some_and(|child| child.try_wait().ok().flatten().is_none()) {
+        return Ok("批量任务保持唤醒已启用".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let child = Command::new("/usr/bin/caffeinate")
+            .args(["-i", "-m"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("无法启动 macOS caffeinate: {error}"))?;
+        *guard = Some(child);
+        return Ok("已启用 macOS caffeinate，批量任务期间禁止系统空闲休眠".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("当前平台尚未实现批量任务保持唤醒".to_string())
+}
+
+#[tauri::command]
+fn end_batch_keep_awake(state: tauri::State<'_, EngineState>) -> Result<(), String> {
+    let mut guard = state.batch_keep_awake.lock().map_err(|error| error.to_string())?;
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1408,7 +1448,13 @@ fn analyze_position_continuous(
         .map(|analysis| analysis.position_key.as_str())
         != Some(position_key.as_str())
     {
-        stop_continuous_session(session);
+        if session.continuous_analysis.is_some() && !stop_continuous_session(session) {
+            *guard = None;
+            return analysis_error(
+                "engine-stop-timeout",
+                format!("KataGo 在 {} 秒内没有确认停止上一局面，已废弃会话，下次调用将重启引擎", ANALYSIS_STOP_TIMEOUT_MS / 1000),
+            );
+        }
         if let Err(error) = write_continuous_position_commands(session, &request) {
             *guard = None;
             return AnalysisResult {
@@ -1439,7 +1485,13 @@ fn stop_continuous_analysis(state: tauri::State<EngineState>) -> Result<(), Stri
         .map_err(|error| format!("engine state lock failed: {}", error))?;
     if let Some(session) = guard.as_mut() {
         if session.continuous_analysis.is_some() {
-            stop_continuous_session(session);
+            if !stop_continuous_session(session) {
+                *guard = None;
+                return Err(format!(
+                    "KataGo 在 {} 秒内没有确认停止，已废弃会话",
+                    ANALYSIS_STOP_TIMEOUT_MS / 1000
+                ));
+            }
         }
     }
     Ok(())
@@ -1476,29 +1528,44 @@ fn restart_engine_if_memory_limit_exceeded(
     }
 }
 
-fn stop_continuous_session(session: &mut EngineSession) {
-    stop_search_session(session);
+fn stop_continuous_session(session: &mut EngineSession) -> bool {
+    let stopped = stop_search_session(session);
     session.continuous_analysis = None;
+    stopped
 }
 
-fn stop_search_session(session: &mut EngineSession) {
-    let _ = writeln!(session.stdin, "stop");
-    let _ = session.stdin.flush();
-    wait_after_stop(session);
+fn stop_search_session(session: &mut EngineSession) -> bool {
+    // Discard old streaming analysis before sending stop. Otherwise an old GTP
+    // success line can be mistaken for the acknowledgement of this stop.
     drain_receiver(&session.stdout_rx);
     drain_receiver(&session.stderr_rx);
+    let _ = writeln!(session.stdin, "stop");
+    if session.stdin.flush().is_err() {
+        return false;
+    }
+    let acknowledged = wait_after_stop(session);
+    drain_receiver(&session.stdout_rx);
+    drain_receiver(&session.stderr_rx);
+    acknowledged
 }
 
-fn wait_after_stop(session: &mut EngineSession) {
-    let deadline = Instant::now() + Duration::from_millis(250);
+fn wait_after_stop(session: &mut EngineSession) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(ANALYSIS_STOP_TIMEOUT_MS);
     while Instant::now() < deadline {
-        drain_receiver(&session.stdout_rx);
+        let stdout = drain_receiver(&session.stdout_rx);
         drain_receiver(&session.stderr_rx);
+        if stdout.iter().any(|line| {
+            let line = line.trim();
+            line == "=" || line.starts_with("= ")
+        }) {
+            return true;
+        }
         if matches!(session.child.try_wait(), Ok(Some(_))) {
-            break;
+            return false;
         }
         thread::sleep(Duration::from_millis(25));
     }
+    false
 }
 
 fn terminate_engine_process(session: &mut EngineSession) {
@@ -2450,6 +2517,7 @@ pub fn run() {
             session: Arc::new(Mutex::new(None)),
             machine_sessions: Arc::new(Mutex::new(vec![None, None])),
             problem_session: Arc::new(Mutex::new(None)),
+            batch_keep_awake: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             app_name,
@@ -2464,6 +2532,8 @@ pub fn run() {
             save_problem_to_database,
             record_problem_answer,
             record_problem_tag,
+            begin_batch_keep_awake,
+            end_batch_keep_awake,
             find_problem_by_position_hash,
             list_problem_library,
             default_engine_profile,

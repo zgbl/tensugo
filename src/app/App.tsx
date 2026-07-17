@@ -21,12 +21,14 @@ import { appendEngineProfile, replaceEngineProfile } from "../engine/profileList
 import {
   analyzeProblemPosition,
   analyzePositionContinuous,
+  beginBatchKeepAwake,
   cancelGenerateMove,
   chooseGameRecordFiles,
   chooseEnginePath,
   DEFAULT_ENGINE_PROFILE,
   discoverEngineProfile,
   findProblemByPositionHash,
+  endBatchKeepAwake,
   generateMove,
   getDefaultEngineProfile,
   isTauriRuntime,
@@ -2774,6 +2776,13 @@ export function App() {
     appendBatchJobLog(`Desktop: 批量任务开始，文件=${batchFilePaths.length}, 输出=${batchOutputDirectory}`);
     setLastAction(`批量任务开始：${batchFilePaths.length} 个棋谱。`);
 
+    try {
+      const keepAwakeStatus = await beginBatchKeepAwake();
+      appendBatchJobLog(`Desktop: ${keepAwakeStatus}`);
+    } catch (error) {
+      appendBatchJobLog(`Desktop: 警告：无法防止系统休眠，锁屏后批处理可能停滞：${String(error)}`);
+    }
+
     let completed = 0;
     let skipped = 0;
     let totalAnalyzedMoves = 0;
@@ -2950,6 +2959,12 @@ export function App() {
         await stopContinuousAnalysis();
       } catch {
         // The engine session may already be stopped after an error.
+      }
+      try {
+        await endBatchKeepAwake();
+        appendBatchJobLog("Desktop: 已释放批量任务保持唤醒");
+      } catch (error) {
+        appendBatchJobLog(`Desktop: 释放保持唤醒失败：${String(error)}`);
       }
       setIsBatchAnalyzing(false);
       setIsBatchPaused(false);

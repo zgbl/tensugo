@@ -164,6 +164,14 @@ export async function recordProblemTag(problemId: string, tag: string): Promise<
   await invoke("record_problem_tag", { problemId, tag });
 }
 
+export async function beginBatchKeepAwake(): Promise<string> {
+  return invoke<string>("begin_batch_keep_awake");
+}
+
+export async function endBatchKeepAwake(): Promise<void> {
+  await invoke("end_batch_keep_awake");
+}
+
 export type ProblemDuplicateMatch = {
   found: boolean;
   id: string | null;
