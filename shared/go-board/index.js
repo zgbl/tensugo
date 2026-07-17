@@ -103,6 +103,16 @@ export function buildBoardPosition(moves, boardSize, currentMoveNumber = moves.l
     .filter((move) => move.moveNumber <= currentMoveNumber);
 
   for (const move of normalizedMoves) {
+    if (move.isSetup) {
+      const moveKey = keyOf(move);
+      if (move.x < 0 || move.y < 0 || move.x >= boardSize || move.y >= boardSize || board.has(moveKey)) {
+        invalidMoves.push(move);
+      } else {
+        board.set(moveKey, move);
+        history[history.length - 1] = boardHash(board);
+      }
+      continue;
+    }
     if (move.pass) {
       history.push(boardHash(board));
       continue;

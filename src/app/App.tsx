@@ -43,7 +43,7 @@ import {
 } from "../engine/tauriEngine";
 import type { ProblemLibraryItem } from "../engine/tauriEngine";
 import { problemTypeOf, type SolvableProblemType } from "../problems/problemType";
-import { buildBoardPosition, canPlayMove, getNextColor } from "../game/boardRules";
+import { buildBoardPosition, canPlayMove } from "../game/boardRules";
 import {
   appendMoveToGameTree,
   createEmptyGameTree,
@@ -363,6 +363,7 @@ export function App() {
     () => buildBoardPosition([...setupStones, ...moves], boardSize, currentMoveNumber),
     [moves, setupStones, boardSize, currentMoveNumber]
   );
+  const reviewNextColor = colorToPlayAtPosition(moves, currentMoveNumber, setupStones);
   const stones = position.stones;
   const currentPositionKey = useMemo(
     () => candidatePositionKey(boardSize, komi, [...setupStones, ...moves.slice(0, currentMoveNumber)]),
@@ -398,13 +399,13 @@ export function App() {
   const bestCandidate = activeCandidates[0];
   const previewCandidate =
     activeCandidates.find((candidate) => candidate.rank === previewCandidateRank) ?? bestCandidate ?? null;
-  const displayedWinrate = bestCandidate?.winrate ?? 28;
+  const displayedWinrate = bestCandidate ? toBlackWinrate(bestCandidate.winrate, reviewNextColor) : 28;
   const activeProblemActualMove = useMemo(() => {
     if (!activeProblem || currentMoveNumber !== activeProblem.moveNumber - 1) return null;
     const move = sourceMainLineMoves[activeProblem.moveNumber - 1] ?? moves[activeProblem.moveNumber - 1];
     return move ? { ...move, isLast: false } : null;
   }, [activeProblem, currentMoveNumber, moves, sourceMainLineMoves]);
-  const displayedScoreLead = bestCandidate?.scoreLead ?? -3.4;
+  const displayedScoreLead = bestCandidate ? toBlackScoreLead(bestCandidate.scoreLead, reviewNextColor) : -3.4;
   const displayedVisits = bestCandidate?.visits ?? 137000;
   const engineLabel = isShowingSavedAnalysis ? "TSG 静态分析" : engineProfile ? `${engineProfile.name} · ${(engineProfile.engineMode ?? "normal") === "human" ? `拟人 ${(engineProfile.humanLevel ?? inferHumanEngineLevel(engineProfile.humanConfigPath)).toUpperCase()}` : "正常"}` : "未配置";
   const displayedVariationBaseMoveNumber = showVariationNumbers
@@ -1593,7 +1594,7 @@ export function App() {
       playHumanPoint(x, y, options?.actor ?? "human");
       return;
     }
-    const nextColorToPlay = options?.color ?? getNextColor(currentMoveNumber);
+    const nextColorToPlay = options?.color ?? colorToPlayAtPosition(moves, currentMoveNumber, setupStones);
     if (!canPlayMove([...setupStones, ...moves], boardSize, currentMoveNumber, { x, y }, nextColorToPlay)) {
       setLastAction(`不能在 ${x + 1},${y + 1} 落子：交点已被占用或不合法。`);
       return;
@@ -1654,7 +1655,7 @@ export function App() {
       return;
     }
     clearProblemDraftForNavigation();
-    const color = getNextColor(currentMoveNumber);
+    const color = colorToPlayAtPosition(moves, currentMoveNumber, setupStones);
     const nextMoveNumber = currentMoveNumber + 1;
     const parentNodeId = currentMoveNumber > 0 ? currentPathNodeIds[currentMoveNumber - 1] ?? "root" : "root";
     const treeMove = { color, point: null };
@@ -1958,6 +1959,7 @@ export function App() {
     setGameTimeControl(undefined);
     setSourceFileName(file.name);
     setSgfWarnings(parsed.warnings);
+    setSetupStones(parsed.setupStones);
     setMoves(parsed.moves);
     setSourceMainLineMoves(parsed.moves);
     setSourceMainLineMoveCount(parsed.moves.length);
@@ -1977,7 +1979,7 @@ export function App() {
         moves: parsed.moves,
         rules: parsed.rules,
         sourceFileName: file.name,
-        stones: buildBoardPosition(parsed.moves, parsed.boardSize, parsed.moves.length).stones,
+        stones: buildBoardPosition([...parsed.setupStones, ...parsed.moves], parsed.boardSize, parsed.moves.length).stones,
         totalMoves: parsed.moves.length,
         whiteName: parsed.whiteName
       });
@@ -1990,7 +1992,7 @@ export function App() {
     setAnalysisPoints([]);
     setHasAnalysisAttempted(false);
     setLastAction(
-      `已打开 ${file.name}，载入主线 ${parsed.moves.length} 手，贴目 ${parsed.komi.toFixed(1)}。`
+      `已打开 ${file.name}，载入 ${parsed.setupStones.length} 个初始摆子、主线 ${parsed.moves.length} 手，贴目 ${parsed.komi.toFixed(1)}。`
     );
     queueAnalysisIfEnabled();
   };
@@ -2176,7 +2178,7 @@ export function App() {
       setLastAction(message);
     }
   };
-  const nextColor = humanPlaySession ? nextHumanPlayColor(humanPlaySession.handicap, moves.slice(0, currentMoveNumber)) : getNextColor(currentMoveNumber);
+  const nextColor = humanPlaySession ? nextHumanPlayColor(humanPlaySession.handicap, moves.slice(0, currentMoveNumber)) : reviewNextColor;
   const probeCurrentEngine = async () => {
     if (!isTauriRuntime()) {
       setEngineStatus("浏览器预览：请在 Mac App 中测试引擎");
@@ -6402,6 +6404,22 @@ function buildAnalysisKey(boardSize: number, komi: number, moveNumber: number, m
 
 function toBlackWinrate(winrate: number, nextColor: "black" | "white"): number {
   return nextColor === "black" ? winrate : 100 - winrate;
+}
+
+function colorToPlayAtPosition(
+  moves: ReviewMove[],
+  currentMoveNumber: number,
+  setupStones: ReviewMove[]
+): "black" | "white" {
+  const recordedNextMove = moves[currentMoveNumber];
+  if (recordedNextMove) return recordedNextMove.color;
+  const previousMove = moves[currentMoveNumber - 1];
+  if (previousMove) return previousMove.color === "black" ? "white" : "black";
+  const hasBlackSetup = setupStones.some((stone) => stone.color === "black");
+  const hasWhiteSetup = setupStones.some((stone) => stone.color === "white");
+  if (hasBlackSetup && !hasWhiteSetup) return "white";
+  if (hasWhiteSetup && !hasBlackSetup) return "black";
+  return "black";
 }
 
 function toBlackScoreLead(scoreLead: number, nextColor: "black" | "white"): number {

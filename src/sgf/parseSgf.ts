@@ -17,6 +17,7 @@ export type ParsedSgf = {
   result?: string;
   rules: string;
   gameTree: GameTree;
+  setupStones: ReviewMove[];
   moves: ReviewMove[];
   warnings: string[];
 };
@@ -196,6 +197,7 @@ export function parseSgf(source: string, fallbackName = "未命名棋谱"): Pars
   const rules = firstProperty(nodes, "RU", "未知");
   const treeKomi = Number.isFinite(komi) ? komi : 7.5;
   const gameTree = parseSgfGameTree(source, boardSize, treeKomi, warnings);
+  const setupStones = parseSgfSetupStones(nodes, boardSize, warnings);
   const moves: ReviewMove[] = gameTree ? mainLineMovesFromTree(gameTree) : [];
 
   if (moves.length === 0) {
@@ -242,9 +244,36 @@ export function parseSgf(source: string, fallbackName = "未命名棋谱"): Pars
     result: result || undefined,
     rules,
     gameTree,
+    setupStones,
     moves,
     warnings
   };
+}
+
+function parseSgfSetupStones(nodes: string[], boardSize: number, warnings: string[]): ReviewMove[] {
+  const stones: ReviewMove[] = [];
+  const occupied = new Set<string>();
+  for (const rawNode of nodes) {
+    const props = parseNode(rawNode);
+    if (props.has("B") || props.has("W")) break;
+    for (const [property, color] of [["AB", "black"], ["AW", "white"]] as const) {
+      for (const value of props.get(property) ?? []) {
+        const point = sgfPointToMovePoint(value, boardSize);
+        if (!point) {
+          warnings.push(`SGF 初始摆子坐标无法解析: ${property}[${value}]`);
+          continue;
+        }
+        const key = `${point.col},${point.row}`;
+        if (occupied.has(key)) {
+          warnings.push(`SGF 初始摆子坐标重复: ${property}[${value}]`);
+          continue;
+        }
+        occupied.add(key);
+        stones.push({ color, isSetup: true, moveNumber: 0, x: point.col, y: point.row });
+      }
+    }
+  }
+  return stones;
 }
 
 function parseSgfGameTree(source: string, boardSize: number, komi: number, warnings: string[]): GameTree {
@@ -378,6 +407,7 @@ function parseGib(source: string, fallbackName = "未命名棋谱"): ParsedSgf {
     result,
     rules: "弈城",
     gameTree: createGameTreeFromMoves(moves, boardSize, komi),
+    setupStones: [],
     moves,
     warnings
   };
