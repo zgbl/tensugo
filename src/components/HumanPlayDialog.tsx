@@ -12,8 +12,6 @@ type HumanPlayDialogProps = {
   initialPlayMode: PlayMode;
   open: boolean;
   onClose: () => void;
-  onEngineModeChange: (mode: EngineMode) => void;
-  onHumanLevelChange: (level: HumanEngineLevel) => void;
   onStart: (settings: HumanPlaySettings) => void;
 };
 
@@ -26,8 +24,6 @@ export function HumanPlayDialog({
   initialPlayMode,
   open,
   onClose,
-  onEngineModeChange,
-  onHumanLevelChange,
   onStart
 }: HumanPlayDialogProps) {
   const [settings, setSettings] = useState<HumanPlaySettings>({
@@ -38,6 +34,8 @@ export function HumanPlayDialog({
     maxVisits: 400,
     searchLimit: "time"
     ,playMode: initialPlayMode,
+    humanOpponentEngineMode: engineMode,
+    humanOpponentLevel: humanLevel,
     blackProfileId: engineProfiles[0]?.profileId ?? engineProfiles[0]?.name ?? "",
     whiteProfileId: engineProfiles[0]?.profileId ?? engineProfiles[0]?.name ?? "",
     blackEngineMode: "human",
@@ -48,9 +46,14 @@ export function HumanPlayDialog({
 
   useEffect(() => {
     if (open) {
-      setSettings((current) => ({ ...current, playMode: initialPlayMode }));
+      setSettings((current) => ({
+        ...current,
+        playMode: initialPlayMode,
+        humanOpponentEngineMode: engineMode,
+        humanOpponentLevel: humanLevel
+      }));
     }
-  }, [initialPlayMode, open]);
+  }, [engineMode, humanLevel, initialPlayMode, open]);
 
   if (!open) return null;
 
@@ -88,14 +91,18 @@ export function HumanPlayDialog({
           {settings.playMode === "human-vs-engine" ? <>
             <label className="human-play-engine-mode-field">
               <span>引擎类型</span>
-              <select value={engineMode} onChange={(event) => onEngineModeChange(event.target.value as EngineMode)}>
+              <select value={settings.humanOpponentEngineMode ?? "normal"} onChange={(event) => setSettings((current) => ({
+                ...current,
+                humanOpponentEngineMode: event.target.value as EngineMode,
+                humanOpponentLevel: event.target.value === "human" ? current.humanOpponentLevel ?? humanLevel : undefined
+              }))}>
                 <option value="human">拟人引擎</option>
                 <option value="normal">正常引擎</option>
               </select>
             </label>
             <label>
               <span>拟人棋力</span>
-              <select value={humanLevel} disabled={engineMode !== "human"} onChange={(event) => onHumanLevelChange(event.target.value as HumanEngineLevel)}>
+              <select value={settings.humanOpponentLevel ?? ""} disabled={settings.humanOpponentEngineMode !== "human"} onChange={(event) => setSettings((current) => ({ ...current, humanOpponentLevel: event.target.value as HumanEngineLevel }))}>
                 {HUMAN_ENGINE_LEVELS.map((level) => <option key={level} value={level}>{level.toUpperCase()}</option>)}
               </select>
             </label>

@@ -19,6 +19,7 @@ type BoardPlaceholderProps = {
   actualNextMove?: ReviewStone | null;
   candidateClickSelectOnly?: boolean;
   candidateLetterLabels?: boolean;
+  showCandidateLabels?: boolean;
   selectedCandidateRank?: number | null;
   suggestedCandidates?: EngineCandidateMove[];
   answerMode?: boolean;
@@ -44,6 +45,7 @@ export function BoardPlaceholder({
   actualNextMove = null,
   candidateClickSelectOnly = false,
   candidateLetterLabels = false,
+  showCandidateLabels = false,
   selectedCandidateRank = null,
   suggestedCandidates = [],
   answerMode = false,
@@ -186,7 +188,7 @@ export function BoardPlaceholder({
               onMouseEnter={() => { if (!answerMode) onCandidatePreview(candidate.rank); }}
               aria-label={`Play candidate ${candidate.moveName}`}
             >
-              <em>{candidateLetterLabels ? String.fromCharCode(65 + candidateIndex) : candidate.rank}</em>
+              {showCandidateLabels ? <em>{candidateLetterLabels ? String.fromCharCode(65 + candidateIndex) : candidate.rank}</em> : null}
               {!answerMode ? <><span>{candidate.winrate.toFixed(1)}</span>
               <span>{formatVisits(candidate.visits)}</span></> : null}
               {!answerMode && candidateBubbleLines === 3 ? (

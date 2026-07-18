@@ -3881,7 +3881,7 @@ dependencies = [
 
 [[package]]
 name = "tensugo"
-version = "0.6.85"
+version = "0.6.87"
 dependencies = [
  "postgres",
  "rfd 0.15.4",
@@ -3890,6 +3890,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

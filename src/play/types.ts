@@ -11,6 +11,8 @@ export type HumanPlaySettings = {
   maxVisits: number;
   searchLimit: "time" | "visits";
   playMode?: PlayMode;
+  humanOpponentEngineMode?: EngineMode;
+  humanOpponentLevel?: HumanEngineLevel;
   blackProfileId?: string;
   whiteProfileId?: string;
   blackEngineMode?: EngineMode;

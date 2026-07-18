@@ -172,6 +172,10 @@ export async function endBatchKeepAwake(): Promise<void> {
   await invoke("end_batch_keep_awake");
 }
 
+export async function sleepForBatch(milliseconds: number): Promise<void> {
+  await invoke("sleep_for_batch", { milliseconds });
+}
+
 export type ProblemDuplicateMatch = {
   found: boolean;
   id: string | null;

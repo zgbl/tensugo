@@ -29,6 +29,7 @@ import {
   discoverEngineProfile,
   findProblemByPositionHash,
   endBatchKeepAwake,
+  sleepForBatch,
   generateMove,
   getDefaultEngineProfile,
   isTauriRuntime,
@@ -1591,9 +1592,15 @@ export function App() {
   const playMove = (x: number, y: number, options?: { actor?: "human" | "engine"; color?: "black" | "white" }) => {
     invalidatePendingAnalysis();
     setAutoAnalysisResume(null);
-    if (humanPlaySessionRef.current) {
+    if (humanPlaySessionRef.current?.status === "playing") {
       playHumanPoint(x, y, options?.actor ?? "human");
       return;
+    }
+    if (humanPlaySessionRef.current) {
+      humanPlaySessionRef.current = null;
+      humanPlayPositionRef.current = null;
+      setHumanPlaySession(null);
+      setLastAction("已从结束的对局进入复盘分支，当前落子将作为研究变化。");
     }
     const nextColorToPlay = options?.color ?? colorToPlayAtPosition(moves, currentMoveNumber, setupStones);
     if (!canPlayMove([...setupStones, ...moves], boardSize, currentMoveNumber, { x, y }, nextColorToPlay)) {
@@ -1705,10 +1712,17 @@ export function App() {
       };
       return { ...profileWithHumanLevel(humanBase, level ?? inferHumanEngineLevel(humanBase.humanConfigPath)), engineMode: "human" as const };
     };
-    const blackProfile = playMode === "engine-vs-engine" ? profileForSide(settings.blackProfileId, settings.blackEngineMode, settings.blackHumanLevel) : engineProfile;
-    const whiteProfile = playMode === "engine-vs-engine" ? profileForSide(settings.whiteProfileId, settings.whiteEngineMode, settings.whiteHumanLevel) : engineProfile;
+    const humanOpponentProfile = playMode === "human-vs-engine"
+      ? profileForSide(undefined, settings.humanOpponentEngineMode ?? engineProfile?.engineMode ?? "normal", settings.humanOpponentLevel)
+      : undefined;
+    const blackProfile = playMode === "engine-vs-engine" ? profileForSide(settings.blackProfileId, settings.blackEngineMode, settings.blackHumanLevel) : humanOpponentProfile;
+    const whiteProfile = playMode === "engine-vs-engine" ? profileForSide(settings.whiteProfileId, settings.whiteEngineMode, settings.whiteHumanLevel) : humanOpponentProfile;
     if (!blackProfile || !whiteProfile || !isCompleteEngineProfile(blackProfile) || !isCompleteEngineProfile(whiteProfile)) {
-      setLastAction("机机对弈需要黑方和白方都配置完整的引擎。");
+      setLastAction(playMode === "engine-vs-engine"
+        ? "机机对弈需要黑方和白方都配置完整的引擎。"
+        : settings.humanOpponentEngineMode === "human"
+          ? "拟人对弈缺少 Human Model 或对应棋力配置。"
+          : "当前引擎配置不完整，不能开始人机对弈。");
       return;
     }
     const nextSession: HumanPlaySession = {
@@ -1735,9 +1749,9 @@ export function App() {
     setBoardSize(19);
     setKomi(settings.komi);
     setRules("日本");
-    setBlackName(playMode === "engine-vs-engine" ? blackProfile.name : settings.humanColor === "black" ? "你" : blackProfile.name);
-    setWhiteName(playMode === "engine-vs-engine" ? whiteProfile.name : settings.humanColor === "white" ? "你" : whiteProfile.name);
-    setSourceFileName("人机对弈");
+    setBlackName(playMode === "engine-vs-engine" ? playEngineDisplayName(blackProfile) : settings.humanColor === "black" ? "你" : playEngineDisplayName(blackProfile));
+    setWhiteName(playMode === "engine-vs-engine" ? playEngineDisplayName(whiteProfile) : settings.humanColor === "white" ? "你" : playEngineDisplayName(whiteProfile));
+    setSourceFileName(playMode === "engine-vs-engine" ? "机机对弈" : "人机对弈");
     setCurrentTsgPath(null);
     setGameResult(undefined);
     setSetupStones(handicapStones);
@@ -3660,6 +3674,7 @@ export function App() {
             variationBaseMoveNumber={displayedVariationBaseMoveNumber}
             actualNextMove={isProblemPreview ? null : activeProblemActualMove}
             candidateLetterLabels={Boolean(isProblemPreview && activeProblem && problemTypeOf(activeProblem) === "B")}
+            showCandidateLabels={Boolean(activeProblem)}
             candidateClickSelectOnly={Boolean(activeProblem)}
             selectedCandidateRank={previewCandidateRank}
             onStoneClick={jumpToMove}
@@ -3947,8 +3962,6 @@ export function App() {
         initialPlayMode={playSetupMode}
         open={isHumanPlaySetupOpen}
         onClose={() => setIsHumanPlaySetupOpen(false)}
-        onEngineModeChange={changeEngineMode}
-        onHumanLevelChange={changeHumanEngineLevel}
         onStart={startHumanPlay}
       />
       <OgsDialog
@@ -4812,6 +4825,14 @@ function isVisibleResearchBlock(block: ResearchBlock): boolean {
 
 function firstVisibleResearchBlockId(document: ResearchDocument): string | null {
   return document.sections.flatMap((section) => section.blocks).find(isVisibleResearchBlock)?.id ?? null;
+}
+
+function playEngineDisplayName(profile: EngineProfile): string {
+  if ((profile.engineMode ?? "normal") !== "human") {
+    return `${profile.name}（正常）`;
+  }
+  const level = profile.humanLevel ?? inferHumanEngineLevel(profile.humanConfigPath);
+  return `${profile.name}（拟人 ${level.toUpperCase()}）`;
 }
 
 function blockSummary(block: ResearchBlock): string {
@@ -6070,7 +6091,7 @@ async function waitForAutoAnalysisPoll(stopRef: { current: boolean }): Promise<v
   let waitedMs = 0;
   while (!stopRef.current && waitedMs < pollMs) {
     const nextWait = Math.min(50, pollMs - waitedMs);
-    await new Promise((resolve) => window.setTimeout(resolve, nextWait));
+    await sleepForBatch(nextWait);
     waitedMs += nextWait;
   }
 }
@@ -6082,7 +6103,7 @@ async function waitWhileBatchPaused(
   if (!pauseRef.current) return 0;
   const startedAt = Date.now();
   while (pauseRef.current && !stopRef.current) {
-    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    await sleepForBatch(100);
   }
   return Date.now() - startedAt;
 }

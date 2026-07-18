@@ -30,6 +30,8 @@ struct EngineState {
     machine_sessions: Arc<Mutex<Vec<Option<EngineSession>>>>,
     problem_session: Arc<Mutex<Option<EngineSession>>>,
     batch_keep_awake: Mutex<Option<Child>>,
+    #[cfg(target_os = "windows")]
+    windows_keep_awake: AtomicBool,
 }
 
 struct EngineSession {
@@ -1142,7 +1144,7 @@ fn begin_batch_keep_awake(state: tauri::State<'_, EngineState>) -> Result<String
     #[cfg(target_os = "macos")]
     {
         let child = Command::new("/usr/bin/caffeinate")
-            .args(["-i", "-m"])
+            .args(["-d", "-i", "-m", "-s"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1150,6 +1152,16 @@ fn begin_batch_keep_awake(state: tauri::State<'_, EngineState>) -> Result<String
             .map_err(|error| format!("无法启动 macOS caffeinate: {error}"))?;
         *guard = Some(child);
         return Ok("已启用 macOS caffeinate，批量任务期间禁止系统空闲休眠".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED};
+        let result = unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) };
+        if result == 0 {
+            return Err("Windows 无法启用批量任务保持唤醒".to_string());
+        }
+        state.windows_keep_awake.store(true, Ordering::SeqCst);
+        return Ok("已启用 Windows 批量任务保持唤醒，后台运行期间禁止系统睡眠".to_string());
     }
     #[cfg(not(target_os = "macos"))]
     Err("当前平台尚未实现批量任务保持唤醒".to_string())
@@ -1162,7 +1174,19 @@ fn end_batch_keep_awake(state: tauri::State<'_, EngineState>) -> Result<(), Stri
         let _ = child.kill();
         let _ = child.wait();
     }
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS};
+        if state.windows_keep_awake.swap(false, Ordering::SeqCst) {
+            unsafe { SetThreadExecutionState(ES_CONTINUOUS); }
+        }
+    }
     Ok(())
+}
+
+#[tauri::command]
+fn sleep_for_batch(milliseconds: u64) {
+    thread::sleep(Duration::from_millis(milliseconds.min(10_000)));
 }
 
 #[tauri::command]
@@ -2518,6 +2542,8 @@ pub fn run() {
             machine_sessions: Arc::new(Mutex::new(vec![None, None])),
             problem_session: Arc::new(Mutex::new(None)),
             batch_keep_awake: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            windows_keep_awake: AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             app_name,
@@ -2534,6 +2560,7 @@ pub fn run() {
             record_problem_tag,
             begin_batch_keep_awake,
             end_batch_keep_awake,
+            sleep_for_batch,
             find_problem_by_position_hash,
             list_problem_library,
             default_engine_profile,
