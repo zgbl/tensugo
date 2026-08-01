@@ -92,6 +92,60 @@ a {
   color: var(--ink);
 }
 
+.language-switcher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.language-switcher summary {
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.language-switcher summary::-webkit-details-marker {
+  display: none;
+}
+
+.language-switcher summary::after {
+  display: inline-block;
+  margin-left: 6px;
+  content: "▾";
+  font-size: 11px;
+}
+
+.language-switcher[open] summary,
+.language-switcher summary:hover,
+.language-switcher summary:focus-visible {
+  color: var(--ink);
+}
+
+.language-options {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  display: grid;
+  min-width: 120px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
+}
+
+.language-options a {
+  padding: 8px 10px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.language-options a:hover,
+.language-options a:focus-visible {
+  color: var(--ink);
+  background: var(--shell);
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.25fr);
