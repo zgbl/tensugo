@@ -34,9 +34,11 @@
     }, fields || {});
     payload = JSON.stringify(payload);
     if (navigator.sendBeacon) {
-      navigator.sendBeacon(endpoint, new Blob([payload], { type: "application/json" }));
+      // text/plain is CORS-safelisted, so the cross-origin beacon is sent
+      // immediately without an OPTIONS preflight that navigation can cancel.
+      navigator.sendBeacon(endpoint, new Blob([payload], { type: "text/plain;charset=UTF-8" }));
     } else {
-      fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: payload, keepalive: true }).catch(function () {});
+      fetch(endpoint, { method: "POST", headers: { "content-type": "text/plain;charset=UTF-8" }, body: payload, keepalive: true }).catch(function () {});
     }
   }
 
