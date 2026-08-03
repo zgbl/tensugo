@@ -819,11 +819,12 @@ h1 {
 
 .product-shot {
   align-self: center;
-  padding: clamp(10px, 1.3vw, 16px);
-  border-radius: 6px;
-  background: #e8eee7;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   background-image: none;
-  box-shadow: 20px 26px 0 rgba(56, 107, 103, 0.13), var(--shadow);
+  box-shadow: none;
 }
 
 .product-shot::before,
