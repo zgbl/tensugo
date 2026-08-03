@@ -25,6 +25,7 @@
       eventName: eventName,
       anonymousId: anonymousId,
       sessionId: sessionId,
+      platform: "web",
       locale: document.documentElement.lang || navigator.language,
       referrerHost: safeReferrerHost(),
       utmSource: query.get("utm_source"),

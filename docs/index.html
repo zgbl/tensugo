@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TensuGo - Local KataGo Review for Go Players</title>
+    <title>TensuGo — Turn every Go game into a study plan</title>
     <meta
       name="description"
       content="TensuGo is a desktop Go review app that brings local KataGo analysis, SGF variation trees, candidate moves, and research notes into one focused workspace."
@@ -18,7 +18,7 @@
     <meta property="og:image" content="https://zgbl.github.io/tensugo/assets/tensugo-main-ui2.png" />
     <link rel="icon" href="favicon.svg" />
     <link rel="stylesheet" href="styles.css" />
-    <script defer src="analytics.js?v=20260802-no-preflight"></script>
+    <script defer src="analytics.js?v=20260802-platform-web"></script>
   </head>
   <body>
     <header class="site-header" aria-label="TensuGo">
@@ -47,12 +47,12 @@
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow">Local AI review workspace for Go</p>
-          <h1 id="hero-title">Study every move with KataGo on your own machine.</h1>
+          <p class="eyebrow">For players who want to understand the game</p>
+          <h1 id="hero-title">Turn every Go game into a study plan.</h1>
           <p class="hero-text">
-            TensuGo is a desktop review app for Go players. It imports SGF files,
-            runs local KataGo analysis, shows candidate moves, win rate, score lead,
-            visits, and principal variations, then helps you turn variations into study notes.
+            TensuGo puts your board, local KataGo analysis, variations, and review notes
+            in one focused workspace—so you can see what changed, why it mattered, and
+            what to practice next.
           </p>
           <div class="hero-actions" aria-label="Primary actions">
             <a
@@ -70,8 +70,8 @@
             <a class="text-link" href="https://github.com/zgbl/tensugo">GitHub</a>
             <a class="text-link" href="https://forum.tensugo.com/">Forum</a>
           </div>
-          <p class="hero-note">Windows x64 includes the built-in KataGo OpenCL engine. macOS Apple Silicon requires KataGo installed separately.</p>
-          <p class="release-note"><strong>V0.6.18 update:</strong> Improved win-rate chart presentation and inspection, with continued refinements to auto analysis and the Tianshu report.</p>
+          <p class="hero-note">Local-first by default. Your games stay on your machine.</p>
+          <p class="release-note"><strong>Built for review:</strong> Keep the useful branches, not just the engine’s top move.</p>
         </div>
 
         <figure class="product-shot">
@@ -79,20 +79,19 @@
             src="assets/tensugo-main-ui2.png"
             alt="TensuGo desktop app showing a Go board, game tree, and KataGo candidate move analysis."
           />
-          <figcaption>Board, variations, candidate moves, and research notes in one desktop workspace.</figcaption>
+          <figcaption>The board is the starting point. The review is the product.</figcaption>
         </figure>
       </section>
 
       <section class="section intro" aria-label="Product positioning">
         <div>
-          <p class="section-kicker">Why It Exists</p>
-          <h2>Not a live score widget. A real study desk for reviewing games.</h2>
+          <p class="section-kicker">The problem</p>
+          <h2>AI can find a better move. It rarely helps you remember why.</h2>
         </div>
         <p>
-          Serious review often means switching between a board, an AI engine,
-          an SGF editor, and scattered notes. TensuGo brings those pieces into
-          a quiet desktop interface where you can follow the game tree, inspect
-          candidate lines, keep meaningful branches, and preserve the reasoning behind them.
+          Most review tools stop at a score or a cloud variation. TensuGo keeps the
+          whole argument together: the position, the alternatives, the turning point,
+          and your own explanation. That makes one game useful long after the engine stops running.
         </p>
       </section>
 

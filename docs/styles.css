@@ -717,3 +717,228 @@ pre code {
     scroll-behavior: auto;
   }
 }
+
+/* Homepage direction: a quiet study desk with the board as its visual anchor. */
+:root {
+  --ink: #17211f;
+  --muted: #5e6a65;
+  --paper: #f5f6f1;
+  --shell: #dfe7df;
+  --blue: #386b67;
+  --red: #a14f3d;
+  --panel: #ffffff;
+  --rule: rgba(23, 33, 31, 0.14);
+  --shadow: 0 24px 70px rgba(30, 48, 42, 0.16);
+}
+
+body {
+  background:
+    radial-gradient(circle at 80% 8%, rgba(141, 184, 167, 0.18), transparent 28rem),
+    linear-gradient(135deg, rgba(23, 33, 31, 0.035) 1px, transparent 1px),
+    var(--paper);
+  background-size: auto, 32px 32px, auto;
+}
+
+.site-header {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  background: rgba(245, 246, 241, 0.82);
+}
+
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: #f7f8f3;
+  background: var(--ink);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 16px;
+}
+
+.hero {
+  position: relative;
+  grid-template-columns: minmax(300px, 0.76fr) minmax(420px, 1.24fr);
+  gap: clamp(34px, 7vw, 112px);
+  max-width: 1480px;
+  min-height: min(820px, calc(100vh - 62px));
+  margin: 0 auto;
+  padding-top: clamp(54px, 8vw, 118px);
+  padding-bottom: clamp(64px, 9vw, 132px);
+}
+
+.hero-copy {
+  position: relative;
+  z-index: 1;
+}
+
+.eyebrow,
+.section-kicker {
+  color: var(--red);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+h1 {
+  max-width: 660px;
+  margin-bottom: 26px;
+  font-size: clamp(46px, 6vw, 84px);
+  line-height: 0.98;
+}
+
+.hero-text {
+  max-width: 540px;
+  font-size: clamp(17px, 1.6vw, 20px);
+  line-height: 1.62;
+}
+
+.hero-actions {
+  margin-top: 30px;
+}
+
+.button {
+  border-radius: 5px;
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.button:hover,
+.button:focus-visible {
+  transform: translateY(-2px);
+}
+
+.button.primary {
+  box-shadow: 4px 4px 0 #b5c9b9;
+}
+
+.product-shot {
+  align-self: center;
+  padding: clamp(10px, 1.3vw, 16px);
+  border-radius: 6px;
+  transform: rotate(1.2deg);
+  box-shadow: 20px 26px 0 rgba(56, 107, 103, 0.13), var(--shadow);
+}
+
+.product-shot::after {
+  position: absolute;
+  right: -28px;
+  bottom: -30px;
+  width: 86px;
+  height: 86px;
+  content: "";
+  border: 1px solid rgba(23, 33, 31, 0.34);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #eef1e9 0 8%, #17211f 9% 100%);
+}
+
+.product-shot figcaption {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+
+.section {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding-top: clamp(68px, 9vw, 128px);
+  padding-bottom: clamp(72px, 10vw, 142px);
+}
+
+.intro {
+  grid-template-columns: minmax(300px, 0.9fr) minmax(280px, 0.75fr);
+  justify-content: space-between;
+}
+
+.intro h2,
+.download h2 {
+  max-width: 680px;
+  font-size: clamp(38px, 5vw, 70px);
+}
+
+.intro > p {
+  max-width: 500px;
+  padding-top: 12px;
+  font-size: 18px;
+  line-height: 1.75;
+}
+
+.feature-grid {
+  grid-template-columns: 1.35fr 1fr 1fr;
+}
+
+.feature-grid .section-heading {
+  grid-column: 1 / -1;
+  padding-bottom: 22px;
+}
+
+.feature-grid .section-heading h2 {
+  max-width: 670px;
+}
+
+.feature {
+  min-height: 240px;
+  padding: clamp(22px, 3vw, 38px);
+}
+
+.feature-symbol {
+  width: 42px;
+  height: 42px;
+  margin-bottom: 42px;
+  border-radius: 8px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.workflow {
+  max-width: none;
+  padding-right: max(20px, calc((100vw - 1352px) / 2));
+  padding-left: max(20px, calc((100vw - 1352px) / 2));
+  background: #e8eee7;
+}
+
+.steps {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(18px, 4vw, 64px);
+}
+
+.steps li {
+  border-top-width: 2px;
+}
+
+.steps span {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.download-panel {
+  border-radius: 5px;
+  box-shadow: 12px 12px 0 rgba(56, 107, 103, 0.22);
+}
+
+@media (max-width: 980px) {
+  .hero {
+    min-height: auto;
+  }
+
+  .product-shot {
+    transform: none;
+  }
+}
+
+@media (max-width: 680px) {
+  h1 {
+    font-size: clamp(42px, 13vw, 64px);
+  }
+
+  .product-shot::after {
+    display: none;
+  }
+}
