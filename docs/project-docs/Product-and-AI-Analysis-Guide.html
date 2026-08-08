@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TensuGo Product &amp; AI Analysis Guide</title>
+    <meta name="description" content="A practical guide to TensuGo's local Go review workflow, KataGo analysis, and Tianshu report metrics." />
+    <link rel="icon" href="../favicon.svg" />
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <header class="site-header" aria-label="TensuGo documentation">
+      <a class="brand" href="../" aria-label="Back to TensuGo home"><span class="brand-mark" aria-hidden="true">T</span><span>TensuGo</span></a>
+      <nav class="nav" aria-label="Documentation navigation"><a href="../">Home</a><a href="User-Guide.html">User Guide</a><a href="Product-and-AI-Analysis-Guide-zh.html">中文</a><a href="#metrics">AI metrics</a><a href="#limits">Limits</a></nav>
+    </header>
+    <main class="doc-shell">
+      <aside class="doc-toc" aria-label="Contents">
+        <span class="doc-toc-title">PRODUCT GUIDE</span>
+        <a href="#start">What TensuGo is for</a><a href="#workflow">Review workflow</a><a href="#analysis">Reading AI analysis</a><a href="#metrics">Tianshu report metrics</a><a href="#example">Worked example</a><a href="#limits">What the numbers do not say</a><a href="#privacy">Local-first design</a><a href="#next">Related guides</a>
+      </aside>
+      <article class="doc-content">
+        <header class="doc-hero" id="start">
+          <p class="eyebrow">PUBLIC PRODUCT DOCUMENTATION</p>
+          <h1>Turn an AI review into a study you can revisit.</h1>
+          <p>TensuGo is a desktop workspace for reviewing Go games with a local KataGo engine. It keeps the board, game tree, candidate moves, variations, and your study notes together so that an engine result can become a useful explanation and a future training target.</p>
+          <div class="hero-actions"><a class="button primary" href="User-Guide.html">Open the setup guide</a><a class="button secondary" href="Product-and-AI-Analysis-Guide-zh.html">阅读中文说明</a></div>
+        </header>
+        <section class="doc-section" id="workflow">
+          <h2>A review workflow, not just an engine window</h2>
+          <div class="doc-card"><h3>1. Open the real game</h3><p>Import an SGF, GIB, or TensuGo study file and move through its game tree. Main line, variations, annotations, and meaningful branches remain attached to the position that produced them.</p></div>
+          <div class="doc-card"><h3>2. Analyze the position before the played move</h3><p>Automatic analysis asks the engine about the position immediately before each actual move. Candidate ranks and losses therefore describe the choice available to the player, rather than a position reconstructed after the move.</p></div>
+          <div class="doc-card"><h3>3. Inspect alternatives and preserve the lesson</h3><p>Use candidate moves, visits, win rate, score, and principal variation to examine a turning point. Keep the variations that explain the idea. TensuGo is designed to turn selected moments into structured study material, not leave a list of raw engine lines.</p></div>
+        </section>
+        <section class="doc-section" id="analysis">
+          <h2>How to read an AI analysis</h2>
+          <dl class="action-list">
+            <div><dt>Candidate move</dt><dd>A move considered by the configured KataGo engine at the current position. The report uses a limited recorded window of leading candidates.</dd></div>
+            <div><dt>Visits</dt><dd>Search effort allocated by the engine. More visits generally mean stronger engine support in that run; visits are not a probability and depend on the model, hardware, and analysis budget.</dd></div>
+            <div><dt>Win rate / score</dt><dd>Engine evaluation fields for the current configuration. They compare alternatives in the same analysis; they are not a universal measurement of player strength.</dd></div>
+            <div><dt>Principal variation</dt><dd>An illustrative continuation to investigate, not a claim that every move is forced.</dd></div>
+          </dl>
+          <p class="doc-note">If the board does not show candidate bubbles or other AI information, first check that the selected node has completed analysis and that the relevant display option is enabled. Candidate information belongs to a specific position.</p>
+        </section>
+        <section class="doc-section" id="metrics">
+          <h2>Tianshu report: match degree and match rate</h2>
+          <p>The Tianshu report summarizes how often played moves were supported by leading engine candidates. It helps find positions worth reviewing; it is not a label for whether a player is “good” or “bad.”</p>
+          <div class="doc-card"><h3>Match degree (吻合度)</h3><p>A continuous measure of engine support. For each successfully analyzed move, TensuGo divides the played move's visits by the visits of the strongest recorded candidate. If the played move is not in the recorded candidate window, its score is 0. The report averages those scores and displays a percentage.</p><pre><code>move match degree = played candidate visits / best candidate visits
+average match degree = average across all analyzed moves</code></pre></div>
+          <div class="doc-card"><h3>Match rate (吻合率)</h3><p>A pass rate, not an average score. A move counts as a match only when it is in the top 3 recorded candidates and its visits are at least 20% of the top candidate's visits. The report divides matching moves by all successfully analyzed moves.</p><pre><code>match = rank is 1–3 AND played visits / best visits ≥ 20%
+match rate = matching moves / analyzed moves</code></pre></div>
+          <div class="doc-card"><h3>Related terms</h3><p><strong>Top-move hit rate</strong> counts moves ranked first. <strong>Candidate hit rate</strong> counts moves found anywhere in the recorded candidate window. A fourth- or fifth-ranked move can contribute to match degree and candidate hit rate, but cannot pass the top-3 match-rate rule.</p></div>
+        </section>
+        <section class="doc-section" id="example">
+          <h2>Worked example</h2>
+          <p>Suppose the leading candidate has 1,000 visits. The same position is interpreted as follows.</p>
+          <dl class="action-list"><div><dt>Rank 1, 1,000 visits</dt><dd>Match degree: 100%. Counts toward match rate.</dd></div><div><dt>Rank 2, 600 visits</dt><dd>Match degree: 60%. Counts toward match rate.</dd></div><div><dt>Rank 3, 150 visits</dt><dd>Match degree: 15%. Does not count because it is below the 20% visit threshold.</dd></div><div><dt>Rank 5, 300 visits</dt><dd>Match degree: 30%. Does not count because it is outside the top 3.</dd></div><div><dt>Not recorded</dt><dd>Match degree: 0%. Does not count.</dd></div></dl>
+        </section>
+        <section class="doc-section" id="limits">
+          <h2>What the numbers do—and do not—say</h2>
+          <ul><li>They compare a game with one engine, model, search budget, and candidate window.</li><li>They help locate review points and track a repeatable study process.</li><li>They do not directly measure rank, creativity, fighting spirit, or the objective value of every move.</li><li>A move outside the recorded candidate window receives 0 for match degree; that means the run did not record it as a leading candidate, not that it is proven impossible or worthless.</li><li>Changing the engine configuration or analysis budget can change candidate order and visits. Compare reports only under reasonably comparable conditions.</li></ul>
+        </section>
+        <section class="doc-section" id="privacy"><h2>Local-first by design</h2><p>TensuGo is built around local game files and a local KataGo configuration. Your review work stays on your computer by default; a cloud engine is not required to analyze a position. Account services, when used, are separate from the local analysis workflow and have their own prompts and policies.</p></section>
+        <section class="doc-section" id="next"><h2>Related guides</h2><div class="doc-card"><h3>Install and configure KataGo</h3><p>For Windows/macOS installation, Auto Detect, Test Engine, and manual setup, use the <a href="User-Guide.html">TensuGo User Guide</a>.</p></div><div class="doc-card"><h3>Questions and feedback</h3><p>If a term, screen, or report result remains unclear, tell us through the <a href="https://forum.tensugo.com/">TensuGo Forum</a>.</p></div></section>
+      </article>
+    </main>
+    <footer class="site-footer"><span>TensuGo</span><span>Local Go review, made explainable.</span></footer>
+  </body>
+</html>

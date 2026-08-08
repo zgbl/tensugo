@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>天书阁（TensuGo）产品与 AI 分析说明</title>
+    <meta name="description" content="说明天书阁的本地复盘工作流、KataGo 候选点、天书报告的吻合度与吻合率，以及这些数字的边界。" />
+    <link rel="icon" href="../favicon.svg" /><link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body>
+    <header class="site-header" aria-label="天书阁产品与 AI 分析说明"><a class="brand" href="../cn/" aria-label="返回中文主页"><span class="brand-mark" aria-hidden="true">天</span><span>天书阁（TensuGo）</span></a><nav class="nav" aria-label="文档导航"><a href="../cn/">中文主页</a><a href="User-Guide.html">用户指南</a><a href="Product-and-AI-Analysis-Guide.html">English</a><a href="#metrics">报告指标</a><a href="#limits">数字边界</a></nav></header>
+    <main class="doc-shell">
+      <aside class="doc-toc" aria-label="目录"><span class="doc-toc-title">产品与分析说明</span><a href="#start">天书阁解决什么</a><a href="#workflow">复盘工作流</a><a href="#analysis">怎样看 AI 信息</a><a href="#metrics">吻合度与吻合率</a><a href="#example">计算示例</a><a href="#limits">不要误读数字</a><a href="#privacy">本地优先</a><a href="#next">相关文档</a></aside>
+      <article class="doc-content">
+        <header class="doc-hero" id="start"><p class="eyebrow">公开产品文档</p><h1>把 AI 的答案，变成下次能记得住的复盘。</h1><p>天书阁（TensuGo）是一个连接本地 KataGo 的围棋复盘桌面工作台。它把棋盘、棋谱树、候选点、变化图和自己的研究笔记放在同一处，让一次引擎分析可以沉淀为可回看的解释和练习目标。</p><div class="hero-actions"><a class="button primary" href="User-Guide.html">打开安装与设置指南</a><a class="button secondary" href="Product-and-AI-Analysis-Guide.html">Read in English</a></div></header>
+        <section class="doc-section" id="workflow"><h2>围绕复盘的工作流，而不只是引擎窗口</h2><div class="doc-card"><h3>1. 打开真实棋局</h3><p>导入 SGF、GIB 或 TensuGo 棋谱文件，在保留主线和分支的棋谱树中回看。真正有价值的变化、注释和分歧点，会留在它们所属的局面上。</p></div><div class="doc-card"><h3>2. 在实战落子前分析</h3><p>自动分析询问的是“实战这一手落下之前，AI 怎样看这个局面”。所以候选排名和损失描述的是当时可做出的选择，而不是事后重建的局面。</p></div><div class="doc-card"><h3>3. 看替代方案，留下真正的教训</h3><p>用候选点、Visits、胜率、目差和变化图理解转折；只保留能解释棋理的变化。天书阁的目标不是堆满引擎长线，而是把值得练的局面整理成研究材料。</p></div></section>
+        <section class="doc-section" id="analysis"><h2>怎样看 AI 分析信息</h2><dl class="action-list"><div><dt>候选点</dt><dd>当前配置的 KataGo 在本局面考虑的着点。报告计算使用已记录的前列候选窗口。</dd></div><div><dt>Visits</dt><dd>引擎为候选分配的搜索量。它通常代表这一次分析中的引擎支持度，不是概率；会受模型、硬件和分析预算影响。</dd></div><div><dt>胜率 / 目差</dt><dd>当前配置下对候选方案的评估，适合在同一次分析内比较方案，不是对棋手实力的通用打分。</dd></div><div><dt>变化图</dt><dd>引擎给出的参考延续，帮助研究想法；并不表示每一手都是唯一的强制手段。</dd></div></dl><p class="doc-note">如果棋盘上没有候选气泡或 AI 信息，先确认当前节点已经完成分析，并检查对应显示开关。分析结果属于特定局面，不会自动存在于每一个节点。</p></section>
+        <section class="doc-section" id="metrics"><h2>天书报告：吻合度与吻合率</h2><p>天书报告用来总结实战落子与 AI 前列候选的关系，帮助找出值得复盘的点；它不是给棋手贴“好/坏”标签的分数。</p><div class="doc-card"><h3>吻合度（match degree）</h3><p>这是连续分数，表示实战手获得了多少 AI 支持。对每个成功分析的实战手，天书阁用“实战手 Visits ÷ 最佳候选 Visits”计算。如果实战手不在已记录候选窗口内，该手为 0。最后对所有成功分析手取平均，并显示为百分比。</p><pre><code>单手吻合度 = 实战候选 Visits / 最佳候选 Visits
+平均吻合度 = 所有成功分析手的单手吻合度平均值</code></pre></div><div class="doc-card"><h3>吻合率（match rate）</h3><p>这是通过率，不是平均分。一手要计为“吻合”，必须同时满足：位于已记录候选的前 3 名，并且它的 Visits 至少是最佳候选的 20%。最后以吻合手数除以全部成功分析手数。</p><pre><code>吻合 = 排名为前 3 且 实战 Visits / 最佳 Visits ≥ 20%
+吻合率 = 吻合手数 / 成功分析手数</code></pre></div><div class="doc-card"><h3>相关指标</h3><p><strong>第一推荐命中率</strong>只统计排名第一的实战手。<strong>候选命中率</strong>统计实战手是否出现在已记录候选窗口内。排名第 4、5 的手可以贡献吻合度和候选命中率，但不能通过“前 3 名”的吻合率规则。</p></div></section>
+        <section class="doc-section" id="example"><h2>一个具体例子</h2><p>假设第一候选有 1,000 Visits：</p><dl class="action-list"><div><dt>第 1 名，1,000 Visits</dt><dd>吻合度 100%，计入吻合率。</dd></div><div><dt>第 2 名，600 Visits</dt><dd>吻合度 60%，计入吻合率。</dd></div><div><dt>第 3 名，150 Visits</dt><dd>吻合度 15%，低于 20% 门槛，不计入吻合率。</dd></div><div><dt>第 5 名，300 Visits</dt><dd>吻合度 30%，不在前 3 名，不计入吻合率。</dd></div><div><dt>不在记录候选中</dt><dd>吻合度 0%，不计入吻合率。</dd></div></dl></section>
+        <section class="doc-section" id="limits"><h2>这些数字说什么，不说什么</h2><ul><li>它们比较的是一份特定分析中，实战选择与已配置引擎、模型、搜索预算及候选窗口的关系。</li><li>最适合用来定位需要复盘的局面，并建立可重复的学习流程。</li><li>它们不能直接衡量段位、创造力、战斗精神，或给每一手下最终结论。</li><li>实战手没有出现在记录候选中时，吻合度记为 0；这表示本次分析没有把它记录为前列候选，不等于证明这手“不可能”或“毫无价值”。</li><li>更换引擎配置或分析预算可能改变候选顺序和 Visits；只有分析条件可比时，报告之间才适合横向比较。</li></ul></section>
+        <section class="doc-section" id="privacy"><h2>本地优先</h2><p>天书阁围绕本地棋谱和本地 KataGo 配置设计。默认情况下，复盘工作留在自己的电脑上，不需要依赖云端引擎才能分析局面。登录或账户等平台功能与本地分析工作流分开，并会有各自的提示和政策。</p></section>
+        <section class="doc-section" id="next"><h2>相关文档</h2><div class="doc-card"><h3>安装与引擎设置</h3><p>Windows/macOS 安装、Auto Detect、Test Engine 和手工配置，请看 <a href="User-Guide.html">天书阁用户指南</a>。</p></div><div class="doc-card"><h3>问题与反馈</h3><p>如果某个术语、界面或报告结果仍不清楚，欢迎在 <a href="https://forum.tensugo.com/">天书阁论坛</a> 告诉我们。</p></div></section>
+      </article>
+    </main>
+    <footer class="site-footer"><span>天书阁（TensuGo）</span><span>把每一盘棋，变成下一步的学习计划。</span></footer>
+  </body>
+</html>
