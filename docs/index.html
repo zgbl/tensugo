@@ -17,32 +17,12 @@
     <meta property="og:url" content="https://zgbl.github.io/tensugo/" />
     <meta property="og:image" content="https://zgbl.github.io/tensugo/assets/tensugo-main-ui2.png" />
     <link rel="icon" href="favicon.svg" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260808-shared-nav" />
+    <script defer src="site-nav.js?v=20260808-shared-nav"></script>
     <script defer src="analytics.js?v=20260802-platform-web"></script>
   </head>
   <body>
-    <header class="site-header" aria-label="TensuGo">
-      <a class="brand" href="#top" aria-label="TensuGo home">
-        <img class="brand-logo" src="assets/tensugo-logo.png" alt="" />
-        <span>TensuGo</span>
-      </a>
-      <nav class="nav" aria-label="Site navigation">
-        <a href="#features">Features</a>
-        <a href="#workflow">Workflow</a>
-        <a href="#download">Download</a>
-        <a href="project-docs/Product-and-AI-Analysis-Guide.html">Docs</a>
-        <a href="https://forum.tensugo.com/">Forum</a>
-        <details class="language-switcher">
-          <summary>Language</summary>
-          <div class="language-options">
-            <a href="./">English</a>
-            <a href="cn/">中文</a>
-            <a href="ja/">日本語</a>
-            <a href="ko/">한국어</a>
-          </div>
-        </details>
-      </nav>
-    </header>
+    <header class="site-header" data-tensugo-nav></header>
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">

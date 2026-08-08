@@ -9,25 +9,11 @@
       content="天书阁（TensuGo）用户指南：Windows 与 macOS 安装、KataGo 引擎配置、Auto Detect、Test Engine 和常见问题。"
     />
     <link rel="icon" href="../favicon.svg" />
-    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="../styles.css?v=20260808-shared-nav" />
+    <script defer src="../site-nav.js?v=20260808-shared-nav"></script>
   </head>
   <body>
-    <header class="site-header" aria-label="天书阁（TensuGo）用户指南">
-      <a class="brand" href="../cn/" aria-label="返回中文主页">
-        <span class="brand-mark" aria-hidden="true">天</span>
-        <span>天书阁（TensuGo）</span>
-      </a>
-      <nav class="nav" aria-label="文档导航">
-        <a href="../cn/">中文主页</a>
-        <a href="../">English</a>
-        <a href="User-Guide-ja.html">日本語</a>
-        <a href="User-Guide-ko.html">한국어</a>
-        <a href="Product-and-AI-Analysis-Guide-zh.html">产品与 AI 分析</a>
-        <a href="#install">安装</a>
-        <a href="#engine">引擎</a>
-        <a href="#faq">FAQ</a>
-      </nav>
-    </header>
+    <header class="site-header" data-tensugo-nav></header>
 
     <main class="doc-shell">
       <aside class="doc-toc" aria-label="目录">

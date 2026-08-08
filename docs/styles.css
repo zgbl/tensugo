@@ -79,8 +79,8 @@ a {
 
 .brand-logo {
   display: block;
-  width: 42px;
-  height: 42px;
+  width: 94px;
+  height: 62px;
   object-fit: contain;
   flex: 0 0 auto;
 }
@@ -764,8 +764,8 @@ body {
 }
 
 .brand-logo {
-  width: 44px;
-  height: 44px;
+  width: 94px;
+  height: 62px;
 }
 
 .hero {
