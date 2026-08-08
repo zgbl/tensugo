@@ -77,6 +77,14 @@ a {
   font-size: 18px;
 }
 
+.brand-logo {
+  display: block;
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
 .nav {
   gap: clamp(12px, 3vw, 28px);
   font-size: 14px;
@@ -753,6 +761,11 @@ body {
   background: var(--ink);
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 16px;
+}
+
+.brand-logo {
+  width: 44px;
+  height: 44px;
 }
 
 .hero {
