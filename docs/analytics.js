@@ -3,10 +3,6 @@
   var endpoint = "https://forum.tensugo.com/api/analytics/events";
   var anonymousKey = "tensugo.analytics.anonymousId";
   var sessionKey = "tensugo.analytics.sessionId";
-  var downloadVersions = {
-    "windows-x64": "0.6.18",
-    "macos-apple-silicon": "0.5.87"
-  };
   var anonymousId = localStorage.getItem(anonymousKey) || crypto.randomUUID();
   var sessionId = sessionStorage.getItem(sessionKey) || crypto.randomUUID();
   localStorage.setItem(anonymousKey, anonymousId);
@@ -43,15 +39,35 @@
     }
   }
 
+  function versionFromReleaseUrl(url) {
+    var match = String(url || "").match(/\/releases\/download\/V?([^/]+)\//i);
+    return match ? match[1] : null;
+  }
+
+  function downloadVersion(platform, anchor) {
+    var directVersion = versionFromReleaseUrl(anchor && anchor.href);
+    if (directVersion) return directVersion;
+    var links = document.querySelectorAll("a[href]");
+    for (var i = 0; i < links.length; i += 1) {
+      var href = links[i].href || "";
+      if (href.indexOf(platform) >= 0) {
+        var version = versionFromReleaseUrl(href);
+        if (version) return version;
+      }
+    }
+    return null;
+  }
+
   var downloadMatch = location.pathname.match(/\/download\/latest\/(windows-x64|macos-apple-silicon)\/?$/);
   track("page_view", { page: downloadMatch ? "download_redirect" : location.pathname.indexOf("/cn/") >= 0 ? "home_cn" : "home" });
   if (downloadMatch) {
+    var redirectPlatform = downloadMatch[1];
     track("download_clicked", {
       placement: "download_redirect",
       stage: "redirect"
     }, {
-      appVersion: downloadVersions[downloadMatch[1]],
-      platform: downloadMatch[1]
+      appVersion: downloadVersion(redirectPlatform),
+      platform: redirectPlatform
     });
   }
 
@@ -65,7 +81,7 @@
         placement: anchor.closest(".hero-actions") ? "hero" : "download_section",
         stage: "intent"
       }, {
-        appVersion: downloadVersions[platform],
+        appVersion: downloadVersion(platform, anchor),
         platform: platform
       });
     } else if (href.indexOf("forum.tensugo.com") >= 0) track("forum_clicked");
