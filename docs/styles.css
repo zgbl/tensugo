@@ -154,6 +154,12 @@ a {
   background: var(--shell);
 }
 
+.language-options a.active {
+  color: var(--ink);
+  background: var(--shell);
+  font-weight: 800;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.25fr);
@@ -523,6 +529,21 @@ code {
 .download-panel p {
   margin: 0;
   font-size: 15px;
+}
+
+.download-actions {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.download-actions .button {
+  width: 100%;
+  margin: 0;
+}
+
+.download-panel .download-note {
+  margin-top: 18px;
 }
 
 .site-footer {
