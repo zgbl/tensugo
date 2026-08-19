@@ -5,11 +5,21 @@
   const i18n = window.TensugoI18n || null;
   const dynamic = !!i18n && i18n.isDynamicPage();
 
-  // Relative depth from the Pages root. A trailing "/" means the last path
-  // segment is a directory; otherwise it is a file and not a directory level.
+  // Relative depth from the Pages root, used for asset paths only.
   const pagePath = window.location.pathname;
   const depth = pagePath.split("/").filter(Boolean).length - (pagePath.endsWith("/") ? 0 : 1);
   const root = depth <= 0 ? "./" : Array(depth).fill("..").join("/") + "/";
+
+  // Canonical site URLs. The site is served from www.tensugo.com (CNAME).
+  // The internal language code for Chinese is "zh" (shared with the desktop
+  // app), but the site's homepage for Chinese lives at /cn — never /zh.
+  const SITE_ROOT = "https://www.tensugo.com";
+  const pathFor = { en: "", zh: "cn", ja: "ja", ko: "ko" };
+
+  function homepageUrl(language) {
+    const segment = pathFor[language] || "";
+    return segment ? `${SITE_ROOT}/${segment}` : `${SITE_ROOT}/`;
+  }
 
   const copies = {
     en: { home: "Home", docs: "Docs", download: "Download", forum: "Forum", language: "Language", aria: "Site navigation", homeAria: "TensuGo home", doc: "project-docs/Product-and-AI-Analysis-Guide.html" },
@@ -32,11 +42,11 @@
   function render() {
     const language = currentLanguage();
     const text = copies[language] || copies.en;
-    const languageHome = language === "en" ? root : `${root}${language}/`;
+    const languageHome = homepageUrl(language);
 
     const languageOptions = options
       .map((option) => {
-        const href = dynamic ? "#" : `${root}${option.code === "en" ? "" : option.code + "/"}`;
+        const href = dynamic ? "#" : homepageUrl(option.code);
         const active = option.code === language ? ' class="active"' : "";
         return `<a href="${href}" data-tensugo-lang="${option.code}"${active}>${option.label}</a>`;
       })
@@ -50,7 +60,7 @@
     <nav class="nav" aria-label="${text.aria}">
       <a href="${languageHome}">${text.home}</a>
       <a href="${languageHome}#download">${text.download}</a>
-      <a href="${root}${text.doc}">${text.docs}</a>
+      <a href="${SITE_ROOT}/${text.doc}">${text.docs}</a>
       <a href="https://forum.tensugo.com/">${text.forum}</a>
       <details class="language-switcher">
         <summary>${text.language}</summary>
@@ -68,7 +78,7 @@
       event.preventDefault();
       i18n.setLanguage(code);
     } else {
-      // Remember the choice before navigating to the static language page so
+      // Remember the choice before navigating to the language homepage so
       // the download pages can inherit it.
       i18n.persist(code);
     }

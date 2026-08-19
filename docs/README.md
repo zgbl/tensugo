@@ -8,7 +8,7 @@ The English homepage lives at `index.html`; the Chinese homepage lives at `cn/in
 
 Languages on the site:
 
-- The four homepages are static pages in their own language, with a language switcher in the shared nav (`site-nav.js`). Choosing a language there persists the choice in `localStorage` (`tensugo.site.language`).
+- The four homepages are static pages in their own language: English at `/`, 中文 at `/cn`, 日本語 at `/ja`, 한국어 at `/ko`. The shared nav (`site-nav.js`) links to the canonical URLs under `https://www.tensugo.com` (the internal language code for Chinese is `zh`, but the site path is always `cn`). Choosing a language persists the choice in `localStorage` (`tensugo.site.language`).
 - The download pages (`download/**`) are dynamic: `site-i18n.js` renders all text from a four-language dictionary via `data-i18n` attributes (no hardcoded copy). The language defaults to the user's region/OS language (`navigator.languages`), then falls back to English; an explicit user choice persists and wins. Homepage download links carry `?lang=` so a localized homepage leads to a download page in the same language.
 
 GitHub Pages setup:
