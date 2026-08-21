@@ -542,6 +542,13 @@ code {
   margin: 0;
 }
 
+.download-actions .file-size {
+  color: var(--muted);
+  font-size: 0.82em;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .download-panel .download-note {
   margin-top: 18px;
 }
