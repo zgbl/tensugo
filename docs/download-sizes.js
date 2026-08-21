@@ -21,7 +21,15 @@
     return (mb >= 100 ? Math.round(mb) : Math.round(mb * 10) / 10) + " MB";
   }
 
+  // Remember what we last rendered: the i18n engine rewrites the buttons'
+  // textContent when it applies a language (on load and on every language
+  // switch), which removes the size span. We re-attach it afterwards.
+  var lastMap = null;
+
   function annotate(map) {
+    if (map) lastMap = map;
+    map = lastMap;
+    if (!map) return;
     links.forEach(function (a) {
       var name = (a.getAttribute("href") || "").split("/").pop();
       var size = map && map[name];
@@ -36,6 +44,16 @@
       span.textContent = " (" + size + ")";
     });
   }
+
+  // Re-apply the sizes after any language change wipes the button text.
+  document.addEventListener("tensugo:languagechange", function () {
+    // Run after the i18n engine has finished rewriting the nodes.
+    setTimeout(function () { annotate(null); }, 0);
+  });
+
+  // Show the fallback right away so the size is never missing while the
+  // GitHub API request is in flight; real values overwrite it when they land.
+  annotate(fallbackBytes);
 
   var first = links[0].getAttribute("href") || "";
   var tagMatch = first.match(/releases\/download\/([^/]+)\//);

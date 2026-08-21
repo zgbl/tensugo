@@ -266,10 +266,25 @@
     }
   }
 
+  // This script is loaded in <head> without defer so the resolved language is
+  // available synchronously to site-nav.js. The DOM, however, does not exist
+  // yet at that point, so anything that touches elements must wait for
+  // DOMContentLoaded - otherwise applyLanguage() and enrichDownloadLinks()
+  // silently match zero nodes.
+  function whenReady(fn) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", fn, { once: true });
+    } else {
+      fn();
+    }
+  }
+
   var dynamic = document.documentElement.hasAttribute("data-tensugo-i18n");
   var current = dynamic ? resolveLanguage() : (normalize(document.documentElement.lang) || DEFAULT);
 
-  if (dynamic) applyLanguage(current);
+  // <title> and <html lang> can be set immediately; the rest waits for the DOM.
+  document.documentElement.lang = current;
+  if (dynamic) whenReady(function () { applyLanguage(current); });
 
   window.TensugoI18n = {
     LANG_KEY: LANG_KEY,
@@ -285,5 +300,5 @@
     isDynamicPage: function () { return dynamic; }
   };
 
-  enrichDownloadLinks();
+  whenReady(enrichDownloadLinks);
 })();
