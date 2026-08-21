@@ -176,7 +176,11 @@
   }
 
   function resolveLanguage() {
-    return storedLanguage() || urlLanguage() || browserLanguage() || DEFAULT;
+    // The URL parameter carries the language of the page the user came from
+    // (homepage download links append ?lang=), so it must win over any
+    // previously persisted choice: clicking "Download" on the Chinese
+    // homepage must always open the Chinese download page.
+    return urlLanguage() || storedLanguage() || browserLanguage() || DEFAULT;
   }
 
   function dictionary(lang) {
@@ -228,8 +232,20 @@
     return normalized;
   }
 
+  // Keep the URL in sync with the chosen language so a refresh or a shared
+  // link stays in the same language as the page.
+  function syncUrlLanguage(lang) {
+    try {
+      var url = new URL(location.href);
+      if (lang === DEFAULT) url.searchParams.delete("lang");
+      else url.searchParams.set("lang", lang);
+      history.replaceState(null, "", url.toString());
+    } catch (e) { /* ignore */ }
+  }
+
   function setLanguage(lang) {
     var normalized = persist(lang);
+    syncUrlLanguage(normalized);
     if (dynamic) applyLanguage(normalized);
     return normalized;
   }
