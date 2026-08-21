@@ -18,6 +18,7 @@
     <main class="doc-shell">
       <aside class="doc-toc" aria-label="目录">
         <span class="doc-toc-title">User Guide</span>
+        <a href="#whats-new">V0.7.50 新功能</a>
         <a href="#install">安装 TensuGo</a>
         <a href="#engine">KataGo 引擎配置</a>
         <a href="#mac-katago">Mac KataGo 安装</a>
@@ -48,8 +49,28 @@
               下载 macOS DMG
             </a>
           </div>
-          <p class="hero-note">暂不提供 Windows 32 位和 Intel Mac 安装包。</p>
+          <p class="hero-note">暂不提供 Windows 32 位和 Intel Mac 安装包。当前版本：V0.7.50（更新于 2026-08-21）。</p>
         </header>
+
+        <section class="doc-section" id="whats-new">
+          <h2>V0.7.50 新功能</h2>
+          <div class="doc-card">
+            <h3>出题与做题</h3>
+            <p>从复盘局面（AI 分析后）创建题目，支持 A/B 两种题型与自动出题标记；按目标级别做题，做题结果支持排名。</p>
+          </div>
+          <div class="doc-card">
+            <h3>拟人引擎与人机对弈</h3>
+            <p>引擎配置可同时保存普通（Normal）与拟人（Human）两套 Model/Config；拟人引擎的候选数、水平偏移可调。</p>
+          </div>
+          <div class="doc-card">
+            <h3>研究文档</h3>
+            <p>棋盘截图裁剪、变化图/PV 研究、PDF 与打包 HTML 导出、独立预览窗口、右侧栏编辑。</p>
+          </div>
+          <div class="doc-card">
+            <h3>批量分析与引擎监控</h3>
+            <p>批量分析控制台实时查看日志与进度（可暂停/继续）；分析时显示引擎内存占用。</p>
+          </div>
+        </section>
 
         <section class="doc-section" id="install">
           <h2>安装 TensuGo</h2>
@@ -89,18 +110,20 @@
 
         <section class="doc-section" id="engine">
           <h2>KataGo 引擎配置</h2>
-          <p>进入 <code>设置 &gt; 引擎</code> 后，可以看到引擎列表和当前选中配置。</p>
+          <p>进入 <code>设置 &gt; 引擎</code> 后，可以看到引擎列表和当前选中配置。每个配置可以同时保存普通（Normal）与拟人（Human）两套 Model/Config，分析时按需要切换。</p>
           <dl class="action-list">
             <div><dt>Auto Detect</dt><dd>手动扫描系统里的 KataGo、模型和配置文件。</dd></div>
             <div><dt>Test Engine</dt><dd>测试当前配置是否能启动。</dd></div>
             <div><dt>选择</dt><dd>手动选择 Engine 或 Model。</dd></div>
             <div><dt>Choose Config</dt><dd>手动选择 KataGo GTP 配置文件。</dd></div>
-            <div><dt>保存到列表</dt><dd>把当前填写的配置保存为一个引擎配置。</dd></div>
+            <div><dt>另存为新配置</dt><dd>把当前填写的内容保存为一个新的引擎配置。</dd></div>
+            <div><dt>更新当前配置</dt><dd>把修改写回当前选中的配置。</dd></div>
             <div><dt>设为默认</dt><dd>把当前配置设为默认分析引擎。</dd></div>
             <div><dt>删除</dt><dd>删除当前高亮的配置行。</dd></div>
             <div><dt>Reset to Default</dt><dd>清空当前默认配置，不会自动扫描系统路径。</dd></div>
+            <div><dt>诊断</dt><dd>查看引擎路径、状态等信息。</dd></div>
           </dl>
-          <p class="doc-note">TensuGo 启动时不会自动扫描系统路径。只有点击 <code>Auto Detect</code> 才会扫描。</p>
+          <p class="doc-note">TensuGo 启动时不会自动扫描系统路径。只有点击 <code>Auto Detect</code> 才会扫描。分析时面板会显示引擎内存占用，便于发现长时间分析导致的内存失控。</p>
         </section>
 
         <section class="doc-section" id="mac-katago">
