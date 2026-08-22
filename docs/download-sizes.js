@@ -26,6 +26,10 @@
   // switch), which removes the size span. We re-attach it afterwards.
   var lastMap = null;
 
+  // The i18n dictionary already includes a static "(… MB)" marker on the
+  // Windows buttons so a size is always visible immediately. This function
+  // only replaces that marker with the real value from the GitHub API (or the
+  // fallback) and appends a marker for buttons that have none (e.g. macOS).
   function annotate(map) {
     if (map) lastMap = map;
     map = lastMap;
@@ -33,15 +37,14 @@
     links.forEach(function (a) {
       var name = (a.getAttribute("href") || "").split("/").pop();
       var size = map && map[name];
-      if (!size) return;
       if (typeof size === "number") size = human(size);
-      var span = a.querySelector(".file-size");
-      if (!span) {
-        span = document.createElement("span");
-        span.className = "file-size";
-        a.appendChild(span);
+      var textNode = null;
+      for (var i = 0; i < a.childNodes.length; i += 1) {
+        if (a.childNodes[i].nodeType === 3) { textNode = a.childNodes[i]; break; }
       }
-      span.textContent = " (" + size + ")";
+      if (!textNode) return;
+      var text = textNode.textContent.replace(/\s*\(\s*[\d.]+\s*MB\s*\)\s*$/, "");
+      textNode.textContent = text + (size ? " (" + size + ")" : "");
     });
   }
 
