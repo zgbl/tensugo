@@ -12,6 +12,89 @@
     try { return document.referrer ? new URL(document.referrer).hostname : null; } catch (_) { return null; }
   }
 
+  /* ---------------------------------------------------------------------
+   * Device / OS classification.
+   * The download UX is intentionally unchanged: phones and tablets still see
+   * and can click the Windows / macOS buttons. We only *label* the click so
+   * "mobile download curiosity" is not mistaken for a failed desktop
+   * activation (a phone visitor can never produce a desktop first_open).
+   * ------------------------------------------------------------------- */
+  function deviceInfo() {
+    var ua = navigator.userAgent || "";
+    var uaData = navigator.userAgentData || null;
+    var maxTouch = navigator.maxTouchPoints || 0;
+    var touch = maxTouch > 0 || "ontouchstart" in window;
+
+    var os = "unknown";
+    if (/Android/i.test(ua)) os = "android";
+    else if (/iPhone|iPod/i.test(ua)) os = "ios";
+    else if (/iPad/i.test(ua)) os = "ipados";
+    // iPadOS 13+ reports itself as "Macintosh"; touch points give it away.
+    else if (/Macintosh/i.test(ua) && maxTouch > 1) os = "ipados";
+    else if (/Mac OS X|Macintosh/i.test(ua)) os = "macos";
+    else if (/Windows/i.test(ua)) os = "windows";
+    else if (/CrOS/i.test(ua)) os = "chromeos";
+    else if (/Linux/i.test(ua)) os = "linux";
+
+    var type;
+    if (uaData && typeof uaData.mobile === "boolean" && !/iPad/i.test(ua) && os !== "ipados") {
+      type = uaData.mobile ? "mobile" : "desktop";
+    } else if (os === "ipados") {
+      type = "tablet";
+    } else if (os === "android") {
+      type = /Mobile/i.test(ua) ? "mobile" : "tablet";
+    } else if (os === "ios") {
+      type = "mobile";
+    } else if (touch && Math.min(screen.width, screen.height) < 820 && (os === "unknown" || os === "linux")) {
+      type = "tablet";
+    } else {
+      type = "desktop";
+    }
+
+    // A desktop OS is a necessary condition for a later desktop first_open.
+    var installable = (type === "desktop") && (os === "windows" || os === "macos" || os === "linux");
+
+    return {
+      deviceType: type,
+      os: os,
+      touch: touch,
+      installCapable: installable,
+      viewportWidth: window.innerWidth || null,
+      screenWidth: screen.width || null
+    };
+  }
+
+  var device = deviceInfo();
+
+  /* First-touch attribution: the download pages carry no utm_* parameters,
+   * so remember the first campaign/referrer we saw for this browser and
+   * replay it on every later event. */
+  var attributionKey = "tensugo.analytics.firstTouch";
+
+  function firstTouch() {
+    var query = new URLSearchParams(location.search);
+    var stored = null;
+    try { stored = JSON.parse(localStorage.getItem(attributionKey) || "null"); } catch (_) { stored = null; }
+    var current = {
+      utmSource: query.get("utm_source"),
+      utmMedium: query.get("utm_medium"),
+      utmCampaign: query.get("utm_campaign"),
+      utmContent: query.get("utm_content"),
+      utmTerm: query.get("utm_term"),
+      referrerHost: safeReferrerHost(),
+      landingPath: location.pathname,
+      at: new Date().toISOString()
+    };
+    var hasSignal = current.utmSource || current.utmMedium || current.utmCampaign || current.referrerHost;
+    if (!stored && hasSignal) {
+      try { localStorage.setItem(attributionKey, JSON.stringify(current)); } catch (_) {}
+      return current;
+    }
+    return stored || current;
+  }
+
+  var attribution = firstTouch();
+
   function track(eventName, properties, fields) {
     var query = new URLSearchParams(location.search);
     var payload = Object.assign({
@@ -24,10 +107,26 @@
       platform: "web",
       locale: document.documentElement.lang || navigator.language,
       referrerHost: safeReferrerHost(),
-      utmSource: query.get("utm_source"),
-      utmMedium: query.get("utm_medium"),
-      utmCampaign: query.get("utm_campaign"),
-      properties: properties || {}
+      utmSource: query.get("utm_source") || attribution.utmSource || null,
+      utmMedium: query.get("utm_medium") || attribution.utmMedium || null,
+      utmCampaign: query.get("utm_campaign") || attribution.utmCampaign || null,
+      properties: Object.assign({
+        deviceType: device.deviceType,
+        os: device.os,
+        touch: device.touch,
+        installCapable: device.installCapable,
+        viewportWidth: device.viewportWidth,
+        screenWidth: device.screenWidth,
+        firstTouchUtmSource: attribution.utmSource || null,
+        firstTouchUtmMedium: attribution.utmMedium || null,
+        firstTouchUtmCampaign: attribution.utmCampaign || null,
+        firstTouchUtmContent: attribution.utmContent || null,
+        firstTouchUtmTerm: attribution.utmTerm || null,
+        firstTouchReferrerHost: attribution.referrerHost || null,
+        firstTouchLandingPath: attribution.landingPath || null,
+        referrerHost: safeReferrerHost(),
+        pageLanguage: document.documentElement.lang || null
+      }, properties || {})
     }, fields || {});
     payload = JSON.stringify(payload);
     if (navigator.sendBeacon) {
@@ -64,7 +163,8 @@
     var redirectPlatform = downloadMatch[1];
     track("download_clicked", {
       placement: "download_redirect",
-      stage: "redirect"
+      stage: "redirect",
+      intent: device.installCapable ? "desktop_download_intent" : "mobile_download_curiosity"
     }, {
       appVersion: downloadVersion(redirectPlatform),
       platform: redirectPlatform
@@ -76,10 +176,17 @@
     if (!anchor) return;
     var href = anchor.href || "";
     if (href.indexOf("/download/") >= 0) {
-      var platform = href.indexOf("windows") >= 0 ? "windows-x64" : "macos-apple-silicon";
+      // The final GitHub release links (.msi / .dmg) also contain "/download/"
+      // but no platform slug, so classify by file extension first.
+      var isAsset = /releases\/download\//.test(href);
+      var platform = /windows|\.msi(\?|$)/i.test(href) ? "windows-x64" : "macos-apple-silicon";
       track("download_clicked", {
-        placement: anchor.closest(".hero-actions") ? "hero" : "download_section",
-        stage: "intent"
+        placement: isAsset
+          ? "download_page_asset"
+          : anchor.closest(".hero-actions") ? "hero" : "download_section",
+        stage: isAsset ? "asset" : "intent",
+        intent: device.installCapable ? "desktop_download_intent" : "mobile_download_curiosity",
+        assetName: isAsset ? href.split("/").pop() : null
       }, {
         appVersion: downloadVersion(platform, anchor),
         platform: platform
