@@ -94,7 +94,7 @@
       macPageTitle: "最新の TensuGo（macOS Apple Silicon）をダウンロード",
       macMetaDesc: "最新の TensuGo（macOS Apple Silicon、M シリーズ）をダウンロード。",
       macTitle: "最新の TensuGo（macOS Apple Silicon）をダウンロード",
-      macRelease: "現在のリリース：<strong>V0.7.55</strong> · 更新日 4",
+      macRelease: "現在のリリース：<strong>V0.7.55</strong> · 更新日 2026-08-24",
       macInstall: "Apple Silicon（M シリーズ）版。KataGo は Homebrew で別途インストールしてください。",
       macFallback: "ダウンロードが始まらない場合は、下のボタンを使ってください。",
       macBtn: "macOS DMG をダウンロード",

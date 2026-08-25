@@ -11,8 +11,8 @@
 
   // Known sizes as a fallback (bytes) when the GitHub API is unavailable.
   var fallbackBytes = {
-    "TensuGo_0.7.50_x64_en-US.msi": 350 * 1024 * 1024,
-    "TensuGo_0.7.50_x64-ui-only_en-US.msi": 5.4 * 1024 * 1024
+    "TensuGo_0.7.55_x64_en-US.msi": 350 * 1024 * 1024,
+    "TensuGo_0.7.55_x64-ui-only_en-US.msi": 5.4 * 1024 * 1024
   };
 
   function human(bytes) {
