@@ -1,0 +1,40 @@
+name: Daily Download Counts
+
+# 每天 00:00 UTC 拉取一次 GitHub release 的真实下载完成数（download_count），
+# 追加到 docs/download-counts.json 并提交。发布新版本时改下面的 TAG 和 VERSION_PREFIX。
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  REPO: zgbl/tensugo
+  TAG: V0.7.55
+  VERSION_PREFIX: 0.7.55
+  # 统计后台地址：把 GitHub 的 download_count 作为 download_completed 事件上报，
+  # 与官网已有的 download_clicked（点击）并排对比。发布新版本时更新上面的 TAG/PREFIX。
+  ANALYTICS_ENDPOINT: https://forum.tensugo.com/api/analytics/events
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch download counts
+        # --compat: 后台尚未给 download_completed 加白名单，先用 download_clicked +
+        #           placement=github_daily_snapshot 上报。等论坛后台白名单加了
+        #           { source: github, event: download_completed } 后，去掉 --compat 即可。
+        run: node scripts/fetch-download-counts.mjs --repo "$REPO" --tag "$TAG" --version-prefix "$VERSION_PREFIX" --analytics-endpoint "$ANALYTICS_ENDPOINT" --compat
+
+      - name: Commit and push
+        run: |
+          git config user.name "tensugo-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add docs/download-counts.json
+          if git diff --cached --quiet; then echo "no change, skipping commit"; exit 0; fi
+          git commit -m "chore: update daily download counts for $TAG"
+          git push

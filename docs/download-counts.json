@@ -1,0 +1,15 @@
+{
+  "repo": "zgbl/tensugo",
+  "tag": "V0.7.55",
+  "days": [
+    {
+      "date": "2026-08-25",
+      "counts": {
+        "TensuGo_0.7.55_aarch64.dmg": 0,
+        "TensuGo_0.7.55_x64-ui-only_en-US.msi": 1,
+        "TensuGo_0.7.55_x64_en-US.msi": 2
+      }
+    }
+  ],
+  "updatedAt": "2026-08-25T16:02:00.351Z"
+}
