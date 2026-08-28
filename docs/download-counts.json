@@ -25,7 +25,15 @@
         "TensuGo_0.7.55_x64-ui-only_en-US.msi": 2,
         "TensuGo_0.7.55_x64_en-US.msi": 10
       }
+    },
+    {
+      "date": "2026-08-28",
+      "counts": {
+        "TensuGo_0.7.55_aarch64.dmg": 2,
+        "TensuGo_0.7.55_x64-ui-only_en-US.msi": 2,
+        "TensuGo_0.7.55_x64_en-US.msi": 11
+      }
     }
   ],
-  "updatedAt": "2026-08-27T05:13:17.317Z"
+  "updatedAt": "2026-08-28T07:12:26.423Z"
 }
