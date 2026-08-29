@@ -1,0 +1,84 @@
+name: Sync Release to Cloudflare R2
+
+# 每次发布 GitHub Release 时，把该 release 的所有安装包自动同步到 Cloudflare R2 bucket，
+# 用作 CDN 下载源（绕过 Cloudflare 网页端 300MB 上传限制）。
+# 公开下载地址（自定义域名）: https://download.tensugo.com/releases/<TAG>/<文件名>
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步的 release tag（留空则用最新 release）"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r2-sync
+  cancel-in-progress: false
+
+env:
+  # 目标 bucket 名称（已确认）
+  R2_BUCKET: tensugo-release
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Determine release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            # release 事件时 GITHUB_REF 形如 refs/tags/V0.7.55
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            # workflow_dispatch 且未指定 tag：取最新 release
+            TAG="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not determine release tag"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Syncing release: $TAG"
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf assets && mkdir -p assets
+          gh release download "${{ steps.tag.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --dir assets
+          echo "Downloaded files:"
+          ls -lh assets
+
+      - name: Verify AWS CLI available
+        run: aws --version
+
+      - name: Sync assets to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          DEST="s3://${{ env.R2_BUCKET }}/releases/${{ steps.tag.outputs.tag }}"
+          ENDPOINT="https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          echo "Syncing to: $DEST"
+          aws s3 sync assets/ "$DEST" \
+            --endpoint-url "$ENDPOINT" \
+            --delete
+          echo "--- Objects in bucket ---"
+          aws s3 ls "$DEST" --endpoint-url "$ENDPOINT" --recursive
+
+      - name: Print public download URLs
+        run: |
+          echo "Public CDN base URL:"
+          echo "https://download.tensugo.com/releases/${{ steps.tag.outputs.tag }}/"
